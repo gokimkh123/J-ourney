@@ -1,0 +1,45 @@
+name: CD
+
+# main에 병합되면 서버 이미지를 빌드·실행 확인한 뒤 GHCR에 저장함 (학교 VM 자동 배포는 E단계에서 추가)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: 서버 이미지 빌드·GHCR 저장
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/j-ourney-server
+    steps:
+      - uses: actions/checkout@v7
+      - name: GHCR 로그인
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: 이미지 빌드
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -t "$IMAGE:latest" -t "$IMAGE:sha-${GITHUB_SHA::7}" server
+      - name: 컨테이너 실행 후 상태 확인
+        run: |
+          docker run -d --name server -p 3000:3000 "$IMAGE:latest"
+          for _ in $(seq 1 20); do
+            if curl -fsS http://localhost:3000/api/v1/health; then exit 0; fi
+            sleep 1
+          done
+          docker logs server
+          exit 1
+      - name: GHCR에 저장
+        run: docker push --all-tags "$IMAGE"
