@@ -1,0 +1,7 @@
+# 이미지에 넣지 않는 파일 (비밀값·의존성·빌드 산출물)
+.env
+.env.*
+node_modules
+dist
+coverage
+test
