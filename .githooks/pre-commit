@@ -1,0 +1,39 @@
+#!/bin/sh
+# J-ourney 커밋 전 비밀값·개인정보 검사 (팀 공용 훅)
+# 설치: 저장소 최상위에서 한 번 실행 → git config core.hooksPath .githooks
+fail=0
+
+# 1. 비밀값 파일 차단 (.env.example만 허용)
+for f in $(git diff --cached --name-only --diff-filter=ACM); do
+  case "$f" in
+    *.env.example) ;;
+    .env|*/.env|.env.*|*/.env.*|*.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|*credentials*.json|*service-account*.json|*.mobileprovision)
+      echo "차단: 비밀값 파일로 보이는 $f 은(는) 커밋할 수 없음"; fail=1 ;;
+  esac
+done
+
+# 2. 키 형태 문자열 차단 (추가한 줄만 검사)
+added=$(git diff --cached -U0 --diff-filter=ACM | grep '^+' | grep -v '^+++')
+if printf '%s\n' "$added" | grep -qE 'sk-ant-[A-Za-z0-9_-]{10,}|KakaoAK +[0-9a-fA-F]{32}|(serviceKey=|SERVICE_KEY *[:=] *["'"'"']?)[0-9a-fA-F]{64}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(API_KEY|SECRET|TOKEN|PASSWORD|CLIENT_ID)[A-Z_]* *[:=] *["'"'"']?[A-Za-z0-9_+/=-]{16,}'; then
+  echo "차단: 추가한 내용에 API 키·비밀값으로 보이는 문자열이 있음 (git diff --cached로 확인)"; fail=1
+fi
+
+# 3. 개인정보 차단 (휴대전화 번호, 주민등록번호)
+if printf '%s\n' "$added" | grep -qE '(^|[^0-9])01[016789][- .]?[0-9]{3,4}[- .]?[0-9]{4}([^0-9]|$)|(^|[^0-9])[0-9]{6}-[1-4][0-9]{6}([^0-9]|$)'; then
+  echo "차단: 추가한 내용에 전화번호·주민등록번호로 보이는 개인정보가 있음"; fail=1
+fi
+
+# 4. 실제 키 값 차단 (server/.env가 있는 PC에서만, 값은 출력하지 않음)
+root=$(git rev-parse --show-toplevel)
+if [ -f "$root/server/.env" ]; then
+  if ! grep -E '^[A-Z_]*(KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*=.+' "$root/server/.env" | while IFS= read -r line; do
+    v=$(printf '%s' "${line#*=}" | tr -d '\r' | sed "s/^[\"']//; s/[\"']\$//")
+    [ ${#v} -ge 12 ] || continue
+    if printf '%s\n' "$added" | grep -qF -- "$v"; then
+      echo "차단: server/.env의 실제 값(${line%%=*})이 커밋 내용에 들어 있음"; exit 1
+    fi
+  done; then fail=1; fi
+fi
+
+[ "$fail" -eq 0 ] || { echo "비밀값은 server/.env에만 두고, 예시는 .env.example에 빈 값으로 작성함"; exit 1; }
+exit 0
