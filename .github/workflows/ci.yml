@@ -1,10 +1,11 @@
 name: CI
 
+# main에는 develop에서 검사를 마친 코드만 들어오므로 main 대상으로는 실행하지 않음
 on:
   push:
-    branches: [main, develop, 'server/**', 'app/**']
+    branches: [develop, 'server/**', 'app/**']
   pull_request:
-    branches: [main, develop]
+    branches: [develop]
 
 permissions:
   contents: read
