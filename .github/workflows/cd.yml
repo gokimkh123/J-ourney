@@ -41,5 +41,7 @@ jobs:
           done
           docker logs server
           exit 1
+      - name: 이미지 비밀값 검사
+        run: bash .github/scripts/scan-image.sh "$IMAGE:latest"
       - name: GHCR에 저장
         run: docker push --all-tags "$IMAGE"

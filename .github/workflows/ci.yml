@@ -55,6 +55,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: 이미지 빌드
         run: docker build -t j-ourney-server:ci server
+      - name: 이미지 비밀값 검사
+        run: bash .github/scripts/scan-image.sh j-ourney-server:ci
       - name: 컨테이너 실행 후 상태 확인
         run: |
           docker run -d --name server -p 3000:3000 j-ourney-server:ci
