@@ -10,3 +10,18 @@
 node_modules/
 dist/
 coverage/
+
+# 로컬 전용 문서 폴더 (동작 흐름·명세서 원본 등은 저장소에 포함하지 않음)
+docs/
+
+# 인증서·서명 키·계정 자격 증명 파일
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+*credentials*.json
+*service-account*.json
+.npmrc
