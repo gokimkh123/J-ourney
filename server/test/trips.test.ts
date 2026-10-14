@@ -19,7 +19,7 @@ describe('POST /trips 여행 생성', () => {
     expect(res.body.trip).toMatchObject({ title: '부산 1박 2일', status: 'preparing' });
     expect(res.body.trip.id).toMatch(/^trp_[0-9a-z]{10}$/);
     expect(res.body.trip.inviteCode).toMatch(/^[A-HJ-NP-Z2-9]{6}$/);
-    expect(res.body.member).toMatchObject({ nickname: '민수', color: '#F97316', isHost: true, personaReady: false, mbti: null });
+    expect(res.body.member).toMatchObject({ nickname: '민수', color: '#F97316', isHost: true, personaReady: false, title: null });
     expect(res.body.member.id).toMatch(/^mem_[0-9a-z]{10}$/);
     expect(res.body.token).toMatch(/^tok_/);
   });

@@ -64,6 +64,39 @@
   .log summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
   .log summary code { word-break: break-all; }
   .empty { color: var(--muted); font-size: 13px; }
+  .tab { cursor: pointer; background: var(--card); font: inherit; font-size: 13px; }
+  .tab:disabled { cursor: default; opacity: .6; }
+  [hidden] { display: none !important; }
+  select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+  textarea { min-height: 70px; resize: vertical; }
+  .qs { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+  .q { padding: 10px 12px; border-radius: 10px; background: var(--bg); }
+  .q.miss { outline: 2px solid var(--bad); }
+  .q .qt { font-weight: 600; margin-bottom: 8px; }
+  .q .qt b { color: var(--accent); margin-right: 6px; }
+  .scale { display: grid; grid-template-columns: repeat(11, minmax(0, 1fr)); gap: 4px; }
+  .scale button { padding: 6px 0; font-size: 13px; }
+  .scale button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 700; }
+  .ends { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+  .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .opts button { border-radius: 999px; padding: 6px 12px; }
+  .opts button.on { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); font-weight: 700; }
+  .pcard { --c: #10B981; position: relative; max-width: 380px; margin: 4px auto 0; border: 5px solid var(--c); border-radius: 30px; overflow: hidden;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--c) 14%, #fff) 0%, #fff 60%); color: #1f2937; padding: 14px 18px 18px; }
+  .pcard .top { display: flex; justify-content: space-between; align-items: center; }
+  .pcard .brand { padding: 3px 10px; border-radius: 999px; background: #fff; border: 2px solid color-mix(in srgb, var(--c) 40%, #fff); font-size: 12px; font-weight: 800; color: #374151; }
+  .pcard .no { padding: 3px 10px; border-radius: 999px; background: var(--c); color: #fff; font-size: 13px; font-weight: 900; transform: rotate(4deg); }
+  .pcard .ch { display: flex; justify-content: center; margin-top: 6px; }
+  .pcard .nm { text-align: center; font-size: 28px; font-weight: 900; line-height: 1.1; }
+  .pcard .tt { display: table; margin: 6px auto 0; padding: 4px 14px; border-radius: 999px; background: var(--c); color: #fff; font-size: 15px; font-weight: 800; }
+  .pcard .say { position: relative; margin: 12px 18px 0; padding: 8px 12px; border-radius: 16px; background: #fff; border: 2px solid var(--c); text-align: center; font-weight: 800; color: #374151; }
+  .pcard .chips { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .pcard .chip { padding: 4px 10px; border-radius: 12px; background: #fff; border: 2px solid color-mix(in srgb, var(--c) 30%, #fff); font-weight: 800; font-size: 14px; }
+  .pcard .lk { margin-top: 12px; display: grid; grid-template-columns: 52px 1fr; row-gap: 4px; font-size: 14px; font-weight: 600; }
+  .pcard .lk b { color: #6b7280; font-size: 12.5px; }
+  .pcard .tmi { margin-top: 12px; padding: 7px 10px; border-radius: 10px; background: #FEF9C3; color: #713F12; font-size: 13px; font-weight: 700; }
+  .pcard .tmi b { padding: 1px 6px; border-radius: 6px; background: #FACC15; margin-right: 6px; }
+  .src { display: block; text-align: center; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -72,14 +105,14 @@
   <span class="health" id="health">서버 확인 중…</span>
 </header>
 <nav class="tabs">
-  <span class="tab on">1 여행·참여</span>
-  <span class="tab">2 성향·페르소나 (다음 묶음)</span>
-  <span class="tab">3 회의 (다음 묶음)</span>
-  <span class="tab">4 일정·투표 (다음 묶음)</span>
+  <button class="tab on" data-tab="tab1">1 여행·참여</button>
+  <button class="tab" data-tab="tab2">2 성향·페르소나</button>
+  <button class="tab" disabled>3 회의 (다음 묶음)</button>
+  <button class="tab" disabled>4 일정·투표 (다음 묶음)</button>
 </nav>
 
 <main>
-  <div class="col">
+  <div class="col" id="tab1">
     <section class="card">
       <h2>자동 시나리오</h2>
       <p class="desc">방장 생성 → 3명 참여(방장 포함 4명) → 5번째 참여 거절 → 상세 조회 → 오류 응답 확인을 차례로 실행함</p>
@@ -128,7 +161,45 @@
     </section>
   </div>
 
+  <div class="col" id="tab2" hidden>
+    <section class="card">
+      <h2>2번 묶음 시나리오</h2>
+      <p class="desc">시연 여행(가상 3명) 생성 → 제출 전 404 → 토큰 없음 401 → 미응답 400 → 서연형 응답 제출 → 카드 확인 → 4명 준비 완료</p>
+      <button class="primary" id="runScenario2">2번 묶음 시나리오 실행</button>
+      <ol class="steps" id="steps2"></ol>
+      <div class="summary" id="summary2"></div>
+    </section>
+
+    <section class="card">
+      <h2>성향 설문 (15문항)</h2>
+      <p class="desc">GET /persona/questions로 받은 문항 · 응답한 사람의 토큰으로 POST /me/persona</p>
+      <div class="row">
+        <select id="who" class="grow"></select>
+        <button id="demoTrip">시연 여행 만들기</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <span class="muted">예시 응답:</span>
+        <button data-preset="seoyeon">서연형</button>
+        <button data-preset="minsu">민수형</button>
+        <button data-preset="random">무작위</button>
+        <button data-preset="clear">비우기</button>
+      </div>
+      <div class="qs" id="qs"><div class="empty">문항을 불러오는 중…</div></div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="submitPersona">제출하고 카드 만들기</button>
+        <button id="loadPersona">내 페르소나 다시 불러오기</button>
+        <span class="muted grow" id="submitNote"></span>
+      </div>
+    </section>
+
+  </div>
+
   <div class="col">
+    <section class="card" id="cardSection" hidden>
+      <h2>캐릭터 카드</h2>
+      <p class="desc">서버 응답으로 그린 카드 · 아래 배지로 AI가 썼는지(AI 작성), 규칙으로 대신했는지(규칙 카드) 확인</p>
+      <div id="cardBox" class="empty">제출하면 여기에 카드가 표시됨</div>
+    </section>
     <section class="card">
       <div class="row">
         <div class="grow"><h2>요청·응답 기록</h2><p class="desc">최근 요청이 위에 표시됨. 줄을 누르면 본문을 펼침</p></div>
@@ -247,7 +318,7 @@ function renderDetail(status, data, caption) {
       el('div', { class: 'row' }, el('span', { class: 'dot', style: 'background:' + m.color }), el('strong', {}, m.nickname),
         m.isHost ? el('span', { class: 'badge b-ok' }, '방장') : null),
       el('div', { class: 'muted' }, m.id),
-      el('div', { class: 'muted' }, m.personaReady ? '페르소나 완료 · ' + m.mbti : '페르소나 준비 전 (2번 묶음)')))),
+      el('div', { class: 'muted' }, m.personaReady ? '🃏 ' + m.title : '페르소나 준비 전')))),
     el('p', { class: 'muted' }, '회의 조건: ' + (data.conditions ? JSON.stringify(data.conditions) : '없음 (3번 묶음에서 입력)')));
 }
 
@@ -352,9 +423,247 @@ async function runScenario() {
 }
 $('runScenario').onclick = runScenario;
 
+
+// ---------- 탭 ----------
+function showTab(id) {
+  document.querySelectorAll('.tab[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === id));
+  $('tab1').hidden = id !== 'tab1';
+  $('tab2').hidden = id !== 'tab2';
+  $('cardSection').hidden = id !== 'tab2';
+  try { localStorage.setItem('journey-dev-tab', id); } catch { /* 저장 불가 환경은 무시 */ }
+  if (id === 'tab2') { renderWho(); if (!questions) loadQuestions(); }
+}
+document.querySelectorAll('.tab[data-tab]').forEach((b) => { b.onclick = () => showTab(b.dataset.tab); });
+
+// ---------- 2번 묶음: 성향 설문과 캐릭터 카드 ----------
+let questions = null;
+let ans = { scale: {}, likes: new Set(), dislikes: new Set(), text: '' };
+const PRESETS = {
+  seoyeon: { scale: [5, 2, 2, 5, 2, 5, 5, 9, 8, 6, 7, 5], likes: ['like_spa', 'like_sea', 'like_cafe'], dislikes: ['dislike_walk', 'dislike_crowd'],
+    text: '해산물은 꼭 먹고, 밤 9시 전엔 숙소에 들어가고 싶어요' },
+  minsu: { scale: [9, 8, 6, 3, 8, 7, 2, 3, 5, 8, 3, 4], likes: ['like_food', 'like_history', 'like_night'], dislikes: ['dislike_longmove'],
+    text: '회는 꼭 먹고 싶고, 하루 2만 보 넘게 걷는 건 싫어요' },
+};
+const qById = (id) => questions.find((q) => q.id === id);
+
+async function loadQuestions() {
+  const { status, data } = await api('GET', '/persona/questions');
+  if (status === 200) { questions = data.questions; renderSurvey(); } else { $('qs').textContent = '문항을 불러오지 못함'; }
+}
+
+function renderWho() {
+  const sel = $('who');
+  const prev = sel.value;
+  sel.textContent = '';
+  if (!people.length) sel.append(el('option', { value: '' }, '구성원 없음 — 시연 여행을 만들거나 1번 탭에서 참여'));
+  people.forEach((p, i) => sel.append(el('option', { value: String(i) }, p.nickname + ' · ' + p.tripTitle + ' (' + p.inviteCode + ')')));
+  if (prev !== '' && Number(prev) < people.length) sel.value = prev; else if (people.length) sel.value = String(people.length - 1);
+}
+
+function renderSurvey(missing) {
+  if (!questions) return;
+  const box = $('qs');
+  box.textContent = '';
+  for (const q of questions) {
+    const wrap = el('div', { class: 'q' + (missing && missing.includes(q.id) ? ' miss' : '') });
+    wrap.append(el('div', { class: 'qt' }, el('b', {}, q.order + '.'), q.text));
+    if (q.type === 'scale') {
+      const row = el('div', { class: 'scale' });
+      for (let v = q.min; v <= q.max; v++) {
+        row.append(el('button', { class: ans.scale[q.id] === v ? 'on' : '', onclick: () => { ans.scale[q.id] = v; renderSurvey(); } }, String(v)));
+      }
+      wrap.append(row, el('div', { class: 'ends' }, el('span', {}, q.minLabel),
+        el('span', {}, ans.scale[q.id] === undefined ? '미응답' : '선택: ' + ans.scale[q.id]), el('span', {}, q.maxLabel)));
+    } else if (q.type === 'multi') {
+      const set = q.id === 'q13' ? ans.likes : ans.dislikes;
+      const row = el('div', { class: 'opts' });
+      for (const o of q.options) {
+        row.append(el('button', { class: set.has(o.id) ? 'on' : '', onclick: () => { if (set.has(o.id)) set.delete(o.id); else set.add(o.id); renderSurvey(); } }, o.emoji + ' ' + o.text));
+      }
+      wrap.append(row, el('div', { class: 'ends' }, el('span', {}, q.minSelect + '–' + q.maxSelect + '개 선택'), el('span', {}, set.size + '개 선택됨')));
+    } else {
+      const counter = el('span', {}, ans.text.length + ' / ' + q.maxLength + '자');
+      const ta = el('textarea', { placeholder: q.placeholder, maxlength: String(q.maxLength) });
+      ta.value = ans.text;
+      ta.addEventListener('input', () => { ans.text = ta.value; counter.textContent = ta.value.length + ' / ' + q.maxLength + '자'; });
+      wrap.append(ta, el('div', { class: 'ends' }, el('span', {}, '선택 문항 (비워도 됨)'), counter));
+    }
+    box.append(wrap);
+  }
+}
+
+function presetState(p) {
+  const scale = {};
+  p.scale.forEach((v, i) => { scale['q' + (i + 1)] = v; });
+  return { scale, likes: new Set(p.likes), dislikes: new Set(p.dislikes), text: p.text };
+}
+function applyPreset(name) {
+  if (!questions) return;
+  if (name === 'clear') ans = { scale: {}, likes: new Set(), dislikes: new Set(), text: '' };
+  else if (name === 'random') {
+    const scale = {};
+    for (let i = 1; i <= 12; i++) scale['q' + i] = Math.floor(Math.random() * 11);
+    const pick = (id, n) => qById(id).options.map((o) => o.id).sort(() => Math.random() - 0.5).slice(0, n);
+    ans = { scale, likes: new Set(pick('q13', 1 + Math.floor(Math.random() * 3))), dislikes: new Set(pick('q14', Math.floor(Math.random() * 3))), text: '' };
+  } else ans = presetState(PRESETS[name]);
+  renderSurvey();
+}
+document.querySelectorAll('[data-preset]').forEach((b) => { b.onclick = () => applyPreset(b.dataset.preset); });
+
+function buildAnswers(state) {
+  const out = [];
+  for (let i = 1; i <= 12; i++) if (state.scale['q' + i] !== undefined) out.push({ questionId: 'q' + i, value: state.scale['q' + i] });
+  out.push({ questionId: 'q13', optionIds: [...state.likes] });
+  out.push({ questionId: 'q14', optionIds: [...state.dislikes] });
+  if (state.text.trim()) out.push({ questionId: 'q15', text: state.text });
+  return out;
+}
+
+function characterSvg(c) {
+  return '<svg viewBox="-22 -50 44 54" width="140" height="172">' +
+    '<ellipse cx="0" cy="0.6" rx="9.5" ry="2.8" fill="rgba(0,0,0,0.15)"/>' +
+    '<rect x="-5.6" y="-8.6" width="4.4" height="8" rx="2.2" fill="#34405E"/><rect x="1.2" y="-8.6" width="4.4" height="8" rx="2.2" fill="#34405E"/>' +
+    '<ellipse cx="-3.6" cy="-0.7" rx="3.3" ry="1.7" fill="#1E2440"/><ellipse cx="3.6" cy="-0.7" rx="3.3" ry="1.7" fill="#1E2440"/>' +
+    '<ellipse cx="-9" cy="-14" rx="2.8" ry="4.6" fill="' + c + '" transform="rotate(18 -9 -14)"/><ellipse cx="9" cy="-14" rx="2.8" ry="4.6" fill="' + c + '" transform="rotate(-18 9 -14)"/>' +
+    '<rect x="-8.5" y="-21.5" width="17" height="15" rx="7" fill="' + c + '"/>' +
+    '<circle cx="-10.2" cy="-10.4" r="2.2" fill="#FFD7B5"/><circle cx="10.2" cy="-10.4" r="2.2" fill="#FFD7B5"/>' +
+    '<circle cx="-11.3" cy="-29.5" r="2.4" fill="#F7C29C"/><circle cx="11.3" cy="-29.5" r="2.4" fill="#F7C29C"/>' +
+    '<circle cx="0" cy="-30" r="11.6" fill="#FBD3B6"/>' +
+    '<path d="M-11.6 -30 Q-12.2 -42.6 0 -42.6 Q12.2 -42.6 11.6 -30 Q9.2 -36.6 2 -36 Q-3 -38.2 -7 -34.6 Q-9.6 -33 -11.6 -30 Z" fill="#3B2A20"/>' +
+    '<ellipse cx="-4.2" cy="-28.4" rx="1.55" ry="2.05" fill="#2B2F3A"/><ellipse cx="4.2" cy="-28.4" rx="1.55" ry="2.05" fill="#2B2F3A"/>' +
+    '<circle cx="-3.7" cy="-29.2" r="0.62" fill="#fff"/><circle cx="4.7" cy="-29.2" r="0.62" fill="#fff"/>' +
+    '<ellipse cx="-7.1" cy="-24.8" rx="2.1" ry="1.25" fill="#FF8FA3" opacity="0.6"/><ellipse cx="7.1" cy="-24.8" rx="2.1" ry="1.25" fill="#FF8FA3" opacity="0.6"/>' +
+    '<path d="M-2.8 -24.6 Q0 -21 2.8 -24.6 Z" stroke="#9A4B3C" stroke-width="1.05" fill="#B85A48"/></svg>';
+}
+
+function renderCard(p) {
+  const box = $('cardBox');
+  box.className = '';
+  box.textContent = '';
+  const color = /^#[0-9A-Fa-f]{6}$/.test(p.color) ? p.color : '#10B981';
+  const ch = el('div', { class: 'ch' });
+  ch.innerHTML = characterSvg(color);
+  const card = el('div', { class: 'pcard', style: '--c:' + color },
+    el('div', { class: 'top' }, el('span', { class: 'brand' }, 'J-ourney 여행 캐릭터'), el('span', { class: 'no' }, 'NO. ' + p.no)),
+    ch,
+    el('div', { class: 'nm' }, p.nickname),
+    el('div', { class: 'tt' }, p.title),
+    el('div', { class: 'say' }, '"' + p.catchphrase + '"'),
+    el('div', { class: 'chips' }, p.chips.map((c) => el('span', { class: 'chip' }, (c.emoji ? c.emoji + ' ' : '') + c.label))),
+    el('div', { class: 'lk' },
+      el('b', {}, '좋아요'), el('span', {}, p.likes.map((x) => x.emoji + ' ' + x.text).join(' · ')),
+      el('b', {}, '싫어요'), el('span', {}, p.dislikes.length ? p.dislikes.map((x) => x.emoji + ' ' + x.text).join(' · ') : '없음'),
+      p.mustKeep.length ? [el('b', {}, '📌 꼭'), el('span', {}, p.mustKeep.map((m) => m.label).join(' · '))] : null),
+    el('div', { class: 'tmi' }, el('b', {}, '???'), p.tmi));
+  box.append(...[card,
+    el('span', { class: 'src' }, el('span', { class: 'badge ' + (p.source === 'llm' ? 'b-ok' : 'b-warn') }, p.source === 'llm' ? 'AI 작성 (LLM)' : '규칙 카드 (AI 미사용)')),
+    p.wishes.length ? el('p', { class: 'muted', style: 'text-align:center' }, '기타 바람: ' + p.wishes.join(' · ')) : null,
+    el('p', { class: 'muted', style: 'text-align:center' }, '성향 점수 · ' + p.traits.map((t) => t.name + ' ' + t.score + (t.level === 'neutral' ? '' : ' ' + t.label)).join(' · '))].filter(Boolean));
+}
+
+const selected = () => people[Number($('who').value)];
+$('submitPersona').onclick = async () => {
+  const p = selected();
+  if (!p || !questions) { $('submitNote').textContent = '먼저 구성원을 고르거나 시연 여행을 만들어 주세요'; return; }
+  renderSurvey(questions.filter((q) => q.type === 'scale' && ans.scale[q.id] === undefined).map((q) => q.id));
+  $('submitNote').textContent = '카드를 만드는 중… (AI는 몇 초 걸림)';
+  const t0 = performance.now();
+  const { status, data } = await api('POST', '/me/persona', { body: { answers: buildAnswers(ans) }, token: p.token });
+  const sec = ((performance.now() - t0) / 1000).toFixed(1);
+  $('submitNote').textContent = status === 201 ? '완료 (' + sec + '초)' : '실패: ' + (data && data.error ? data.error.code + ' — ' + data.error.message : status);
+  if (data && data.persona) renderCard(data.persona);
+};
+$('loadPersona').onclick = async () => {
+  const p = selected();
+  if (!p) return;
+  const { status, data } = await api('GET', '/me/persona', { token: p.token });
+  if (data && data.persona) renderCard(data.persona);
+  else { $('cardBox').className = 'empty'; $('cardBox').textContent = status + ' ' + (data && data.error ? data.error.code + ' — ' + data.error.message : ''); }
+};
+$('demoTrip').onclick = async () => {
+  const { data } = await api('POST', '/trips', { body: { title: '부산 1박 2일 (시연)', nickname: '민수', demoMode: true } });
+  if (data && data.member) { remember(data); renderWho(); }
+};
+
+// 2번 묶음 자동 시나리오
+async function runScenario2() {
+  const btn = $('runScenario2');
+  btn.disabled = true;
+  $('steps2').textContent = '';
+  $('summary2').textContent = '';
+  let passed = 0, total = 0, trip = null, token = null, title = null;
+  async function step(label, expected, run) {
+    total++;
+    const li = el('li', {}, el('span', {}, '⏳'), el('div', {}, el('div', {}, label), el('div', { class: 'sub' }, '기대: ' + expected)));
+    $('steps2').append(li);
+    let ok = false, actual = '';
+    try { [ok, actual] = await run(); } catch (e) { actual = String(e); }
+    if (ok) passed++;
+    li.firstChild.textContent = ok ? '✅' : '❌';
+    li.lastChild.append(el('div', { class: 'sub' }, '결과: ' + actual));
+  }
+  const said = (r) => r.status + (r.data && r.data.error ? ' ' + r.data.error.code : '');
+  const answers = buildAnswers(presetState(PRESETS.seoyeon));
+
+  await step('성향 문항 확인', '200 · 15문항', async () => {
+    const r = await api('GET', '/persona/questions');
+    if (r.status === 200 && !questions) { questions = r.data.questions; renderSurvey(); }
+    return [r.status === 200 && r.data.questions.length === 15, said(r) + ' · ' + (r.data.questions ? r.data.questions.length : 0) + '문항'];
+  });
+  await step('시연 여행 생성 (가상 3명 자동 참여)', '201', async () => {
+    const r = await api('POST', '/trips', { body: { title: '부산 1박 2일 (시연)', nickname: '민수', demoMode: true } });
+    if (r.data && r.data.trip) { trip = r.data.trip; token = r.data.token; remember(r.data); renderWho(); }
+    return [r.status === 201, said(r)];
+  });
+  if (!trip) { btn.disabled = false; $('summary2').textContent = '여행 생성 실패로 중단함'; return; }
+  await step('여행 상세: 가상 3명은 페르소나 완료', '200 · 4명 중 3명 완료', async () => {
+    const r = await api('GET', '/trips/' + trip.id, { token });
+    const ready = r.data.members ? r.data.members.filter((m) => m.personaReady).length : 0;
+    return [r.status === 200 && r.data.members.length === 4 && ready === 3, said(r) + ' · ' + ready + '명 완료'];
+  });
+  await step('제출 전 내 페르소나 조회', '404 NOT_FOUND', async () => {
+    const r = await api('GET', '/me/persona', { token });
+    return [r.status === 404, said(r)];
+  });
+  await step('토큰 없이 제출', '401 UNAUTHORIZED', async () => {
+    const r = await api('POST', '/me/persona', { body: { answers } });
+    return [r.status === 401, said(r)];
+  });
+  await step('3번 문항을 비우고 제출', '400 VALIDATION_ERROR (q3)', async () => {
+    const r = await api('POST', '/me/persona', { body: { answers: answers.filter((a) => a.questionId !== 'q3') }, token });
+    return [r.status === 400 && r.data.error.message.includes('q3'), said(r)];
+  });
+  await step('서연형 응답 제출 → 캐릭터 카드', '201 · 칩 느긋형·한적형·늦잠형', async () => {
+    const r = await api('POST', '/me/persona', { body: { answers }, token });
+    const p = r.data && r.data.persona;
+    if (p) { renderCard(p); title = p.title; }
+    const chips = p ? p.chips.map((c) => c.label).join(',') : '-';
+    const extra = p ? ' · ' + (p.source === 'llm' ? 'AI 작성' : '규칙 카드') + ' · 유형명 ' + p.title + ' · 꼭 지킬 것 ' + (p.mustKeep.map((m) => m.label).join(', ') || '없음') : '';
+    return [r.status === 201 && chips === '느긋형,한적형,늦잠형', said(r) + ' · 칩 ' + chips + extra];
+  });
+  await step('내 페르소나 다시 조회', '200 · 같은 유형명', async () => {
+    const r = await api('GET', '/me/persona', { token });
+    return [r.status === 200 && r.data.persona.title === title, said(r) + ' · ' + (r.data.persona ? r.data.persona.title : '-')];
+  });
+  await step('여행 상세: 4명 모두 페르소나 완료', '200 · 4/4', async () => {
+    const r = await api('GET', '/trips/' + trip.id, { token });
+    const ready = r.data.members ? r.data.members.filter((m) => m.personaReady).length : 0;
+    renderDetail(r.status, r.data, '시나리오 2: 방장 토큰으로 조회');
+    return [r.status === 200 && ready === 4, said(r) + ' · ' + ready + '/4'];
+  });
+  $('summary2').textContent = passed === total ? `전체 ${total}단계 통과` : `${total}단계 중 ${passed}단계 통과 — ❌ 단계를 확인 바람`;
+  btn.disabled = false;
+}
+$('runScenario2').onclick = runScenario2;
+
 (async () => {
   renderPeople();
-  if (location.hash === '#run') runScenario(); // 주소 끝에 #run을 붙이면 열자마자 시나리오 실행
+  let tab = 'tab1';
+  try { tab = localStorage.getItem('journey-dev-tab') || 'tab1'; } catch { /* 저장 불가 환경은 무시 */ }
+  if (location.hash === '#run2') tab = 'tab2';
+  showTab(tab);
+  if (location.hash === '#run') runScenario(); // 주소 끝에 #run을 붙이면 열자마자 1번 시나리오 실행
+  if (location.hash === '#run2') runScenario2(); // #run2는 2번 시나리오
   try {
     const res = await fetch('/api/v1/health');
     const data = await res.json();

@@ -2,28 +2,13 @@ import { asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { MAX_MEMBERS, members, trips } from '../db/schema.js';
-import { type AuthEnv, type Member, requireMember } from '../lib/auth.js';
+import { MAX_MEMBERS, members, personas, trips } from '../db/schema.js';
+import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken, newId, newInviteCode, newToken } from '../lib/ids.js';
 import { parseBody } from '../lib/validate.js';
-
-/** 구성원 색상: 참여 순서대로 배정 (명세서 3장) */
-export const MEMBER_COLORS = ['#F97316', '#EC4899', '#0EA5E9', '#10B981'] as const;
-
-type Trip = typeof trips.$inferSelect;
-
-const tripView = (t: Trip) => ({ id: t.id, title: t.title, inviteCode: t.inviteCode, status: t.status });
-
-// 페르소나는 2번 묶음에서 연결하므로 지금은 항상 '준비 전'으로 응답함
-const memberView = (m: Member) => ({
-  id: m.id,
-  nickname: m.nickname,
-  color: MEMBER_COLORS[m.seat - 1],
-  isHost: m.isHost,
-  personaReady: false,
-  mbti: null,
-});
+import { DEMO_SEEDS, seedPersona } from '../persona/seeds.js';
+import { memberView, tripView } from './views.js';
 
 /** 입력 길이 상한 (명세서 4.2) */
 const TITLE_MAX = 40;
@@ -33,7 +18,7 @@ const nickname = z.string().trim().min(1, '닉네임을 입력해야 함').max(N
 const createTripBody = z.object({
   title: z.string().trim().min(1, '여행 이름을 입력해야 함').max(TITLE_MAX, `여행 이름은 ${TITLE_MAX}자 이하여야 함`),
   nickname,
-  demoMode: z.boolean().default(false), // 시드 구성원 자동 참여는 페르소나가 생기는 2번 묶음에서 연결
+  demoMode: z.boolean().default(false),
 });
 const joinBody = z.object({ nickname });
 
@@ -42,8 +27,16 @@ export function tripRoutes(db: Db) {
   const r = new Hono<AuthEnv>();
   const auth = requireMember(db);
 
-  const listMembers = (tripId: string) =>
-    db.select().from(members).where(eq(members.tripId, tripId)).orderBy(asc(members.seat));
+  // 구성원과 페르소나 유형명(없으면 null)을 참여 순서대로 가져옴
+  const listMembers = async (tripId: string) =>
+    (
+      await db
+        .select({ member: members, title: personas.title })
+        .from(members)
+        .leftJoin(personas, eq(personas.memberId, members.id))
+        .where(eq(members.tripId, tripId))
+        .orderBy(asc(members.seat))
+    ).map((row) => memberView(row.member, row.title));
 
   async function unusedInviteCode() {
     for (let i = 0; i < 5; i++) {
@@ -68,9 +61,17 @@ export function tripRoutes(db: Db) {
         .insert(members)
         .values({ id: newId('mem'), tripId: trip.id, nickname: body.nickname, seat: 1, isHost: true, tokenHash: hashToken(token) })
         .returning();
+      // 시연 모드: 페르소나를 마친 가상 구성원 3명이 자동 참여함 (토큰은 만들기만 하고 버림)
+      if (body.demoMode) {
+        for (const [i, seed] of DEMO_SEEDS.entries()) {
+          const id = newId('mem');
+          await tx.insert(members).values({ id, tripId: trip.id, nickname: seed.nickname, seat: i + 2, tokenHash: hashToken(newToken()) });
+          await tx.insert(personas).values(seedPersona(id, seed));
+        }
+      }
       return { trip, member };
     });
-    return c.json({ trip: tripView(trip), member: memberView(member), token }, 201);
+    return c.json({ trip: tripView(trip), member: memberView(member, null), token }, 201);
   });
 
   // 초대 정보·준비 현황 (인증 불필요)
@@ -81,7 +82,7 @@ export function tripRoutes(db: Db) {
       .where(eq(trips.inviteCode, c.req.param('inviteCode').toUpperCase()))
       .limit(1);
     if (!trip) throw new ApiError('NOT_FOUND', '초대 코드를 찾을 수 없음');
-    return c.json({ trip: tripView(trip), members: (await listMembers(trip.id)).map(memberView) });
+    return c.json({ trip: tripView(trip), members: await listMembers(trip.id) });
   });
 
   // 여행 참여 (인증 불필요): 방장 포함 최대 4명
@@ -106,7 +107,7 @@ export function tripRoutes(db: Db) {
         .returning();
       return { trip, member };
     });
-    return c.json({ trip: tripView(trip), member: memberView(member), token }, 201);
+    return c.json({ trip: tripView(trip), member: memberView(member, null), token }, 201);
   });
 
   // 여행 상세: 구성원·조건·상태
@@ -115,7 +116,7 @@ export function tripRoutes(db: Db) {
     if (!trip) throw new ApiError('NOT_FOUND', '여행을 찾을 수 없음');
     if (trip.id !== c.get('member').tripId) throw new ApiError('FORBIDDEN', '참여한 여행만 조회할 수 있음');
     // 회의 조건은 3번 묶음(PUT /trips/{tripId}/conditions)에서 채움
-    return c.json({ trip: tripView(trip), members: (await listMembers(trip.id)).map(memberView), conditions: null });
+    return c.json({ trip: tripView(trip), members: await listMembers(trip.id), conditions: null });
   });
 
   return r;
