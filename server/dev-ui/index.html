@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>J-ourney 백엔드 시험</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #e3e6ec;
+    --accent: #2563eb; --accent-text: #ffffff; --ok: #15803d; --ok-bg: #e7f6ec;
+    --warn: #b45309; --warn-bg: #fdf3e2; --bad: #b91c1c; --bad-bg: #fde8e8; --code-bg: #f1f3f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #98a0b3; --line: #2c3340;
+      --accent: #3b82f6; --ok: #4ade80; --ok-bg: #16301f; --warn: #fbbf24; --warn-bg: #352a12;
+      --bad: #f87171; --bad-bg: #3a1a1a; --code-bg: #141920;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 14px 20px;
+    border-bottom: 1px solid var(--line); background: var(--card); }
+  header h1 { margin: 0; font-size: 17px; }
+  .health { font-size: 13px; color: var(--muted); }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 20px 0; }
+  .tab { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+  .tab.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 16px 20px 40px; }
+  @media (max-width: 960px) { main { grid-template-columns: minmax(0, 1fr); padding: 12px 16px 32px; } }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
+  .card h2 { margin: 0 0 4px; font-size: 15px; }
+  .card .desc { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  input { flex: 1 1 140px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--text); font: inherit; }
+  button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+    color: var(--text); font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .steps { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .steps li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 6px; padding: 8px 10px;
+    border-radius: 8px; background: var(--bg); }
+  .steps .sub { color: var(--muted); font-size: 12px; }
+  .summary { margin-top: 10px; font-weight: 600; }
+  .people { display: flex; flex-direction: column; gap: 8px; }
+  .person { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--bg); }
+  .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .b-ok { background: var(--ok-bg); color: var(--ok); }
+  .b-warn { background: var(--warn-bg); color: var(--warn); }
+  .b-bad { background: var(--bad-bg); color: var(--bad); }
+  .b-plain { background: var(--code-bg); color: var(--muted); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .grow { flex: 1 1 auto; min-width: 0; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+  pre { margin: 6px 0 0; padding: 10px; background: var(--code-bg); border-radius: 8px; overflow: auto; max-height: 320px; }
+  .members { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 10px; }
+  .member { border: 2px solid var(--line); border-radius: 10px; padding: 10px; }
+  .log { display: flex; flex-direction: column; gap: 8px; }
+  .log details { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .log summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+  .log summary code { word-break: break-all; }
+  .empty { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>J-ourney 백엔드 시험 화면</h1>
+  <span class="health" id="health">서버 확인 중…</span>
+</header>
+<nav class="tabs">
+  <span class="tab on">1 여행·참여</span>
+  <span class="tab">2 성향·페르소나 (다음 묶음)</span>
+  <span class="tab">3 회의 (다음 묶음)</span>
+  <span class="tab">4 일정·투표 (다음 묶음)</span>
+</nav>
+
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>자동 시나리오</h2>
+      <p class="desc">방장 생성 → 3명 참여(방장 포함 4명) → 5번째 참여 거절 → 상세 조회 → 오류 응답 확인을 차례로 실행함</p>
+      <button class="primary" id="runScenario">1번 묶음 시나리오 실행</button>
+      <ol class="steps" id="steps"></ol>
+      <div class="summary" id="summary"></div>
+    </section>
+
+    <section class="card">
+      <h2>여행 만들기 (방장)</h2>
+      <p class="desc">POST /trips — 만든 사람이 방장이 되고 초대 코드와 토큰을 받음</p>
+      <div class="row">
+        <input id="title" value="부산 1박 2일" placeholder="여행 이름">
+        <input id="hostName" value="민수" placeholder="방장 닉네임">
+        <button class="primary" id="createBtn">여행 만들기</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>초대 코드로 참여</h2>
+      <p class="desc">GET /invites/{code} · POST /invites/{code}/join — 방장 포함 최대 4명</p>
+      <div class="row">
+        <input id="code" placeholder="초대 코드 (예: BSN482)">
+        <input id="joinName" value="지은" placeholder="닉네임">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="inviteBtn">초대 정보 보기</button>
+        <button class="primary" id="joinBtn">참여하기</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>이 브라우저의 구성원</h2>
+      <p class="desc">한 화면에서 여러 사람을 흉내 냄. 사람마다 받은 토큰으로 GET /trips/{tripId}를 호출함</p>
+      <div class="people" id="people"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="noTokenBtn">토큰 없이 상세 조회 (401 확인)</button>
+        <button id="resetBtn">구성원 목록 비우기</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>여행 상세</h2>
+      <p class="desc">GET /trips/{tripId}의 결과 (구성원·상태·회의 조건)</p>
+      <div id="detail" class="empty">위 구성원 목록에서 '상세 보기'를 누르면 표시됨</div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card">
+      <div class="row">
+        <div class="grow"><h2>요청·응답 기록</h2><p class="desc">최근 요청이 위에 표시됨. 줄을 누르면 본문을 펼침</p></div>
+        <button id="clearLog">기록 지우기</button>
+      </div>
+      <div class="log" id="log"><div class="empty">아직 요청이 없음</div></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const NEXT_NAMES = ['지은', '현우', '서연', '다섯째'];
+let people = load();
+
+function load() {
+  try { return JSON.parse(localStorage.getItem('journey-dev-people') || '[]'); } catch { return []; }
+}
+function save() {
+  try { localStorage.setItem('journey-dev-people', JSON.stringify(people)); } catch { /* 저장 불가 환경은 무시 */ }
+}
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'style') node.style.cssText = v; else if (k.startsWith('on')) node.addEventListener(k.slice(2), v); else node.setAttribute(k, v);
+  }
+  for (const child of children.flat()) if (child != null) node.append(child);
+  return node;
+}
+const mask = (token) => (token ? token.slice(0, 8) + '…' : '');
+const badgeClass = (status) => (status < 300 ? 'b-ok' : status < 500 ? 'b-warn' : 'b-bad');
+const time = () => new Date().toLocaleTimeString('ko-KR', { hour12: false });
+
+// 서버 API 호출 + 기록 남기기
+async function api(method, path, { body, token } = {}) {
+  const headers = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (token) headers.Authorization = 'Bearer ' + token;
+  let status = 0, data = null;
+  try {
+    const res = await fetch('/api/v1' + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    status = res.status;
+    data = await res.json().catch(() => null);
+  } catch (e) {
+    data = { error: { code: 'NETWORK', message: String(e) } };
+  }
+  addLog({ method, path, status, body, token, data });
+  return { status, data };
+}
+
+function addLog({ method, path, status, body, token, data }) {
+  const log = $('log');
+  if (log.querySelector('.empty')) log.textContent = '';
+  const code = data && data.error ? data.error.code : '';
+  const shown = data && data.token ? { ...data, token: mask(data.token) + ' (화면에서는 일부만 표시)' } : data;
+  const item = el('details', {},
+    el('summary', {},
+      el('span', { class: 'muted' }, time()),
+      el('span', { class: 'badge ' + badgeClass(status) }, String(status || '연결 실패')),
+      el('code', {}, method + ' /api/v1' + path),
+      code ? el('span', { class: 'badge b-plain' }, code) : null),
+    token ? el('div', { class: 'muted' }, 'Authorization: Bearer ' + mask(token)) : null,
+    body !== undefined ? [el('div', { class: 'muted', style: 'margin-top:6px' }, '요청 본문'), el('pre', {}, JSON.stringify(body, null, 2))] : null,
+    el('div', { class: 'muted', style: 'margin-top:6px' }, '응답 본문'),
+    el('pre', {}, JSON.stringify(shown, null, 2)));
+  log.prepend(item);
+}
+
+function remember(data, tripTitle) {
+  if (!data || !data.member) return;
+  people.push({
+    memberId: data.member.id, nickname: data.member.nickname, color: data.member.color, isHost: data.member.isHost,
+    tripId: data.trip.id, tripTitle: tripTitle || data.trip.title, inviteCode: data.trip.inviteCode, token: data.token,
+  });
+  save();
+  renderPeople();
+}
+
+function renderPeople() {
+  const box = $('people');
+  box.textContent = '';
+  if (!people.length) { box.append(el('div', { class: 'empty' }, '아직 없음 — 여행을 만들거나 참여하면 추가됨')); return; }
+  for (const p of people) {
+    box.append(el('div', { class: 'person' },
+      el('span', { class: 'dot', style: 'background:' + p.color }),
+      el('strong', {}, p.nickname),
+      p.isHost ? el('span', { class: 'badge b-ok' }, '방장') : null,
+      el('span', { class: 'muted grow' }, p.tripTitle + ' · ' + p.inviteCode + ' · ' + p.memberId),
+      el('button', { onclick: () => showDetail(p) }, '상세 보기')));
+  }
+}
+
+async function showDetail(person) {
+  const { status, data } = await api('GET', '/trips/' + person.tripId, { token: person.token });
+  renderDetail(status, data, person.nickname + '의 토큰으로 조회');
+}
+
+function renderDetail(status, data, caption) {
+  const box = $('detail');
+  box.className = '';
+  box.textContent = '';
+  box.append(el('div', { class: 'muted' }, caption));
+  if (!data || !data.trip) {
+    box.append(el('p', {}, el('span', { class: 'badge ' + badgeClass(status) }, String(status)), ' ',
+      data && data.error ? data.error.code + ' — ' + data.error.message : '응답 없음'));
+    return;
+  }
+  const t = data.trip;
+  box.append(
+    el('div', { class: 'row', style: 'margin-top:6px' },
+      el('strong', { style: 'font-size:16px' }, t.title),
+      el('span', { class: 'badge b-plain' }, '상태: ' + t.status),
+      el('span', { class: 'badge b-plain' }, '초대 코드 ' + t.inviteCode),
+      el('span', { class: 'badge b-plain' }, '인원 ' + data.members.length + '명')),
+    el('div', { class: 'members' }, data.members.map((m) => el('div', { class: 'member', style: 'border-color:' + m.color },
+      el('div', { class: 'row' }, el('span', { class: 'dot', style: 'background:' + m.color }), el('strong', {}, m.nickname),
+        m.isHost ? el('span', { class: 'badge b-ok' }, '방장') : null),
+      el('div', { class: 'muted' }, m.id),
+      el('div', { class: 'muted' }, m.personaReady ? '페르소나 완료 · ' + m.mbti : '페르소나 준비 전 (2번 묶음)')))),
+    el('p', { class: 'muted' }, '회의 조건: ' + (data.conditions ? JSON.stringify(data.conditions) : '없음 (3번 묶음에서 입력)')));
+}
+
+// 수동 조작
+$('createBtn').onclick = async () => {
+  const title = $('title').value;
+  const { data } = await api('POST', '/trips', { body: { title, nickname: $('hostName').value } });
+  if (data && data.trip) { $('code').value = data.trip.inviteCode; remember(data); }
+};
+$('inviteBtn').onclick = () => api('GET', '/invites/' + encodeURIComponent($('code').value.trim()));
+$('joinBtn').onclick = async () => {
+  const { data } = await api('POST', '/invites/' + encodeURIComponent($('code').value.trim()) + '/join', { body: { nickname: $('joinName').value } });
+  if (data && data.member) {
+    remember(data);
+    const next = NEXT_NAMES[NEXT_NAMES.indexOf($('joinName').value) + 1];
+    if (next) $('joinName').value = next;
+  }
+};
+$('noTokenBtn').onclick = async () => {
+  const target = people[people.length - 1];
+  const { status, data } = await api('GET', '/trips/' + (target ? target.tripId : 'trp_none'));
+  renderDetail(status, data, '토큰 없이 조회');
+};
+$('resetBtn').onclick = () => { people = []; save(); renderPeople(); };
+$('clearLog').onclick = () => { $('log').textContent = ''; $('log').append(el('div', { class: 'empty' }, '아직 요청이 없음')); };
+
+// 자동 시나리오: 단계마다 기대 결과와 실제 결과를 비교함
+async function runScenario() {
+  const btn = $('runScenario');
+  btn.disabled = true;
+  $('steps').textContent = '';
+  $('summary').textContent = '';
+  let passed = 0, total = 0, trip = null, hostToken = null;
+
+  async function step(label, expected, run) {
+    total++;
+    const li = el('li', {}, el('span', {}, '⏳'), el('div', {}, el('div', {}, label), el('div', { class: 'sub' }, '기대: ' + expected)));
+    $('steps').append(li);
+    let ok = false, actual = '';
+    try { [ok, actual] = await run(); } catch (e) { actual = String(e); }
+    if (ok) passed++;
+    li.firstChild.textContent = ok ? '✅' : '❌';
+    li.lastChild.append(el('div', { class: 'sub' }, '결과: ' + actual));
+    return ok;
+  }
+  const said = (r) => r.status + (r.data && r.data.error ? ' ' + r.data.error.code : '');
+
+  await step('서버 연결 확인', '200', async () => {
+    const r = await api('GET', '/health');
+    return [r.status === 200, said(r)];
+  });
+  await step("방장 '민수'가 여행 생성", '201 · 주황색 · 방장', async () => {
+    const r = await api('POST', '/trips', { body: { title: '부산 1박 2일 (시나리오)', nickname: '민수' } });
+    if (r.data && r.data.trip) { trip = r.data.trip; hostToken = r.data.token; remember(r.data); $('code').value = trip.inviteCode; }
+    return [r.status === 201 && r.data.member.isHost && r.data.member.color === '#F97316', said(r) + ' · 초대 코드 ' + (trip ? trip.inviteCode : '-')];
+  });
+  if (!trip) { btn.disabled = false; $('summary').textContent = '여행 생성 실패로 중단함'; return; }
+  await step('초대 정보 확인 (인증 없이)', '200 · 구성원 1명', async () => {
+    const r = await api('GET', '/invites/' + trip.inviteCode);
+    return [r.status === 200 && r.data.members.length === 1, said(r) + ' · 구성원 ' + (r.data.members ? r.data.members.length : 0) + '명'];
+  });
+  await step("'지은'·'현우'·'서연' 참여", '201 ×3 · 분홍·파랑·초록', async () => {
+    const colors = [];
+    let ok = true;
+    for (const name of ['지은', '현우', '서연']) {
+      const r = await api('POST', '/invites/' + trip.inviteCode + '/join', { body: { nickname: name } });
+      ok = ok && r.status === 201;
+      if (r.data && r.data.member) { colors.push(r.data.member.color); remember(r.data); }
+    }
+    ok = ok && colors.join() === '#EC4899,#0EA5E9,#10B981';
+    return [ok, '색상 ' + colors.join(', ')];
+  });
+  await step("다섯 번째 사람 '다섯째' 참여 시도", '409 TRIP_FULL (방장 포함 최대 4명)', async () => {
+    const r = await api('POST', '/invites/' + trip.inviteCode + '/join', { body: { nickname: '다섯째' } });
+    return [r.status === 409 && r.data.error.code === 'TRIP_FULL', said(r)];
+  });
+  await step('방장 토큰으로 여행 상세 조회', '200 · 구성원 4명', async () => {
+    const r = await api('GET', '/trips/' + trip.id, { token: hostToken });
+    renderDetail(r.status, r.data, '시나리오: 방장 토큰으로 조회');
+    return [r.status === 200 && r.data.members.length === 4, said(r) + ' · 구성원 ' + (r.data.members ? r.data.members.length : 0) + '명'];
+  });
+  await step('토큰 없이 여행 상세 조회', '401 UNAUTHORIZED', async () => {
+    const r = await api('GET', '/trips/' + trip.id);
+    return [r.status === 401 && r.data.error.code === 'UNAUTHORIZED', said(r)];
+  });
+  await step('다른 여행의 토큰으로 조회', '403 FORBIDDEN', async () => {
+    const other = await api('POST', '/trips', { body: { title: '다른 여행', nickname: '다른방장' } });
+    const r = await api('GET', '/trips/' + trip.id, { token: other.data && other.data.token });
+    return [r.status === 403 && r.data.error.code === 'FORBIDDEN', said(r)];
+  });
+  await step('없는 초대 코드로 조회', '404 NOT_FOUND', async () => {
+    const r = await api('GET', '/invites/ZZZZZZ');
+    return [r.status === 404 && r.data.error.code === 'NOT_FOUND', said(r)];
+  });
+  await step('닉네임 없이 여행 생성', '400 VALIDATION_ERROR', async () => {
+    const r = await api('POST', '/trips', { body: { title: '빈 닉네임', nickname: '' } });
+    return [r.status === 400 && r.data.error.code === 'VALIDATION_ERROR', said(r)];
+  });
+
+  $('summary').textContent = passed === total ? `전체 ${total}단계 통과` : `${total}단계 중 ${passed}단계 통과 — ❌ 단계를 확인 바람`;
+  btn.disabled = false;
+}
+$('runScenario').onclick = runScenario;
+
+(async () => {
+  renderPeople();
+  if (location.hash === '#run') runScenario(); // 주소 끝에 #run을 붙이면 열자마자 시나리오 실행
+  try {
+    const res = await fetch('/api/v1/health');
+    const data = await res.json();
+    $('health').textContent = res.ok ? '서버 연결됨 · ' + data.time : '서버 응답 이상 (' + res.status + ')';
+  } catch {
+    $('health').textContent = '서버에 연결할 수 없음';
+  }
+})();
+</script>
+</body>
+</html>
