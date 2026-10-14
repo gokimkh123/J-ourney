@@ -3,6 +3,7 @@ import type { FetchLike } from './client.ts';
 export type MockRequest = {
   params: Record<string, string>;
   query: Record<string, string>;
+  headers: Record<string, string>;
   body: unknown;
 };
 
@@ -77,6 +78,14 @@ function parseBody(text: string | undefined): unknown {
   }
 }
 
+function lowerHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    result[key.toLowerCase()] = value;
+  }
+  return result;
+}
+
 export function createMockFetch(extraRoutes: MockRoute[] = []): FetchLike {
   const routes = [...defaultRoutes, ...extraRoutes];
 
@@ -89,7 +98,12 @@ export function createMockFetch(extraRoutes: MockRoute[] = []): FetchLike {
       if (route.method.toUpperCase() !== method) continue;
       const params = matchPath(route.path, path);
       if (params === null) continue;
-      result = route.handler({ params, query, body: parseBody(init?.body) });
+      result = route.handler({
+        params,
+        query,
+        headers: lowerHeaders(init?.headers),
+        body: parseBody(init?.body),
+      });
       break;
     }
     if (result === null) {
