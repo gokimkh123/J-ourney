@@ -10,6 +10,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://journey:${POSTGRES_PASSWORD:?server/.env에 POSTGRES_PASSWORD가 필요함}@db:5432/journey
+      DEV_UI: "true" # 백엔드 시험 화면 /dev/ 제공 (운영 VM에서는 켜지 않음)
     ports:
       - "127.0.0.1:3000:3000" # 이 PC에서만 접속, 외부 공유는 tunnel로만 함
     depends_on:

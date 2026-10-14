@@ -19,6 +19,8 @@ cid="$(docker create "$image")"
 docker cp -q "$cid:/app/dist" "$work/dist"
 docker cp -q "$cid:/app/package.json" "$work/"
 docker cp -q "$cid:/app/package-lock.json" "$work/"
+docker cp -q "$cid:/app/drizzle" "$work/drizzle"
+docker cp -q "$cid:/app/dev-ui" "$work/dev-ui"
 docker rm "$cid" > /dev/null
 docker run --rm -v "$work:/scan:ro" -v "$PWD/.gitleaks.toml:/cfg.toml:ro" \
   ghcr.io/gitleaks/gitleaks:v8.30.1 dir /scan --config /cfg.toml --redact --no-banner
