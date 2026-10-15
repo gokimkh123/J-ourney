@@ -26,6 +26,10 @@ export const config = {
     .filter(Boolean),
   /** 모델 하나당 응답 대기 시간. Claude 약 2.7초·Gemini 약 1.2초(실측)라 6초 + 예비 모델이어도 앱의 요청 제한 10초 안에 끝남 */
   llmTimeoutMs: num('LLM_TIMEOUT_MS', 6000),
+  /** LLM 1회 호출의 토큰 상한 (입력 + 출력, 사용자 지시 99,900). 넘을 수 있는 요청은 부르지 않고 규칙 카드로 대신함 */
+  llmCallTokenLimit: num('LLM_CALL_TOKEN_LIMIT', 99_900),
+  /** LLM 1회 응답(출력)의 토큰 상한. 위 상한 안에 들어가야 하며, 쓰는 모델이 모두 지원하는 값으로 둠 */
+  llmMaxOutputTokens: num('LLM_MAX_OUTPUT_TOKENS', 8_192),
   /** 하루 LLM 호출 상한 (넘으면 규칙 카드로 대신함) */
   llmDailyLimit: num('LLM_DAILY_LIMIT', 500),
   /** 구성원 1명이 AI(LLM)로 카드를 만들 수 있는 횟수 (넘으면 규칙 카드로 대신함) */

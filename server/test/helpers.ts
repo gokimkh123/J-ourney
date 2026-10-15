@@ -28,14 +28,14 @@ export async function call(app: TestApp, method: string, path: string, body?: un
   return { status: res.status, body: (await res.json()) as any };
 }
 
-/** 시험용 가짜 LLM: respond가 돌려준 값을 스키마로 검사해 돌려줌 (system: LLM에 보낸 지시문) */
-export function fakeLlm(respond: (input: any, call: number, system: string) => unknown) {
+/** 시험용 가짜 LLM: respond가 돌려준 값을 스키마로 검사해 돌려줌 (system: LLM에 보낸 지시문, schema: 응답 형식) */
+export function fakeLlm(respond: (input: any, call: number, system: string, schema: import('zod').ZodType) => unknown) {
   const fake = {
     name: 'fake',
     calls: 0,
     async generateJson<T extends import('zod').ZodType>(req: import('../src/llm/client.js').JsonRequest<T>) {
       fake.calls++;
-      return req.schema.parse(await respond(req.input, fake.calls, req.system)) as import('zod').infer<T>;
+      return req.schema.parse(await respond(req.input, fake.calls, req.system, req.schema)) as import('zod').infer<T>;
     },
   };
   return fake;

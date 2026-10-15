@@ -66,6 +66,22 @@ async function retrieve(deps: MeetingDeps, state: MeetingStateType): Promise<Par
   return { pool: result };
 }
 
+/** 회의 그래프의 노드 이름과 단계 (시험 화면의 그래프 칸에 씀) */
+export const MEETING_NODES = [
+  { id: 'prepare', step: 1, label: '준비', kind: 'code' },
+  { id: 'retrieve', step: 2, label: '후보 찾기', kind: 'code' },
+] as const;
+
+/** 실제 회의 그래프의 노드·연결 (그래프를 만들기만 하고 실행하지 않음) */
+export async function meetingGraphShape() {
+  const graph = await buildMeetingGraph({ db: null as unknown as Db, crowdClient: null }).getGraphAsync();
+  const meta = new Map<string, (typeof MEETING_NODES)[number]>(MEETING_NODES.map((n) => [n.id, n]));
+  return {
+    nodes: Object.keys(graph.nodes).map((id) => ({ id, step: meta.get(id)?.step ?? null, label: meta.get(id)?.label ?? id, kind: meta.get(id)?.kind ?? 'edge' })),
+    edges: graph.edges.map((e) => ({ from: e.source, to: e.target, conditional: !!e.conditional })),
+  };
+}
+
 /** 회의 그래프 (지금은 1–2단계: 준비 → 후보 찾기) */
 export function buildMeetingGraph(deps: MeetingDeps) {
   return new StateGraph(MeetingState)

@@ -31,6 +31,8 @@ const CATEGORIES = [
   ['VE030100', '문화관광', '공원', '시민공원'],
   ['SH060200', '쇼핑', '시장', '상설시장'],
   ['NA010100', '자연관광', '자연경관(산)', '산, 고개, 오름, 봉우리'],
+  ['AC010100', '숙박', '호텔', '호텔'],
+  ['AC060200', '숙박', '호스텔', '게스트하우스'],
 ].map(([code, name1, name2, name3]) => ({ code, name1, name2, name3 }));
 const SEEDS: Seed[] = [
   { id: 'p1', type: 12, title: '광안리해수욕장', lcls1: 'NA', lcls3: 'NA020900', district: '500', overview: '광안대교 야경이 보이는 바다', intro: { restdate: '연중무휴', usetime: '상시 개방' }, lat: 35.1532, lng: 129.119 },
@@ -52,6 +54,8 @@ const SEEDS: Seed[] = [
   { id: 'p17', type: 38, title: '온천시장', lcls1: 'SH', lcls3: 'SH060200', district: '350', overview: '동래 온천장 시장', intro: { restdateshopping: '연중무휴' } },
   { id: 'p18', type: 12, title: '장산', lcls1: 'NA', lcls3: 'NA010100', district: '350', overview: '해운대 뒷산 등산로', intro: { restdate: '연중무휴' } },
   { id: 'p19', type: 38, title: '토요휴무상가', lcls1: 'SH', lcls3: 'SH060200', district: '350', overview: '상가', intro: { restdateshopping: '매주 토요일' } },
+  { id: 'h1', type: 32, title: '광안호텔', lcls1: 'AC', lcls3: 'AC010100', district: '500', overview: '바다 앞 호텔', intro: { checkintime: '15:00' }, lat: 35.154, lng: 129.118 },
+  { id: 'h2', type: 32, title: '해운대게스트하우스', lcls1: 'AC', lcls3: 'AC060200', district: '350', overview: '게스트하우스', intro: {} },
   { id: 'x1', type: 12, title: '서울 다른 곳', lcls1: 'NA', district: '140', overview: '서울' },
 ];
 
@@ -304,12 +308,47 @@ describe('후보 찾기 (2단계, 코드)', () => {
       { code: 'EX040100', name1: '체험관광', name2: '산사체험', name3: '템플스테이' },
       { code: 'SH060300', name1: '쇼핑', name2: '시장', name3: '수산시장' },
     ]);
-    await db.insert(places).values({ contentId: 'h1', contentTypeId: 38, title: '숨긴시장', regionCode: '26', districtCode: '110', lcls1: 'SH', lcls3: 'SH060300', visible: false, listRaw: {} });
+    await db.insert(places).values({ contentId: 'hidden1', contentTypeId: 38, title: '숨긴시장', regionCode: '26', districtCode: '110', lcls1: 'SH', lcls3: 'SH060300', visible: false, listRaw: {} });
     const offered = (await ruleCategories(db)).map((c) => c.code);
     expect(offered).toContain('SH060200');
     expect(offered).toContain('EX050100');
     expect(offered).not.toContain('EX040100');
     expect(offered).not.toContain('SH060300');
+  });
+
+  it('숙소는 1박 이상일 때만 40곳과 따로 뽑고, 꼭 피할 것(분류 코드)을 지킴', async () => {
+    const { db } = await createTestApp();
+    await seedDb(db);
+    const day = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: MEMBERS, crowdClient: null, today: '2026-11-01' });
+    expect(day).toMatchObject({ nights: 0, lodgings: [], lodgingTable: '' });
+    expect(day.candidates.some((c) => c.type === 32)).toBe(false);
+
+    const twoDays = { ...CONDITIONS, endDate: '2026-11-08' };
+    const noHostel: MemberInput = { ...MEMBERS[3], mustKeep: [...MEMBERS[3].mustKeep, rule('avoid', '게스트하우스', '게스트하우스 빼기', 'category', ['AC0602'])] };
+    const r = await retrieveCandidates(db, { conditions: twoDays, destination: DEST, members: [...MEMBERS.slice(0, 3), noHostel], crowdClient: null, today: '2026-11-01' });
+    expect(r.nights).toBe(1);
+    expect(r.lodgings.map((c) => c.name)).toEqual(['광안호텔']);
+    expect(r.candidates.some((c) => c.type === 32)).toBe(false); // 40곳에는 넣지 않음
+    expect(r.lodgingTable.split('\n')[1]).toContain('광안호텔|호텔');
+    expect(r.excluded.find((e) => e.reason === '누군가 꼭 피할 것에 걸림')?.count).toBe(4); // 시장 3곳 + 게스트하우스
+  });
+
+  it('40곳이 모두 누군가의 몫이어도 음식점 최소 수는 채움 (꼭 지킬 것은 빼지 않음)', async () => {
+    const { db } = await createTestApp();
+    await seedDb(db);
+    // 바다만 좋아하는 4명 + 해변 60곳: 사람 몫과 합계 상위가 모두 해변으로 차는 경우
+    await db.insert(places).values(
+      Array.from({ length: 60 }, (_, i) => ({
+        contentId: `s${i}`, contentTypeId: 12, title: `바다${i}`, regionCode: '26', districtCode: '500', lcls1: 'NA', lcls3: 'NA020900',
+        lat: 35 + i * 0.01, lng: 129, visible: true, listRaw: {}, introRaw: { restdate: '연중무휴' }, detailSyncedAt: new Date(),
+      })),
+    );
+    const seaLovers = MEMBERS.map((m) => ({ ...m, likes: ['like_sea'], dislikes: [], mustKeep: m.memberId === 'm4' ? m.mustKeep : [] }));
+    const r = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: seaLovers, crowdClient: null, today: '2026-11-01' });
+    const foods = r.candidates.filter((c) => c.type === 39);
+    expect(r.candidates).toHaveLength(40);
+    expect(foods.length).toBe(5); // 영업하는 음식점 5곳 전부 (최소 6곳보다 적게 있음)
+    expect(r.candidates.map((c) => c.name)).toContain('태종대온천찜질방'); // 서연의 꼭 지킬 것은 남음
   });
 
   it('여행 날짜가 30일 밖이면 집중률을 부르지 않고 null로 둠', async () => {
@@ -365,5 +404,12 @@ describe('회의 조건 API와 시험 경로', () => {
     expect(res.body.members).toHaveLength(4);
     expect(res.body.retrieve.candidates.length).toBeGreaterThan(0);
     expect(res.body.retrieve.crowd.note).toBe('out_of_window'); // 2099년이라 예측 없음, 호출기도 없음
+    expect(res.body.trace.map((t: { node: string }) => t.node)).toEqual(['prepare', 'retrieve']);
+
+    // 그래프 칸: 실제 그래프 구조 (실행·외부 호출 없음), 터널 요청은 막음
+    const graph = await call(app, 'GET', '/dev/meeting/graph');
+    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', '__end__']);
+    expect(graph.body.edges).toContainEqual({ from: 'prepare', to: 'retrieve', conditional: false });
+    expect((await call(app, 'GET', '/dev/meeting/graph', undefined, undefined, { 'cf-connecting-ip': '203.0.113.7' })).status).toBe(403);
   });
 });

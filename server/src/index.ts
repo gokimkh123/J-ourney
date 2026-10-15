@@ -19,7 +19,7 @@ for (const spec of config.llmFallbacks) {
 const clients: LlmClient[] = [];
 for (const spec of specs) {
   try {
-    clients.push(await createLangChainLlm({ ...spec, timeoutMs: config.llmTimeoutMs }));
+    clients.push(await createLangChainLlm({ ...spec, timeoutMs: config.llmTimeoutMs, callTokenLimit: config.llmCallTokenLimit, maxOutputTokens: config.llmMaxOutputTokens }));
   } catch (err) {
     console.warn(`LLM ${spec.provider}:${spec.model}을 열지 못해 건너뜀:`, err instanceof Error ? err.message : err);
   }

@@ -4,7 +4,7 @@ import { categories, places, regions } from '../db/schema.js';
 import { todayKst } from '../lib/time.js';
 import type { MustKeepRule, PersonaProfile } from '../persona/types.js';
 import type { TourClient } from '../tour/client.js';
-import { CANDIDATE_TYPES } from './categories.js';
+import { CANDIDATE_TYPES, LODGING_TYPE } from './categories.js';
 import { crowd } from './crowd.js';
 import { closedOn, hoursLabel } from './hours.js';
 import { normName } from './match.js';
@@ -17,6 +17,9 @@ import type { ResolvedDestination, TripConditions } from './types.js';
 export const RETRIEVE = {
   /** 회의 후보로 쓰는 장소 유형 (목록은 categories.ts 한 곳에 둠) */
   types: CANDIDATE_TYPES,
+  /** 숙박: 1박 이상일 때만, 40곳과 따로 lodgingPoolSize곳 (꼭 지킬 것에 맞는 곳 먼저 → 4명 합계 → 인기도 순) */
+  lodgingType: LODGING_TYPE,
+  lodgingPoolSize: 10,
   foodType: 39,
   festivalType: 15,
   /** 사람마다 자기 몫으로 몇 곳을 넣을지 (꼭 지킬 것 하나당 최대 mustKeepPerRule곳, 나머지는 좋아요 보기를 돌아가며), 전체 후보 수, 음식점 최소 수 */
@@ -26,7 +29,11 @@ export const RETRIEVE = {
   minFood: 6,
   /** 사람 몫이 아닌 칸을 채울 때 음식점은 이만큼까지만 (관광지와 균형) */
   maxFood: 12,
-  /** 점수: 좋아요 일치 1개당(최대 2개), 꼭 지킬 것, 인기도·혼잡도 최대 폭, 싫어요에 걸림 */
+  /**
+   * 점수: 좋아요 일치 1개당(최대 2개), 꼭 지킬 것, 인기도·혼잡도 최대 폭, 싫어요에 걸림
+   * 근거 (10/15 민감도 실험, 여행 20개·실제 AI 카드 80장): 꼭 지킬 것·좋아요 반영은 몫 채우는 순서가 보장해 이 값을 3배 바꿔도 같음(23/23, 139/139)
+   * 인기도·혼잡도 폭 ±2는 명소형·탐험형 몫의 평균 인기도 차이(31 대 9)가 가장 큰 구간이고, 0으로 끄면 차이가 뒤집힘(15 대 21)
+   */
   likePoint: 3,
   likeMax: 2,
   mustKeepPoint: 10,
@@ -77,6 +84,12 @@ export interface RetrieveResult {
   candidates: Candidate[];
   /** LLM에 넣는 한 줄 표 (id|이름|분류|인기|혼잡|영업|요약) */
   table: string;
+  /** 숙박 일수 (당일치기 0) */
+  nights: number;
+  /** 숙소 후보 (1박 이상일 때만, 40곳과 따로) */
+  lodgings: Candidate[];
+  /** 숙소 후보의 한 줄 표 (형식은 table과 같음, 당일치기면 빈 문자열) */
+  lodgingTable: string;
   stages: { label: string; count: number }[];
   excluded: { reason: string; count: number; examples: string[] }[];
   popularity: { baseYm: string | null; matched: number };
@@ -120,6 +133,7 @@ export async function retrieveCandidates(
   const today = opts.today ?? todayKst();
   const { destination, members } = opts;
   const dates = tripDates(opts.conditions);
+  const nights = dates.length - 1;
   const month = Number(dates[0].slice(5, 7));
   const tripMonth = dates[0].slice(0, 7).replace('-', '');
   const regionWords = [shortRegionName(destination.regionName)];
@@ -141,7 +155,7 @@ export async function retrieveCandidates(
       and(
         eq(places.visible, true),
         eq(places.regionCode, destination.regionCode),
-        inArray(places.contentTypeId, [...RETRIEVE.types]),
+        inArray(places.contentTypeId, nights > 0 ? [...RETRIEVE.types, RETRIEVE.lodgingType] : [...RETRIEVE.types]),
         destination.districtCodes.length ? inArray(places.districtCode, destination.districtCodes) : undefined,
       ),
     );
@@ -189,6 +203,7 @@ export async function retrieveCandidates(
     return true;
   });
 
+  const isLodging = (p: { type: number }) => p.type === RETRIEVE.lodgingType;
   const matchable = kept.map((p) => ({ contentId: p.id, title: p.title, districtCode: p.districtCode }));
   const districtCodes = destination.districtCodes.length ? destination.districtCodes : regionDistricts.map((r) => r.districtCode);
   const pop = await popularity(db, { regionCode: destination.regionCode, tripMonth, places: matchable, regionWords });
@@ -197,7 +212,7 @@ export async function retrieveCandidates(
   // ② 사람별 점수 (좋아요·싫어요·꼭 지킬 것 모두 코드로 맞춤, 장소 이름·소개글의 글자로 종류를 추측하지 않음)
   const codeNames = new Map((await db.select({ code: categories.code, name: categories.name3 }).from(categories)).map((c) => [c.code, c.name]));
   const viewById = new Map<string, RulePlace>();
-  const scored: Candidate[] = kept.map((p) => {
+  const toCandidate = (p: (typeof rows)[number]): Candidate => {
     const view = viewOf(p);
     viewById.set(p.id, view);
     const category = (p.lcls3 && codeNames.get(p.lcls3)) ?? null;
@@ -260,11 +275,14 @@ export async function retrieveCandidates(
       reasons,
       forMembers: [],
     };
-  });
+  };
+  const scored = kept.filter((p) => !isLodging(p)).map(toCandidate);
+  const lodgingScored = kept.filter(isLodging).map(toCandidate);
 
   // ③ 뽑기: 사람마다 8곳 → 4명 합 상위로 채움 → 음식점 최소 수 → 같은 곳은 하나만
   const byTotal = [...scored].sort((a, b) => b.total - a.total || a.id.localeCompare(b.id));
-  const mustIds = new Set(scored.filter((c) => Object.values(c.reasons).some((r) => r.some((w) => w.startsWith('꼭 지킬 것')))).map((c) => c.id));
+  const isMust = (c: Candidate) => Object.values(c.reasons).some((r) => r.some((w) => w.startsWith('꼭 지킬 것')));
+  const mustIds = new Set(scored.filter(isMust).map((c) => c.id));
   const chosen = new Map<string, Candidate>();
   const sameSpot = (a: Candidate, b: Candidate) => {
     if (a.type === RETRIEVE.foodType || b.type === RETRIEVE.foodType) return false;
@@ -328,7 +346,10 @@ export async function retrieveCandidates(
   }
   const foods = byTotal.filter((c) => c.type === RETRIEVE.foodType && !chosen.has(c.id));
   while (foodCount() < RETRIEVE.minFood && foods.length) {
-    const removable = [...chosen.values()].filter((c) => c.type !== RETRIEVE.foodType && !c.forMembers.length && !mustIds.has(c.id)).sort((a, b) => a.total - b.total)[0];
+    // 뺄 곳: 꼭 지킬 것이 아닌 음식점 밖의 곳 중 맡은 사람이 적고 점수가 낮은 곳 (40곳이 모두 누군가의 몫이어도 끼니 후보는 채움)
+    const removable = [...chosen.values()]
+      .filter((c) => c.type !== RETRIEVE.foodType && !mustIds.has(c.id))
+      .sort((a, b) => a.forMembers.length - b.forMembers.length || a.total - b.total)[0];
     if (!removable && chosen.size >= RETRIEVE.poolSize) break;
     if (removable) chosen.delete(removable.id);
     chosen.set(foods[0].id, foods.shift()!);
@@ -336,9 +357,15 @@ export async function retrieveCandidates(
   for (const n of new Set(sameSpotDropped)) drop('같은 곳이라 하나만 남김', n);
 
   const candidates = [...chosen.values()].sort((a, b) => b.total - a.total || a.id.localeCompare(b.id));
-  const table = ['id|이름|분류|인기|혼잡|영업|요약']
-    .concat(candidates.map((c) => [c.id, c.name, (c.category ?? '-').replace(/\s*\/\s*/g, '/'), c.popularity ?? '-', c.crowd ?? '-', c.hours ?? '-', c.summary.replaceAll('|', '/')].join('|')))
-    .join('\n');
+  // 숙소 후보 (1박 이상): 누군가의 꼭 지킬 것에 맞는 곳 먼저 → 4명 합계 → 인기도 순
+  const lodgings = [...lodgingScored]
+    .sort((a, b) => Number(isMust(b)) - Number(isMust(a)) || b.total - a.total || (b.popularity ?? -1) - (a.popularity ?? -1) || a.id.localeCompare(b.id))
+    .slice(0, RETRIEVE.lodgingPoolSize);
+  const tableOf = (list: readonly Candidate[]) =>
+    ['id|이름|분류|인기|혼잡|영업|요약']
+      .concat(list.map((c) => [c.id, c.name, (c.category ?? '-').replace(/\s*\/\s*/g, '/'), c.popularity ?? '-', c.crowd ?? '-', c.hours ?? '-', c.summary.replaceAll('|', '/')].join('|')))
+      .join('\n');
+  const table = tableOf(candidates);
   const sources = ['tour_api'];
   if (pop.matched) sources.push('tour_rank');
   if (crw.scores.size) sources.push('tour_crowd');
@@ -347,10 +374,14 @@ export async function retrieveCandidates(
     dates,
     candidates,
     table,
+    nights,
+    lodgings,
+    lodgingTable: nights > 0 ? tableOf(lodgings) : '',
     stages: [
-      { label: '지역·후보 유형', count: rows.length },
-      { label: '축제 날짜·휴무일·꼭 피할 것을 거른 뒤', count: kept.length },
+      { label: '지역·후보 유형', count: rows.filter((p) => !isLodging(p)).length },
+      { label: '축제 날짜·휴무일·꼭 피할 것을 거른 뒤', count: scored.length },
       { label: '고른 후보', count: candidates.length },
+      { label: `숙소 후보 (${nights}박${nights ? `, 숙박 ${rows.filter(isLodging).length}곳 중` : ' · 당일치기라 뽑지 않음'})`, count: lodgings.length },
     ],
     excluded: [...excluded].map(([reason, list]) => ({ reason, count: list.length, examples: list.slice(0, 3) })),
     popularity: { baseYm: pop.baseYm, matched: pop.matched },

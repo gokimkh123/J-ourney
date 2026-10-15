@@ -65,6 +65,43 @@
   .member ol { margin: 0; padding-left: 18px; display: grid; gap: 2px; font-size: 13px; }
   .err { background: var(--bad-soft); color: var(--bad); border-radius: 10px; padding: 8px 12px; font-weight: 600; }
   .locked-box { background: var(--soft); border: 1px dashed var(--line); border-radius: 12px; padding: 14px; color: var(--muted); }
+  /* LangGraph 실행 보기: 노드 상자 → 연결선(지나갈 때 점이 흐름) → 다음 노드, 옆에 공유 상태와 실행 기록 */
+  .lg { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; background: var(--pre-bg); color: var(--pre-ink); border-radius: 14px; padding: 16px; font-family: var(--mono); font-size: 12.5px; }
+  @media (max-width: 860px) { .lg { grid-template-columns: 1fr; } }
+  .lg-legend { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 14px; color: #8FA0B0; font-size: 11.5px; }
+  .lg-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+  .lg-flow { display: grid; justify-items: center; gap: 0; min-width: 0; }
+  .lg-pill { border: 1px solid #3A4A5A; border-radius: 99px; padding: 3px 16px; color: #8FA0B0; }
+  .lg-pill.done { border-color: #3CC48F; color: #3CC48F; }
+  .lg-edge { position: relative; width: 2px; height: 34px; background: #2A3846; overflow: hidden; }
+  .lg-edge.flow::after { content: ''; position: absolute; left: -3px; width: 8px; height: 8px; border-radius: 50%; background: #7FA6FF; box-shadow: 0 0 8px #7FA6FF; animation: lg-drop .6s linear infinite; }
+  .lg-edge.done { background: #3CC48F; }
+  @keyframes lg-drop { from { top: -8px; } to { top: 34px; } }
+  .lg-node { width: min(560px, 100%); border: 1.5px solid #3A4A5A; border-radius: 10px; padding: 10px 12px; display: grid; gap: 6px; background: #0C1218; transition: border-color .3s, box-shadow .3s; }
+  .lg-node.run { border-color: #7FA6FF; box-shadow: 0 0 0 1px #7FA6FF55, 0 0 18px #7FA6FF33; }
+  .lg-node.done { border-color: #3CC48F; }
+  .lg-node.fail { border-color: #FF7B72; }
+  .lg-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .lg-head b { color: #E4EBF1; font-size: 13.5px; }
+  .lg-tag { font-size: 11px; padding: 0 7px; border-radius: 99px; background: #172440; color: #7FA6FF; }
+  .lg-tag.llm { background: #231A3B; color: #B39BFF; }
+  .lg-bar { height: 7px; background: #1C2733; border-radius: 99px; overflow: hidden; }
+  .lg-bar > span { display: block; height: 100%; width: 0; background: #7FA6FF; transition: width .35s; }
+  .lg-node.done .lg-bar > span { background: #3CC48F; }
+  .lg-sub { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+  .lg-sub li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 6px; color: #5F7183; transition: color .3s; }
+  .lg-sub li.run { color: #E4EBF1; } .lg-sub li.done { color: #B8C6D3; }
+  .lg-sub li .v { color: #F2B356; text-align: right; white-space: nowrap; }
+  .lg-sub li.done .v { color: #3CC48F; }
+  .lg-sub .src { font-size: 10.5px; padding: 0 5px; border-radius: 4px; margin-left: 4px; }
+  .lg-sub .src.db { background: #172440; color: #7FA6FF; } .lg-sub .src.api { background: #342610; color: #F2B356; }
+  .lg-side { display: grid; gap: 12px; align-content: start; min-width: 0; }
+  .lg-box { border: 1px solid #2A3846; border-radius: 10px; padding: 10px 12px; display: grid; gap: 4px; }
+  .lg-box h4 { margin: 0 0 4px; font-size: 12px; color: #B39BFF; font-weight: 700; }
+  .lg-key { display: flex; justify-content: space-between; gap: 8px; color: #5F7183; }
+  .lg-key.set { color: #E4EBF1; } .lg-key.set span:last-child { color: #3CC48F; }
+  .lg-log { max-height: 220px; overflow: auto; display: grid; gap: 2px; color: #98A6B3; }
+  .lg-log .t { color: #5F7183; margin-right: 6px; }
 </style>
 </head>
 <body>
@@ -78,6 +115,12 @@
   <section class="card" aria-labelledby="t-steps">
     <h2 id="t-steps">단계</h2>
     <div class="steps" id="steps"></div>
+  </section>
+
+  <section class="card" aria-labelledby="t-graph">
+    <h2 id="t-graph">LangGraph 실행 보기</h2>
+    <p class="muted">상자 하나가 LangGraph 노드 하나입니다. 노드 순서와 연결은 서버의 실제 그래프에서 받아 그립니다. 2단계에서 '후보 찾기 실행'을 누르면, 실제 실행 결과로 각 노드가 하는 일을 천천히 다시 보여 줍니다. 실제로 걸린 시간은 실행 기록에 나옵니다.</p>
+    <div class="lg" id="lg"><span class="note">그래프를 불러오는 중…</span></div>
   </section>
 
   <section class="card" id="panel" aria-live="polite"></section>
@@ -205,10 +248,12 @@ function renderStep2() {
     $('run').disabled = true;
     $('runMsg').textContent = '실행 중…';
     try {
+      graphWaiting();
       last = await api('POST', '/dev/meeting/retrieve', {});
       $('runMsg').textContent = `${last.ms.toLocaleString('ko-KR')}ms`;
       showRetrieve();
-    } catch (err) { $('runMsg').innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+      graphReplay(last);
+    } catch (err) { $('runMsg').innerHTML = `<span class="bad">${esc(err.message)}</span>`; graphFailed(err.message); }
     $('run').disabled = false;
   };
   if (last) showRetrieve();
@@ -218,7 +263,7 @@ function showRetrieve() {
   const r = last.retrieve;
   const people = last.members;
   const nameOf = Object.fromEntries(people.map((m) => [m.memberId, m.nickname]));
-  const typeName = { 12: '관광지', 14: '문화시설', 15: '축제', 28: '레포츠', 39: '음식점' };
+  const typeName = { 12: '관광지', 14: '문화시설', 15: '축제', 28: '레포츠', 32: '숙박', 38: '쇼핑', 39: '음식점' };
   const crowdNote = r.crowd.note === 'out_of_window' ? '여행 날짜가 30일 밖이라 예측 없음' : r.crowd.note ? `멈춤: ${r.crowd.note}` : `새로 받음 ${r.crowd.fetched.length}곳 · 저장한 것 씀 ${r.crowd.cached.length}곳`;
   const best = (c) => Math.max(...Object.values(c.scores));
   const top = people.map((m) => {
@@ -236,8 +281,162 @@ function showRetrieve() {
     <div><h3>후보 ${r.candidates.length}곳 (점수 합 순)</h3><div class="tw"><table>
       <thead><tr><th>이름</th><th>유형</th><th>공식 분류</th><th>인기</th><th>혼잡</th><th>영업</th>${people.map((m) => `<th>${esc(m.nickname)}</th>`).join('')}<th>합</th><th>몫</th></tr></thead>
       <tbody>${r.candidates.map((c) => `<tr><td>${esc(c.name)}${c.restUnknown ? ' <span class="warn" title="휴무일 문장을 읽지 못함">휴무 확인</span>' : ''}</td><td>${typeName[c.type] ?? c.type}</td><td>${esc(c.category ?? '-')}</td><td class="n">${c.popularity ?? '-'}</td><td class="n">${c.crowd ?? '-'}</td><td>${esc(c.hours ?? '-')}</td>${people.map((m) => `<td class="n ${c.scores[m.memberId] === best(c) && best(c) > 0 ? 'best' : ''}">${c.scores[m.memberId]}</td>`).join('')}<td class="n">${c.total}</td><td>${c.forMembers.map((id) => `<span class="pill">${esc(nameOf[id])}</span>`).join('')}</td></tr>`).join('')}</tbody></table></div></div>
-    <div><h3>LLM에 넣을 한 줄 표 (3단계 고르기 입력 · ${r.table.length.toLocaleString('ko-KR')}자)</h3><pre>${esc(r.table)}</pre></div>
+    <div><h3>숙소 후보 (${r.nights}박 · 40곳과 따로)</h3>${r.nights ? `<div class="tw"><table><thead><tr><th>이름</th><th>공식 분류</th><th>인기</th>${people.map((m) => `<th>${esc(m.nickname)}</th>`).join('')}<th>합</th></tr></thead><tbody>${r.lodgings.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.category ?? '-')}</td><td class="n">${c.popularity ?? '-'}</td>${people.map((m) => `<td class="n">${c.scores[m.memberId]}</td>`).join('')}<td class="n">${c.total}</td></tr>`).join('') || '<tr><td colspan="9" class="note">조건에 맞는 숙소 없음</td></tr>'}</tbody></table></div>` : '<span class="note">당일치기라 숙소 후보를 뽑지 않음</span>'}</div>
+    <div><h3>LLM에 넣을 한 줄 표 (3단계 고르기 입력 · ${r.table.length.toLocaleString('ko-KR')}자)</h3><pre>${esc(r.table)}</pre></div>${r.nights ? `
+    <div><h3>숙소 후보 한 줄 표 (${r.lodgingTable.length.toLocaleString('ko-KR')}자)</h3><pre>${esc(r.lodgingTable)}</pre></div>` : ''}
     <p class="note">근거: ${esc(r.sources.join(', '))} · 기준일 ${esc(r.baseDate)} · 장소 정보 ⓒ한국관광공사</p>`;
+}
+
+/* LangGraph 실행 보기: 노드·연결은 서버 그래프(GET /dev/meeting/graph), 노드 안의 세부 단계와 숫자는 실제 실행 결과 */
+const STATE_KEYS = [
+  ['tripId', 'START'], ['conditions', 'prepare'], ['destination', 'prepare'], ['members', 'prepare'], ['pool', 'retrieve'],
+];
+const NODE_VIEW = {
+  prepare: {
+    desc: '회의에 쓸 조건과 4명의 성향을 DB에서 읽어 공유 상태에 넣음',
+    subs: (d) => [
+      ['여행·회의 조건 읽기', 'db', d ? `${d.retrieve.destination.label} · ${d.retrieve.dates.join(', ')}` : ''],
+      ['구성원 4명 성향 읽기', 'db', d ? d.members.map((m) => m.nickname).join(' · ') : ''],
+      ['공유 상태에 저장', '', d ? 'conditions · destination · members' : ''],
+    ],
+  },
+  retrieve: {
+    desc: '장소 DB에서 거르고, 4명 성향으로 점수를 매겨 40곳을 고름',
+    subs: (d) => {
+      const r = d?.retrieve;
+      if (!r) return ['장소 조회 (공개·지역·후보 유형 6종)', '거르기: 축제 날짜·휴무일·꼭 피할 것', '인기도 (연관 관광지 순위)', '혼잡도 (집중률 예측)', '사람별 점수 (4명)', '뽑기: 사람마다 8곳 → 40곳', '숙소 후보 (1박 이상만, 따로)'].map((t) => [t, '', '']);
+      const cut = r.excluded.reduce((a, e) => a + e.count, 0);
+      const crowd = r.crowd.note === 'out_of_window' ? '30일 밖 · 호출 0' : `API ${r.crowd.fetched.length}회 · 저장분 ${r.crowd.cached.length}`;
+      const food = r.candidates.filter((c) => c.type === 39).length;
+      return [
+        ['장소 조회 (공개·지역·후보 유형 6종)', 'db', `${r.stages[0].count.toLocaleString('ko-KR')}곳`],
+        ['거르기: 축제 날짜·휴무일·꼭 피할 것', '', `−${cut.toLocaleString('ko-KR')} → ${r.stages[1].count.toLocaleString('ko-KR')}곳`],
+        ['인기도 (연관 관광지 순위)', 'db', `${r.popularity.matched.toLocaleString('ko-KR')}곳 맞춤`],
+        ['혼잡도 (집중률 예측)', r.crowd.fetched.length ? 'api' : 'db', crowd],
+        [`사람별 점수 (${d.members.length}명)`, '', `${r.stages[1].count.toLocaleString('ko-KR')}곳 × ${d.members.length}`],
+        ['뽑기: 사람마다 8곳 → 합계 상위', '', `${r.candidates.length}곳 · 음식점 ${food}`],
+        ['숙소 후보 (1박 이상만, 따로)', r.nights ? 'db' : '', r.nights ? `${r.nights}박 · ${r.lodgings.length}곳` : '당일치기 · 0곳'],
+      ];
+    },
+  },
+};
+const STEP_MS = 420;
+let graphShape = null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function nodeOrder() {
+  // START에서 연결을 따라가며 순서를 정함 (지금은 갈래가 없음, 3단계부터 갈래가 생기면 넓게 그림)
+  const next = Object.fromEntries(graphShape.edges.map((e) => [e.from, e.to]));
+  const order = [];
+  for (let id = '__start__'; id && !order.includes(id); id = next[id]) order.push(id);
+  return order;
+}
+
+function drawFlow(data) {
+  const order = nodeOrder();
+  const meta = Object.fromEntries(graphShape.nodes.map((n) => [n.id, n]));
+  const parts = order.map((id, i) => {
+    const edge = i > 0 ? `<div class="lg-edge" data-edge="${esc(order[i - 1])}>${esc(id)}"></div>` : '';
+    if (id === '__start__' || id === '__end__') return `${edge}<div class="lg-pill" data-node="${esc(id)}">${id === '__start__' ? 'START' : 'END'}</div>`;
+    const m = meta[id];
+    const view = NODE_VIEW[id] ?? { desc: '', subs: () => [] };
+    const subs = view.subs(data);
+    return `${edge}<div class="lg-node" data-node="${esc(id)}">
+      <div class="lg-head"><b>${m.step ? m.step + '단계 · ' : ''}${esc(m.label)} <span style="color:#5F7183">(${esc(id)})</span></b><span class="lg-tag ${m.kind === 'llm' ? 'llm' : ''}">${m.kind === 'llm' ? 'LLM 노드' : '코드 노드 · LLM 0회'}</span></div>
+      <div style="color:#8FA0B0">${esc(view.desc)}</div>
+      <div class="lg-bar"><span></span></div>
+      <ul class="lg-sub">${subs.map(([t, src, v]) => `<li><span class="ic">·</span><span>${esc(t)}${src ? `<span class="src ${src}">${src === 'db' ? 'DB' : 'API'}</span>` : ''}</span><span class="v">${esc(v)}</span></li>`).join('')}</ul>
+    </div>`;
+  }).join('');
+  $('lg').innerHTML = `
+    <div class="lg-legend"><span><i style="background:#7FA6FF"></i>실행 중</span><span><i style="background:#3CC48F"></i>끝남</span><span><i style="background:#172440;border:1px solid #7FA6FF"></i>DB 읽기</span><span><i style="background:#342610;border:1px solid #F2B356"></i>외부 API 호출</span><span>노드 ${order.length - 2}개 · 연결 ${graphShape.edges.length}개</span></div>
+    <div class="lg-flow">${parts}</div>
+    <div class="lg-side">
+      <div class="lg-box"><h4>공유 상태 (MeetingState)</h4>${STATE_KEYS.map(([k]) => `<div class="lg-key" data-key="${k}"><span>${k}</span><span>—</span></div>`).join('')}
+        <div class="note" style="color:#5F7183">노드는 이 상태를 받아 일부를 채워 다음 노드로 넘김</div></div>
+      <div class="lg-box"><h4>실행 기록</h4><div class="lg-log" id="lgLog"><span style="color:#5F7183">아직 실행하지 않음</span></div></div>
+    </div>`;
+}
+
+const q = (sel) => $('lg').querySelector(sel);
+function setKey(key, value) {
+  const el = q(`[data-key="${key}"]`);
+  if (!el) return;
+  el.classList.add('set');
+  el.lastElementChild.textContent = value;
+}
+let logStart = 0;
+function log(text) {
+  const box = $('lgLog');
+  if (!box) return;
+  if (!logStart) { logStart = performance.now(); box.innerHTML = ''; }
+  const t = ((performance.now() - logStart) / 1000).toFixed(2).padStart(5, '0');
+  box.insertAdjacentHTML('beforeend', `<div><span class="t">${t}</span>${esc(text)}</div>`);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function loadGraph() {
+  try {
+    graphShape = await api('GET', '/dev/meeting/graph');
+    drawFlow(last);
+  } catch (err) {
+    $('lg').innerHTML = `<span class="bad">그래프를 불러오지 못함: ${esc(err.message)}</span>`;
+  }
+}
+
+/* 실행 버튼을 누르면: 응답을 기다리는 동안 첫 노드가 실행 중으로 빛나고, 응답이 오면 실제 결과로 노드를 하나씩 다시 보여 줌 */
+function graphWaiting() {
+  if (!graphShape) return;
+  drawFlow(null);
+  logStart = 0;
+  q('[data-node="__start__"]').classList.add('done');
+  q('.lg-edge').classList.add('flow');
+  q('.lg-node').classList.add('run');
+  log('서버에서 그래프 실행 중…');
+}
+function graphFailed(message) {
+  if (!graphShape) return;
+  q('.lg-edge.flow')?.classList.remove('flow');
+  q('.lg-node.run')?.classList.replace('run', 'fail');
+  log('실패: ' + message);
+}
+async function graphReplay(data) {
+  if (!graphShape) return;
+  drawFlow(data);
+  logStart = 0;
+  const order = nodeOrder();
+  const ms = Object.fromEntries((data.trace ?? []).map((t) => [t.node, t.ms]));
+  const values = {
+    tripId: '✓', conditions: data.retrieve.dates.join(', '), destination: data.retrieve.destination.label,
+    members: `${data.members.length}명`, pool: `${data.retrieve.candidates.length}곳`,
+  };
+  q('[data-node="__start__"]').classList.add('done');
+  setKey('tripId', values.tripId);
+  log(`START → 실제 실행 ${data.ms.toLocaleString('ko-KR')}ms (화면은 천천히 다시 보여 줌)`);
+  for (let i = 1; i < order.length; i++) {
+    const id = order[i];
+    const edge = q(`[data-edge="${order[i - 1]}>${id}"]`);
+    edge?.classList.add('flow');
+    await sleep(STEP_MS);
+    edge?.classList.replace('flow', 'done');
+    const box = q(`[data-node="${id}"]`);
+    if (id === '__end__') { box.classList.add('done'); log('END · 결과는 아래 표에 있음'); break; }
+    box.classList.add('run');
+    log(`${id} 시작`);
+    const items = [...box.querySelectorAll('.lg-sub li')];
+    for (const [j, li] of items.entries()) {
+      li.classList.add('run');
+      li.querySelector('.ic').textContent = '▸';
+      await sleep(STEP_MS);
+      li.classList.replace('run', 'done');
+      li.querySelector('.ic').textContent = '✓';
+      box.querySelector('.lg-bar > span').style.width = `${((j + 1) / items.length) * 100}%`;
+      log(`${id} · ${li.children[1].firstChild.textContent} → ${li.querySelector('.v').textContent}`);
+    }
+    for (const [key, node] of STATE_KEYS) if (node === id) setKey(key, values[key]);
+    box.classList.replace('run', 'done');
+    log(`${id} 끝 (실제 ${ms[id] ?? '-'}ms)`);
+  }
 }
 
 function render() {
@@ -246,6 +445,7 @@ function render() {
   else if (cur === 2) renderStep2();
 }
 render();
+loadGraph();
 </script>
 </body>
 </html>

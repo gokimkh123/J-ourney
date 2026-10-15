@@ -82,7 +82,7 @@ export const llmIpUsage = pgTable(
 );
 
 /**
- * 장소 — TourAPI(국문 관광정보) 장소를 영구 저장함. 목록 값은 매일 동기화하고, 상세(소개글·영업시간)는 필요한 장소만 채움
+ * 장소 — TourAPI(국문 관광정보) 장소 정보 (목록 값과 상세: 소개글·영업시간)
  * 비표출(폐업·삭제 등)된 장소는 지우지 않고 visible=false로 둠. 출처 표시: ⓒ한국관광공사
  */
 export const places = pgTable(
@@ -130,7 +130,7 @@ export const tourApiUsage = pgTable(
   (t) => [primaryKey({ columns: [t.day, t.operation] })],
 );
 
-/** 장소 수집 작업 상태 (name 'list' = 전국 목록을 마지막으로 끝까지 다시 맞춘 시각, 한 달 단위 갱신 판단용) */
+/** 장소 자료 갱신 상태 (name 'list' = 목록을 마지막으로 다시 맞춘 시각) */
 export const tourSyncState = pgTable('tour_sync_state', {
   name: text('name').primaryKey(),
   doneAt: timestamp('done_at', { withTimezone: true }).notNull(),
