@@ -1,23 +1,41 @@
-import type { AnswerState, Question, SubmitAnswer, TextQuestion } from './types.ts';
+import type {
+  AnswerState,
+  MultiQuestion,
+  Question,
+  ScaleQuestion,
+  SubmitAnswer,
+  TextQuestion,
+} from './types.ts';
 
-export function setScale(state: AnswerState, questionId: string, value: number): AnswerState {
-  if (!Number.isInteger(value) || value < 1 || value > 4) {
-    throw new Error('척도 답변은 1~4 사이의 정수여야 합니다.');
+function selectedIds(state: AnswerState, questionId: string): string[] {
+  const answer = state[questionId];
+  return answer?.type === 'multi' ? answer.optionIds : [];
+}
+
+export function setScale(state: AnswerState, question: ScaleQuestion, value: number): AnswerState {
+  if (!Number.isInteger(value) || value < question.min || value > question.max) {
+    throw new Error(
+      `${question.order}번 문항은 ${question.min}~${question.max} 사이의 정수로 답해 주세요.`,
+    );
   }
-  return { ...state, [questionId]: { type: 'scale', value } };
+  return { ...state, [question.id]: { type: 'scale', value } };
 }
 
 export function toggleOption(
   state: AnswerState,
-  questionId: string,
+  question: MultiQuestion,
   optionId: string,
 ): AnswerState {
-  const current = state[questionId];
-  const selected = current?.type === 'multi' ? current.optionIds : [];
-  const optionIds = selected.includes(optionId)
-    ? selected.filter((id) => id !== optionId)
-    : [...selected, optionId];
-  return { ...state, [questionId]: { type: 'multi', optionIds } };
+  if (!question.options.some((option) => option.id === optionId)) {
+    throw new Error(`${question.order}번 문항에 없는 선택지입니다: ${optionId}`);
+  }
+  const selected = selectedIds(state, question.id);
+  if (selected.includes(optionId)) {
+    const optionIds = selected.filter((id) => id !== optionId);
+    return { ...state, [question.id]: { type: 'multi', optionIds } };
+  }
+  if (selected.length >= question.maxSelect) return state;
+  return { ...state, [question.id]: { type: 'multi', optionIds: [...selected, optionId] } };
 }
 
 export function setText(state: AnswerState, question: TextQuestion, text: string): AnswerState {
@@ -28,7 +46,10 @@ export function setText(state: AnswerState, question: TextQuestion, text: string
 export function isAnswered(question: Question, state: AnswerState): boolean {
   const answer = state[question.id];
   if (question.type === 'scale') return answer?.type === 'scale';
-  if (question.type === 'multi') return answer?.type === 'multi' && answer.optionIds.length > 0;
+  if (question.type === 'multi') {
+    const count = selectedIds(state, question.id).length;
+    return count >= question.minSelect && count <= question.maxSelect;
+  }
   if (!question.required) return true;
   return answer?.type === 'text' && answer.text.trim() !== '';
 }
@@ -59,11 +80,15 @@ export function buildSubmitBody(
   const answers: SubmitAnswer[] = [];
   for (const question of [...questions].sort((a, b) => a.order - b.order)) {
     const answer = state[question.id];
-    if (question.type === 'scale' && answer?.type === 'scale') {
-      answers.push({ questionId: question.id, value: answer.value });
-    } else if (question.type === 'multi' && answer?.type === 'multi' && answer.optionIds.length > 0) {
-      answers.push({ questionId: question.id, optionIds: [...answer.optionIds] });
-    } else if (question.type === 'text' && answer?.type === 'text' && answer.text !== '') {
+    if (question.type === 'scale') {
+      if (answer?.type === 'scale') answers.push({ questionId: question.id, value: answer.value });
+    } else if (question.type === 'multi') {
+      const optionIds = selectedIds(state, question.id);
+      // minSelect가 0인 문항은 고르지 않아도 빈 배열로 보낸다.
+      if (optionIds.length > 0 || question.minSelect === 0) {
+        answers.push({ questionId: question.id, optionIds: [...optionIds] });
+      }
+    } else if (answer?.type === 'text' && answer.text !== '') {
       answers.push({ questionId: question.id, text: answer.text });
     }
   }

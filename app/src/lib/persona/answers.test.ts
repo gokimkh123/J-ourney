@@ -11,157 +11,230 @@ import {
   setText,
   toggleOption,
 } from './answers.ts';
-import type { AnswerState, MultiQuestion, Question, ScaleQuestion, TextQuestion } from './types.ts';
+import type {
+  AnswerState,
+  MultiQuestion,
+  Question,
+  ScaleQuestion,
+  TextQuestion,
+} from './types.ts';
 
-const q1: ScaleQuestion = {
-  id: 'q1',
-  order: 1,
-  type: 'scale',
-  axis: 'EI',
-  text: '모임이 끝나면?',
-  left: '충전된다',
-  right: '지친다',
-};
-const q13: MultiQuestion = {
+function scale(n: number): ScaleQuestion {
+  return {
+    id: `q${n}`,
+    order: n,
+    type: 'scale',
+    text: `${n}번 문항`,
+    min: 0,
+    max: 10,
+    minLabel: '전혀 아니다',
+    maxLabel: '매우 그렇다',
+  };
+}
+
+const q1 = scale(1);
+const q2 = scale(2);
+
+const likes: MultiQuestion = {
   id: 'q13',
   order: 13,
   type: 'multi',
-  text: '관심사는?',
+  text: '여행에서 좋아하는 것을 골라 주세요',
+  minSelect: 1,
+  maxSelect: 5,
   options: [
-    { id: 'q13_hotspring', text: '온천' },
-    { id: 'q13_food', text: '맛집' },
+    { id: 'like_nature', text: '자연·풍경', emoji: '🌲' },
+    { id: 'like_sea', text: '바다', emoji: '🌊' },
+    { id: 'like_spa', text: '온천·스파', emoji: '♨️' },
+    { id: 'like_history', text: '역사', emoji: '🏯' },
+    { id: 'like_culture', text: '문화·전시', emoji: '🎨' },
+    { id: 'like_food', text: '맛집', emoji: '🍽️' },
   ],
 };
-const q15: TextQuestion = {
+
+const dislikes: MultiQuestion = {
+  id: 'q14',
+  order: 14,
+  type: 'multi',
+  text: '여행에서 싫은 것을 골라 주세요 (없으면 넘어가도 됨)',
+  minSelect: 0,
+  maxSelect: 3,
+  options: [
+    { id: 'dislike_walk', text: '오래 걷기', emoji: '🚶' },
+    { id: 'dislike_early', text: '이른 출발', emoji: '⏰' },
+    { id: 'dislike_crowd', text: '붐비는 곳', emoji: '👥' },
+    { id: 'dislike_queue', text: '줄 서는 맛집', emoji: '⏳' },
+  ],
+};
+
+const wish: TextQuestion = {
   id: 'q15',
   order: 15,
   type: 'text',
+  text: '이번 여행에서 꼭 지켰으면 하는 것이 있나요?',
   required: false,
-  maxLength: 5,
-  text: '하고 싶은 말',
+  maxLength: 200,
+  placeholder: '예: 해산물은 꼭 먹고 싶어요',
 };
-const questions: Question[] = [q1, q13, q15];
 
-function deepFreeze<T>(value: T): T {
-  if (typeof value === 'object' && value !== null) {
-    Object.values(value).forEach(deepFreeze);
-    Object.freeze(value);
-  }
-  return value;
+const QUESTIONS: Question[] = [q1, q2, likes, dislikes, wish];
+
+function throwsKorean(fn: () => unknown, pattern?: RegExp): void {
+  assert.throws(fn, (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /[가-힣]/);
+    if (pattern) assert.match(error.message, pattern);
+    return true;
+  });
 }
 
-test('setScale: 1~4 정수만 허용', () => {
-  for (const value of [1, 2, 3, 4]) {
-    assert.deepEqual(setScale({}, 'q1', value), { q1: { type: 'scale', value } });
+test('setScale: 0점도 답으로 인정', () => {
+  const state = setScale({}, q1, 0);
+  assert.deepEqual(state, { q1: { type: 'scale', value: 0 } });
+  assert.equal(isAnswered(q1, state), true);
+  assert.deepEqual(setScale({}, q1, 10).q1, { type: 'scale', value: 10 });
+});
+
+test('setScale: 범위 밖·소수는 한국어 Error', () => {
+  for (const value of [-1, 11, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    throwsKorean(() => setScale({}, q1, value), /1번/);
   }
-  for (const value of [0, 5, 2.5, NaN, Infinity, -1]) {
-    assert.throws(
-      () => setScale({}, 'q1', value),
-      (error: unknown) => error instanceof Error && /[가-힣]/.test(error.message),
-      String(value),
-    );
-  }
 });
 
-test('setScale: 기존 값을 덮어쓰고 다른 답은 유지', () => {
-  const state = setScale(setScale({}, 'q1', 1), 'q2', 3);
-  assert.deepEqual(setScale(state, 'q1', 4), {
-    q1: { type: 'scale', value: 4 },
-    q2: { type: 'scale', value: 3 },
-  });
+test('setScale: 문항의 min~max를 기준으로 검사하고 원래 state는 바꾸지 않음', () => {
+  const narrow: ScaleQuestion = { ...scale(3), min: 1, max: 4 };
+  throwsKorean(() => setScale({}, narrow, 0), /3번/);
+  throwsKorean(() => setScale({}, narrow, 5), /3번/);
+  assert.deepEqual(setScale({}, narrow, 4).q3, { type: 'scale', value: 4 });
+
+  const before: AnswerState = { q1: { type: 'scale', value: 3 } };
+  const after = setScale(before, q1, 8);
+  assert.deepEqual(before, { q1: { type: 'scale', value: 3 } });
+  assert.deepEqual(after.q1, { type: 'scale', value: 8 });
 });
 
-test('toggleOption: 추가·제거, 마지막 해제 시 미완료', () => {
-  let state: AnswerState = toggleOption({}, 'q13', 'q13_hotspring');
-  assert.deepEqual(state.q13, { type: 'multi', optionIds: ['q13_hotspring'] });
-  assert.equal(isAnswered(q13, state), true);
-  state = toggleOption(state, 'q13', 'q13_food');
-  assert.deepEqual(state.q13, { type: 'multi', optionIds: ['q13_hotspring', 'q13_food'] });
-  state = toggleOption(state, 'q13', 'q13_hotspring');
-  assert.deepEqual(state.q13, { type: 'multi', optionIds: ['q13_food'] });
-  state = toggleOption(state, 'q13', 'q13_food');
-  assert.equal(isAnswered(q13, state), false);
+test('toggleOption: 선택과 해제', () => {
+  const s1 = toggleOption({}, likes, 'like_sea');
+  assert.deepEqual(s1.q13, { type: 'multi', optionIds: ['like_sea'] });
+  const s2 = toggleOption(s1, likes, 'like_nature');
+  assert.deepEqual(s2.q13, { type: 'multi', optionIds: ['like_sea', 'like_nature'] });
+  const s3 = toggleOption(s2, likes, 'like_sea');
+  assert.deepEqual(s3.q13, { type: 'multi', optionIds: ['like_nature'] });
+  assert.deepEqual(s1.q13, { type: 'multi', optionIds: ['like_sea'] });
 });
 
-test('setText: 공백 제거, maxLength 자르기, 공백만이면 빈 문자열', () => {
-  assert.deepEqual(setText({}, q15, '  안녕  ').q15, { type: 'text', text: '안녕' });
-  assert.deepEqual(setText({}, q15, '1234567').q15, { type: 'text', text: '12345' });
-  assert.deepEqual(setText({}, q15, '   \n ').q15, { type: 'text', text: '' });
-});
-
-test('isAnswered: 문항 종류별 판정', () => {
-  assert.equal(isAnswered(q1, {}), false);
-  assert.equal(isAnswered(q1, setScale({}, 'q1', 2)), true);
-  assert.equal(isAnswered(q13, {}), false);
-  assert.equal(isAnswered(q13, { q13: { type: 'multi', optionIds: [] } }), false);
-  assert.equal(isAnswered(q15, {}), true);
-  assert.equal(isAnswered(q15, setText({}, q15, '')), true);
-  const required: TextQuestion = { ...q15, required: true };
-  assert.equal(isAnswered(required, {}), false);
-  assert.equal(isAnswered(required, setText({}, required, '  ')), false);
-  assert.equal(isAnswered(required, setText({}, required, '네')), true);
-});
-
-test('isComplete / firstUnanswered / progress', () => {
+test('toggleOption: maxSelect를 넘는 새 선택은 무시하고 같은 state 반환, 해제는 가능', () => {
   let state: AnswerState = {};
-  assert.equal(isComplete(questions, state), false);
-  assert.equal(firstUnanswered(questions, state), 0);
-  assert.deepEqual(progress(questions, state), { answered: 1, total: 3 });
+  const five = ['like_nature', 'like_sea', 'like_spa', 'like_history', 'like_culture'];
+  for (const id of five) state = toggleOption(state, likes, id);
+  const next = toggleOption(state, likes, 'like_food');
+  assert.equal(next, state);
+  assert.deepEqual(next.q13, { type: 'multi', optionIds: five });
 
-  state = setScale(state, 'q1', 3);
-  assert.equal(firstUnanswered(questions, state), 1);
-  assert.deepEqual(progress(questions, state), { answered: 2, total: 3 });
-
-  state = toggleOption(state, 'q13', 'q13_food');
-  assert.equal(isComplete(questions, state), true);
-  assert.equal(firstUnanswered(questions, state), null);
-  assert.deepEqual(progress(questions, state), { answered: 3, total: 3 });
-});
-
-test('buildSubmitBody: 순서대로 만들고 빈 q15는 생략, 있으면 포함', () => {
-  let state: AnswerState = setScale({}, 'q1', 4);
-  state = toggleOption(state, 'q13', 'q13_hotspring');
-  assert.deepEqual(buildSubmitBody(questions, state), {
-    answers: [
-      { questionId: 'q1', value: 4 },
-      { questionId: 'q13', optionIds: ['q13_hotspring'] },
-    ],
+  const released = toggleOption(state, likes, 'like_spa');
+  assert.deepEqual(released.q13, {
+    type: 'multi',
+    optionIds: ['like_nature', 'like_sea', 'like_history', 'like_culture'],
   });
-  assert.deepEqual(buildSubmitBody(questions, setText(state, q15, '  ')).answers.length, 2);
-
-  const withText = buildSubmitBody(questions, setText(state, q15, '맛집 좋아'));
-  assert.deepEqual(withText.answers[2], { questionId: 'q15', text: '맛집 좋' + '아' });
+  const added = toggleOption(released, likes, 'like_food');
+  assert.deepEqual(added.q13, {
+    type: 'multi',
+    optionIds: ['like_nature', 'like_sea', 'like_history', 'like_culture', 'like_food'],
+  });
 });
 
-test('buildSubmitBody: 문항이 섞여 있어도 order 순서', () => {
-  const state = toggleOption(setScale({}, 'q1', 1), 'q13', 'q13_food');
-  const body = buildSubmitBody([q13, q1], state);
-  assert.deepEqual(
-    body.answers.map((a) => a.questionId),
-    ['q1', 'q13'],
+test('toggleOption: 문항에 없는 옵션은 한국어 Error', () => {
+  throwsKorean(() => toggleOption({}, likes, 'like_moon'), /13번/);
+  throwsKorean(() => toggleOption({}, likes, 'dislike_walk'), /dislike_walk/);
+});
+
+test('isAnswered: multi는 선택 개수가 minSelect~maxSelect 안이어야 함', () => {
+  assert.equal(isAnswered(dislikes, {}), true);
+  assert.equal(isAnswered(likes, {}), false);
+  const one = toggleOption({}, likes, 'like_spa');
+  assert.equal(isAnswered(likes, one), true);
+  assert.equal(isAnswered(likes, toggleOption(one, likes, 'like_spa')), false);
+  assert.equal(
+    isAnswered(dislikes, {
+      q14: { type: 'multi', optionIds: ['dislike_walk', 'dislike_early', 'dislike_crowd'] },
+    }),
+    true,
+  );
+  assert.equal(
+    isAnswered(dislikes, {
+      q14: {
+        type: 'multi',
+        optionIds: ['dislike_walk', 'dislike_early', 'dislike_crowd', 'dislike_queue'],
+      },
+    }),
+    false,
   );
 });
 
-test('모든 함수는 입력을 변경하지 않음', () => {
-  const state = deepFreeze<AnswerState>({
-    q1: { type: 'scale', value: 2 },
-    q13: { type: 'multi', optionIds: ['q13_food'] },
+test('isAnswered: text는 required가 아니면 항상 true, required면 비어 있지 않아야 함', () => {
+  assert.equal(isAnswered(wish, {}), true);
+  assert.equal(isAnswered(wish, setText({}, wish, '   ')), true);
+  const required: TextQuestion = { ...wish, required: true };
+  assert.equal(isAnswered(required, {}), false);
+  assert.equal(isAnswered(required, setText({}, required, '   ')), false);
+  assert.equal(isAnswered(required, setText({}, required, ' 해산물 ')), true);
+});
+
+test('setText: 앞뒤 공백 제거 후 maxLength로 자름', () => {
+  const short: TextQuestion = { ...wish, maxLength: 5 };
+  assert.deepEqual(setText({}, short, '  가나다라마바사  ').q15, { type: 'text', text: '가나다라마' });
+  assert.deepEqual(setText({}, wish, '  해산물  ').q15, { type: 'text', text: '해산물' });
+});
+
+test('isComplete·firstUnanswered·progress: isAnswered 기준', () => {
+  let state: AnswerState = {};
+  assert.equal(isComplete(QUESTIONS, state), false);
+  assert.equal(firstUnanswered(QUESTIONS, state), 0);
+  assert.deepEqual(progress(QUESTIONS, state), { answered: 2, total: 5 });
+
+  state = setScale(state, q1, 0);
+  assert.equal(firstUnanswered(QUESTIONS, state), 1);
+  assert.deepEqual(progress(QUESTIONS, state), { answered: 3, total: 5 });
+
+  state = setScale(state, q2, 7);
+  assert.equal(firstUnanswered(QUESTIONS, state), 2);
+  assert.equal(isComplete(QUESTIONS, state), false);
+
+  state = toggleOption(state, likes, 'like_nature');
+  assert.equal(firstUnanswered(QUESTIONS, state), null);
+  assert.equal(isComplete(QUESTIONS, state), true);
+  assert.deepEqual(progress(QUESTIONS, state), { answered: 5, total: 5 });
+});
+
+test('buildSubmitBody: order 순, 건드리지 않은 q14는 [], 빈 q15는 빠짐', () => {
+  let state: AnswerState = {};
+  state = setScale(state, q2, 7);
+  state = setScale(state, q1, 0);
+  state = toggleOption(state, likes, 'like_spa');
+  state = toggleOption(state, likes, 'like_nature');
+  state = setText(state, wish, '   ');
+  assert.deepEqual(buildSubmitBody([wish, dislikes, likes, q2, q1], state), {
+    answers: [
+      { questionId: 'q1', value: 0 },
+      { questionId: 'q2', value: 7 },
+      { questionId: 'q13', optionIds: ['like_spa', 'like_nature'] },
+      { questionId: 'q14', optionIds: [] },
+    ],
   });
-  const frozenQuestions = deepFreeze(structuredClone(questions));
-  const before = structuredClone(state);
+});
 
-  setScale(state, 'q1', 3);
-  toggleOption(state, 'q13', 'q13_food');
-  toggleOption(state, 'q13', 'q13_hotspring');
-  setText(state, q15, ' 글 ');
-  isAnswered(q1, state);
-  isComplete(frozenQuestions, state);
-  firstUnanswered(frozenQuestions, state);
-  progress(frozenQuestions, state);
-  const body = buildSubmitBody(frozenQuestions, state);
-
-  assert.deepEqual(state, before);
-  assert.deepEqual(frozenQuestions, questions);
-  (body.answers[1] as { optionIds: string[] }).optionIds.push('x');
-  assert.deepEqual(state, before);
+test('buildSubmitBody: q15가 있으면 포함, minSelect>0 문항이 비면 생략', () => {
+  let state: AnswerState = {};
+  state = setScale(state, q1, 10);
+  state = toggleOption(state, likes, 'like_sea');
+  state = toggleOption(state, likes, 'like_sea');
+  state = toggleOption(state, dislikes, 'dislike_crowd');
+  state = setText(state, wish, ' 해산물은 꼭 먹고 싶어요 ');
+  assert.deepEqual(buildSubmitBody(QUESTIONS, state), {
+    answers: [
+      { questionId: 'q1', value: 10 },
+      { questionId: 'q14', optionIds: ['dislike_crowd'] },
+      { questionId: 'q15', text: '해산물은 꼭 먹고 싶어요' },
+    ],
+  });
 });

@@ -1,13 +1,12 @@
-export type ScaleAxis = 'EI' | 'SN' | 'TF' | 'JP';
-
 export type ScaleQuestion = {
   id: string;
   order: number;
   type: 'scale';
-  axis: ScaleAxis;
   text: string;
-  left: string;
-  right: string;
+  min: number;
+  max: number;
+  minLabel: string;
+  maxLabel: string;
 };
 
 export type MultiQuestion = {
@@ -15,7 +14,9 @@ export type MultiQuestion = {
   order: number;
   type: 'multi';
   text: string;
-  options: { id: string; text: string }[];
+  minSelect: number;
+  maxSelect: number;
+  options: { id: string; text: string; emoji: string }[];
 };
 
 export type TextQuestion = {
@@ -25,6 +26,7 @@ export type TextQuestion = {
   text: string;
   required: boolean;
   maxLength: number;
+  placeholder: string;
 };
 
 export type Question = ScaleQuestion | MultiQuestion | TextQuestion;
@@ -41,23 +43,49 @@ export type SubmitAnswer =
   | { questionId: string; optionIds: string[] }
   | { questionId: string; text: string };
 
-export type PersonaAxis = {
-  pair: ScaleAxis;
-  letter: string;
-  percent: number;
+export type Chip = {
+  label: string;
+  emoji: string;
+};
+
+export type TraitLevel = 'low' | 'neutral' | 'high';
+
+export type Trait = {
+  key: string;
+  name: string;
+  score: number;
+  level: TraitLevel;
+  label: string;
+  emoji: string;
+};
+
+export type PickedOption = {
+  id: string;
+  text: string;
+  emoji: string;
+};
+
+export type MustKeep = {
+  type: string;
+  label: string;
 };
 
 export type Persona = {
   memberId: string;
-  mbti: string;
+  nickname: string;
+  color: string;
+  no: number;
   title: string;
-  summary: string;
-  speechStyle: string;
-  axes: PersonaAxis[];
-  interests: string[];
-  mustDo: string[];
-  dealBreakers: string[];
-  source: 'llm' | 'template';
+  catchphrase: string;
+  tmi: string;
+  chips: Chip[];
+  traits: Trait[];
+  likes: PickedOption[];
+  dislikes: PickedOption[];
+  mustKeep: MustKeep[];
+  wishes: string[];
+  source: 'llm' | 'rule';
+  updatedAt: string;
 };
 
 export type TripStatus = 'preparing' | 'meeting' | 'voting' | 'confirmed';
@@ -75,7 +103,7 @@ export type Member = {
   color: string;
   isHost: boolean;
   personaReady: boolean;
-  mbti: string | null;
+  title: string | null;
 };
 
 export type SessionResponse = {
