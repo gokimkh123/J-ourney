@@ -22,6 +22,8 @@ export default function RootLayout() {
         options={{ title: "AI 회의", tabBarIcon: emojiIcon("💬") }}
       />
       <Tabs.Screen name="plan" options={{ title: "일정", tabBarIcon: emojiIcon("🗓️") }} />
+      <Tabs.Screen name="questionnaire" options={{ href: null }} />
+      <Tabs.Screen name="invite/[code]" options={{ href: null }} />
     </Tabs>
   );
 }

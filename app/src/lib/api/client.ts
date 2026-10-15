@@ -16,6 +16,7 @@ export type RequestOptions = {
   body?: unknown;
   query?: Record<string, QueryValue>;
   auth?: boolean;
+  timeoutMs?: number;
 };
 
 export type ApiClientOptions = {
@@ -51,8 +52,9 @@ export function createApiClient({
   async function request(
     method: string,
     path: string,
-    { body, query, auth = true }: RequestOptions = {},
+    { body, query, auth = true, timeoutMs: requestTimeoutMs }: RequestOptions = {},
   ): Promise<unknown> {
+    const limitMs = requestTimeoutMs ?? timeoutMs;
     const url = `${baseUrl}/api/v1${path}${buildQuery(query)}`;
     const headers: Record<string, string> = {};
     let payload: string | undefined;
@@ -71,7 +73,7 @@ export function createApiClient({
       timer = setTimeout(() => {
         controller.abort();
         reject(createTimeoutError());
-      }, timeoutMs);
+      }, limitMs);
     });
 
     const work = (async (): Promise<unknown> => {

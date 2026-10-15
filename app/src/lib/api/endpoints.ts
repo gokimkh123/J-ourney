@@ -48,7 +48,7 @@ export function createEndpoints(client: ApiClient): Endpoints {
       return parseQuestions(await client.get('/persona/questions', { auth: false }));
     },
     async submitPersona(answers) {
-      return parsePersona(await client.post('/me/persona', { answers }));
+      return parsePersona(await client.post('/me/persona', { answers }, { timeoutMs: 20000 }));
     },
     async getPersona() {
       return parsePersona(await client.get('/me/persona'));
