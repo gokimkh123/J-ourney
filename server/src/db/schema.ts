@@ -212,3 +212,41 @@ export const categories = pgTable('categories', {
   name2: text('name2').notNull(),
   name3: text('name3').notNull(),
 });
+
+/**
+ * 회의 실행 (명세서 mtg_): 여행마다 실행 횟수 상한·진행 중 잠금·이 실행의 LLM 호출 수를 둠
+ * 단계별 상태는 LangGraph 체크포인트(langgraph 스키마)에 thread_id = 회의 id로 저장됨
+ */
+export const meetings = pgTable(
+  'meetings',
+  {
+    id: text('id').primaryKey(),
+    tripId: text('trip_id')
+      .notNull()
+      .references(() => trips.id, { onDelete: 'cascade' }),
+    runNo: integer('run_no').notNull(),
+    status: text('status', { enum: ['running', 'done', 'failed'] }).notNull(),
+    llmCalls: integer('llm_calls').notNull().default(0),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => [unique('meetings_trip_run').on(t.tripId, t.runNo)],
+);
+
+/** 회의 이벤트 기록 (명세서 WebSocket 봉투 {type, tripId, seq, at, data}): seq는 여행마다 1부터, 다시 접속하면 afterSeq 뒤부터 보냄 */
+export const meetingEvents = pgTable(
+  'meeting_events',
+  {
+    tripId: text('trip_id')
+      .notNull()
+      .references(() => trips.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(),
+    meetingId: text('meeting_id')
+      .notNull()
+      .references(() => meetings.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    data: jsonb('data').notNull(),
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.tripId, t.seq] })],
+);

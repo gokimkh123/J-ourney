@@ -37,6 +37,13 @@ export function fakeLlm(respond: (input: any, call: number, system: string, sche
       fake.calls++;
       return req.schema.parse(await respond(req.input, fake.calls, req.system, req.schema)) as import('zod').infer<T>;
     },
+    /** 글자 단위 받기: 같은 응답을 세 조각으로 나눠 보냄 */
+    async streamJson<T extends import('zod').ZodType>(req: import('../src/llm/client.js').JsonRequest<T>, onText: (text: string) => void) {
+      const value = await fake.generateJson(req);
+      const text = JSON.stringify(value);
+      for (const end of [Math.ceil(text.length / 3), Math.ceil((text.length * 2) / 3), text.length]) onText(text.slice(0, end));
+      return { value, model: 'fake', text, usage: { input: 100, output: 50 }, ms: 1 };
+    },
   };
   return fake;
 }

@@ -10,8 +10,8 @@ function pick(alphabet: string, length: number): string {
   return out;
 }
 
-/** 접두사가 붙은 ID (명세서 3장: trp_ 여행, mem_ 구성원) */
-export const newId = (prefix: 'trp' | 'mem') => `${prefix}_${pick(ID_ALPHABET, 10)}`;
+/** 접두사가 붙은 ID (명세서 3장: trp_ 여행, mem_ 구성원, mtg_ 회의) */
+export const newId = (prefix: 'trp' | 'mem' | 'mtg') => `${prefix}_${pick(ID_ALPHABET, 10)}`;
 
 /** 6자리 초대 코드 (예: BSN482) */
 export const newInviteCode = () => pick(INVITE_ALPHABET, 6);

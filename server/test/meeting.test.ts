@@ -7,7 +7,9 @@ import { type MemberInput, retrieveCandidates } from '../src/meeting/retrieve.js
 import { ruleMatcher, sameName } from '../src/meeting/rules.js';
 import type { PersonaProfile } from '../src/persona/types.js';
 import type { TourClient } from '../src/tour/client.js';
-import { MINSU, answersOf, call, createTestApp } from './helpers.js';
+import { meetings } from '../src/db/schema.js';
+import { PICK } from '../src/meeting/pick.js';
+import { MINSU, answersOf, call, createTestApp, fakeLlm } from './helpers.js';
 
 const REGIONS = [
   ['26', '부산광역시', '200', '영도구'],
@@ -408,8 +410,144 @@ describe('회의 조건 API와 시험 경로', () => {
 
     // 그래프 칸: 실제 그래프 구조 (실행·외부 호출 없음), 터널 요청은 막음
     const graph = await call(app, 'GET', '/dev/meeting/graph');
-    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', '__end__']);
+    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', '__end__']);
     expect(graph.body.edges).toContainEqual({ from: 'prepare', to: 'retrieve', conditional: false });
     expect((await call(app, 'GET', '/dev/meeting/graph', undefined, undefined, { 'cf-connecting-ip': '203.0.113.7' })).status).toBe(403);
   });
 });
+
+describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
+  /** 가짜 LLM: 후보 표의 앞쪽 id를 고름. bad(member 제목, 몇 번째 호출)가 true면 표에 없는 id를 냄 */
+  const pickLlm = (bad: (title: string, n: number) => boolean = () => false, ignoreMust: (title: string, n: number) => boolean = () => false) => {
+    const seen = new Map<string, number>();
+    return fakeLlm((input) => {
+      const title: string = input.me.title;
+      const n = (seen.get(title) ?? 0) + 1;
+      seen.set(title, n);
+      // 잘 따르는 LLM처럼 꼭 지킬 것 번호를 먼저 고름 (ignoreMust면 무시)
+      const table = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|')[0]);
+      const ids = ignoreMust(title, n) ? table.filter((id) => !input.me.mustKeepIds.includes(id)) : [...new Set([...input.me.mustKeepIds, ...table])];
+      const picks = bad(title, n) ? ['없는1', '없는2', '없는3'] : ids.slice(0, PICK.count);
+      const lodging = (input.lodgings as string) ? (input.lodgings as string).split('\n')[1].split('|')[0] : '';
+      return { picks: picks.map((id) => ({ id, reason: '내 취향에 맞아요' })), lodging: { id: lodging, reason: lodging ? '편해 보여요' : '' }, comment: '여기 좋아요!' };
+    });
+  };
+  async function readyTrip(options: Parameters<typeof createTestApp>[0] = {}) {
+    const t = await createTestApp({ devUi: true, ...options });
+    await seedDb(t.db);
+    const demo = await call(t.app, 'POST', '/trips', { title: '부산 시연', nickname: '민수', demoMode: true });
+    const token = demo.body.token as string;
+    // 방장 성향은 터널 요청으로 만들어 규칙 카드 (가짜 LLM은 고르기에만 쓰임)
+    await call(t.app, 'POST', '/me/persona', { answers: answersOf(MINSU, ['like_night', 'like_sea'], []) }, token, { 'cf-connecting-ip': '203.0.113.7' });
+    await call(t.app, 'PUT', `/trips/${demo.body.trip.id}/conditions`, { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-08' }, token);
+    return { ...t, token, tripId: demo.body.trip.id as string };
+  }
+  const run = async (app: Awaited<ReturnType<typeof createTestApp>>['app'], token: string, headers: Record<string, string> = {}) => {
+    const res = await app.request('/api/v1/dev/meeting/run', { method: 'POST', headers: { Authorization: `Bearer ${token}`, ...headers } });
+    const text = await res.text();
+    return { status: res.status, lines: res.status === 200 ? text.trim().split('\n').map((l) => JSON.parse(l)) : [JSON.parse(text)] };
+  };
+
+  it('4명이 각자 3곳 + 숙소를 고르고, 명세서 이벤트를 순서대로 기록·전송함 (LLM 4회)', async () => {
+    const llm = pickLlm();
+    const { app, db, token } = await readyTrip({ llm });
+    const { status, lines } = await run(app, token);
+    expect(status).toBe(200);
+    const result = lines.find((l) => l.kind === 'result');
+    expect(result.llmCalls).toBe(4);
+    expect(llm.calls).toBe(4);
+    expect(result.picks).toHaveLength(4);
+    const ids = new Set(result.retrieve.candidates.map((c: { id: string }) => c.id));
+    for (const p of result.picks) {
+      expect(p).toMatchObject({ source: 'llm', comment: '여기 좋아요!' });
+      expect(p.picks).toHaveLength(PICK.count);
+      expect(p.picks.every((x: { id: string }) => ids.has(x.id))).toBe(true);
+      expect(p.lodging).not.toBeNull(); // 1박이라 숙소도 고름
+    }
+    expect(result.board.candidates.every((c: { placeId: string; proposedBy: string[] }) => c.placeId.startsWith('plc_') && c.proposedBy.length > 0)).toBe(true);
+
+    const events = lines.filter((l) => l.kind === 'event').map((l) => l.event);
+    expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => i + 1));
+    expect(events[0]).toMatchObject({ type: 'meeting.started', data: { kind: 'meeting' } });
+    expect(events[0].data.agents).toHaveLength(4);
+    expect(events.at(-1).type).toBe('board.updated');
+    const stages = events.filter((e) => e.type === 'research.progress').map((e) => e.data.stage);
+    for (const stage of ['planning', 'done']) expect(stages.filter((x) => x === stage)).toHaveLength(4);
+    expect(stages.filter((x) => x === 'searching').length).toBeGreaterThanOrEqual(8); // 사람마다 장소 찾기·인기 순위(+혼잡도)
+    expect(stages.filter((x) => x === 'picking').length).toBe(4 + 4 * (PICK.count + 1)); // 고르기 시작 + 고른 곳·숙소마다
+    expect(events.filter((e) => e.type === 'agent.message')).toHaveLength(4);
+    const done = events.find((e) => e.type === 'research.progress' && e.data.stage === 'done');
+    expect(done.data.focus).toMatchObject({ label: expect.any(String) });
+
+    // 시험 화면용 LLM 과정(요청·받는 글자·응답)은 화면으로만 보내고 DB에는 기록하지 않음
+    const traces = lines.filter((l) => l.kind === 'llm');
+    expect(traces.filter((l) => l.type === 'llm.request')).toHaveLength(4);
+    expect(traces.filter((l) => l.type === 'llm.response')).toHaveLength(4);
+    const first = traces.find((l) => l.type === 'llm.request').data.agentId;
+    const typed = traces.filter((l) => l.type === 'llm.delta' && l.data.agentId === first).map((l) => l.data.text).join('');
+    expect(JSON.parse(typed).picks).toHaveLength(PICK.count);
+    expect(traces.find((l) => l.type === 'llm.request').data.input.candidates.split('\n')[0]).toBe('번호|이름|분류|인기|혼잡|요약'); // 고르기에 필요한 칸만, id 대신 짧은 번호
+
+    // 다시 접속한 화면은 afterSeq 뒤부터 받음
+    const again = await call(app, 'GET', '/dev/meeting/events?afterSeq=2', undefined, token);
+    expect(again.body.events[0].seq).toBe(3);
+    expect(again.body.events).toHaveLength(events.length - 2);
+    expect(again.body.events.some((e: { type: string }) => e.type.startsWith('llm.'))).toBe(false);
+    const [row] = await db.select().from(meetings);
+    expect(row).toMatchObject({ status: 'done', llmCalls: 4, runNo: 1 });
+  });
+
+  it('형식이 틀리면 1번 더 부르고, 그래도 틀리면 그 사람만 규칙 고르기 (몫 점수 상위)', async () => {
+    // 첫째(방장)는 첫 호출만 틀리고, 둘째(지은)는 계속 틀림
+    const llm = pickLlm((title, n) => (title === '반짝반짝 탐험가' ? true : n === 1 && title !== '꼼꼼한 맛집 플래너' && title !== '느긋한 힐러'));
+    const { app, token } = await readyTrip({ llm });
+    const { lines } = await run(app, token);
+    const result = lines.find((l) => l.kind === 'result');
+    const byTitle = Object.fromEntries(result.members.map((m: { memberId: string; title: string }) => [m.title, result.picks.find((p: { memberId: string }) => p.memberId === m.memberId)]));
+    expect(byTitle['반짝반짝 탐험가']).toMatchObject({ source: 'rule', llmCalls: PICK.tries });
+    const host = result.picks.find((p: { source: string; llmCalls: number }) => p.llmCalls === 2 && p.source === 'llm');
+    expect(host).toBeDefined();
+    expect(result.llmCalls).toBe(PICK.tries + 2 + 1 + 1);
+    const rulePick = byTitle['반짝반짝 탐험가'];
+    const mine = result.retrieve.candidates.filter((c: { forMembers: string[] }) => c.forMembers.includes(rulePick.memberId));
+    expect(rulePick.picks.every((x: { id: string }) => mine.some((c: { id: string }) => c.id === x.id))).toBe(true);
+  });
+
+  it('꼭 지킬 것 후보를 안 고르면 1번 더 부르고, 그래도 빠지면 마지막 장소를 꼭 지킬 것으로 바꿈', async () => {
+    const llm = pickLlm(() => false, (title) => title === '느긋한 힐러'); // 서연(온천)은 계속 무시
+    const { app, token } = await readyTrip({ llm });
+    const result = (await run(app, token)).lines.find((l) => l.kind === 'result');
+    const seoyeon = result.members.find((m: { title: string }) => m.title === '느긋한 힐러');
+    const p = result.picks.find((x: { memberId: string }) => x.memberId === seoyeon.memberId);
+    expect(p.llmCalls).toBe(PICK.tries);
+    const spa = result.retrieve.candidates.find((c: { name: string }) => c.name === '태종대온천찜질방');
+    expect(p.picks.map((x: { id: string }) => x.id)).toContain(spa.id);
+    expect(p.picks).toHaveLength(PICK.count);
+  });
+
+  it('하루 LLM 상한이면 부르지 않고 4명 모두 규칙 고르기, 실행 횟수는 여행당 상한까지', async () => {
+    const llm = pickLlm();
+    const { app, db, token } = await readyTrip({ llm, llmDailyLimit: 0, meetingRunsPerTrip: 2 });
+    const first = (await run(app, token)).lines.find((l) => l.kind === 'result');
+    expect(first.picks.every((p: { source: string }) => p.source === 'rule')).toBe(true);
+    expect(first.llmCalls).toBe(0);
+    expect(llm.calls).toBe(0);
+    expect((await run(app, token)).status).toBe(200);
+    const third = await run(app, token);
+    expect(third.status).toBe(409);
+    expect(third.lines[0].error.code).toBe('MEETING_LIMIT');
+    expect((await db.select().from(meetings)).length).toBe(2);
+  });
+
+  it('성향이 준비되지 않았으면 실행 횟수를 쓰지 않고 PERSONA_REQUIRED, 터널 요청은 403', async () => {
+    const { app, db } = await createTestApp({ devUi: true });
+    await seedDb(db);
+    const t = await call(app, 'POST', '/trips', { title: '부산', nickname: '민수' });
+    await call(app, 'PUT', `/trips/${t.body.trip.id}/conditions`, { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-07' }, t.body.token);
+    const res = await run(app, t.body.token);
+    expect(res.lines[0].error.code).toBe('PERSONA_REQUIRED');
+    expect((await db.select().from(meetings)).length).toBe(0);
+    expect((await run(app, t.body.token, { 'cf-connecting-ip': '203.0.113.7' })).status).toBe(403);
+  });
+});
+

@@ -53,6 +53,11 @@ export interface MemberInput {
   dislikes: readonly string[];
   mustKeep: readonly MustKeepRule[];
   profile: PersonaProfile;
+  /** 15번에서 규칙으로 바꾸지 못한 바람 (3단계 고르기 LLM에 참고로 넣음) */
+  wishes?: readonly string[];
+  /** 성향 칩 이름 (예: 느긋형) · 구성원 색 (화면·이벤트용) */
+  chips?: readonly string[];
+  color?: string;
 }
 
 export interface Candidate {

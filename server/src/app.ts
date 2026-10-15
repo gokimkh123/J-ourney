@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { type BaseCheckpointSaver, MemorySaver } from '@langchain/langgraph';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Db } from './db/client.js';
@@ -28,10 +29,20 @@ export interface AppOptions {
   rateLimitPerMinute?: number;
   /** 집중률 예측 호출기 (회의 후보 찾기에서 씀, null이면 받아 둔 예측만 씀) */
   crowdClient?: TourClient | null;
+  /** 회의용 LLM (응답 대기 시간이 다름). 없으면 llm을 씀 */
+  meetingLlm?: LlmClient | null;
+  /** 회의 단계 저장 (운영: Postgres, 시험: 메모리) */
+  checkpointer?: BaseCheckpointSaver;
+  meetingRunsPerTrip?: number;
+  meetingLlmCallsPerRun?: number;
 }
 
 const devUiFile = new URL('../dev-ui/index.html', import.meta.url);
 const devMeetingFile = new URL('../dev-ui/meeting.html', import.meta.url);
+const devAppFile = new URL('../dev-ui/app.html', import.meta.url);
+/** 시연 화면 그림 (그림 지도·캐릭터). 이 폴더 바로 아래의 이 형식 파일만 내보냄 */
+const devImgDir = new URL('../dev-ui/img/', import.meta.url);
+const DEV_IMG_TYPES: Record<string, string> = { png: 'image/png', webp: 'image/webp' };
 
 /** 요청 본문 상한 (가장 큰 요청인 설문 응답도 약 1KB). 넘으면 읽지 않고 413 */
 const MAX_BODY_BYTES = 32 * 1024;
@@ -46,6 +57,10 @@ export function createApp({
   ipHashSecret = config.ipHashSecret,
   rateLimitPerMinute = config.rateLimitPerMinute,
   crowdClient = null,
+  meetingLlm,
+  checkpointer = new MemorySaver(),
+  meetingRunsPerTrip = config.meetingRunsPerTrip,
+  meetingLlmCallsPerRun = config.meetingLlmCallsPerRun,
 }: AppOptions) {
   const api = new Hono();
   api.use('*', writeRateLimit(rateLimitPerMinute));
@@ -65,7 +80,10 @@ export function createApp({
   if (db) {
     api.route('/', tripRoutes(db));
     api.route('/', personaRoutes({ db, llm, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret }));
-    if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient }));
+    if (devUi) {
+      const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
+      api.route('/', meetingDevRoutes({ db, crowdClient, llm: meetingLlm ?? llm, limits, checkpointer }));
+    }
   } else {
     api.all('*', () => {
       throw new ApiError('INTERNAL_ERROR', 'DB가 설정되지 않아 사용할 수 없음');
@@ -85,6 +103,18 @@ export function createApp({
     app.get('/dev/meeting', async (c) => {
       c.header('Cache-Control', 'no-store');
       return c.html(await readFile(devMeetingFile, 'utf8'));
+    });
+    // 앱처럼 보이는 시연 화면 (개발자 도구 휴대폰 보기용): 시연 여행 → 성향 카드 → 조건 → 지도 위 AI 회의
+    app.get('/dev/app', async (c) => {
+      c.header('Cache-Control', 'no-store');
+      return c.html(await readFile(devAppFile, 'utf8'));
+    });
+    // 파일 이름 규칙(영문 소문자·숫자·-)에 맞지 않으면 읽지 않음 → 폴더 밖 경로로 나갈 수 없음
+    app.get('/dev/img/:name', async (c) => {
+      const m = /^[a-z0-9-]+\.(png|webp)$/.exec(c.req.param('name'));
+      const body = m ? await readFile(new URL(m[0], devImgDir)).catch(() => null) : null;
+      if (!m || !body) return c.json({ error: { code: 'NOT_FOUND', message: '요청한 그림이 없음' } }, 404);
+      return c.body(new Uint8Array(body), 200, { 'Content-Type': DEV_IMG_TYPES[m[1]], 'Cache-Control': 'max-age=300' });
     });
   }
 

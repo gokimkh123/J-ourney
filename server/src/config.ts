@@ -28,6 +28,16 @@ export const config = {
   llmTimeoutMs: num('LLM_TIMEOUT_MS', 6000),
   /** LLM 1회 호출의 토큰 상한 (입력 + 출력, 사용자 지시 99,900). 넘을 수 있는 요청은 부르지 않고 규칙 카드로 대신함 */
   llmCallTokenLimit: num('LLM_CALL_TOKEN_LIMIT', 99_900),
+  /** 여행 하나에서 회의를 실행할 수 있는 횟수 (개발 중 3회, 사용자 결정 10/15) */
+  meetingRunsPerTrip: count('MEETING_RUNS_PER_TRIP', 3),
+  /** 회의 LLM의 모델 하나당 응답 대기 시간: 회의는 실시간 전송이라 화면 요청 제한(10초)과 무관해 성향 카드보다 길게 둠 */
+  meetingLlmTimeoutMs: num('MEETING_LLM_TIMEOUT_MS', 15000),
+  /** 회의 실행 1회에서 부를 수 있는 LLM 횟수 (넘으면 규칙으로 대신함, 하루 상한과 별도로 셈) */
+  meetingLlmCallsPerRun: num('MEETING_LLM_CALLS_PER_RUN', 16),
+  /** 회의 단계 저장(LangGraph 체크포인트)용 DB 연결 수 */
+  checkpointPoolMax: num('CHECKPOINT_POOL_MAX', 3),
+  /** 끝난 회의의 단계 기록을 지우기 전에 남겨 두는 일수 */
+  meetingKeepDays: num('MEETING_KEEP_DAYS', 30),
   /** LLM 1회 응답(출력)의 토큰 상한. 위 상한 안에 들어가야 하며, 쓰는 모델이 모두 지원하는 값으로 둠 */
   llmMaxOutputTokens: num('LLM_MAX_OUTPUT_TOKENS', 8_192),
   /** 하루 LLM 호출 상한 (넘으면 규칙 카드로 대신함) */
