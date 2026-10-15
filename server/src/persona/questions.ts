@@ -43,25 +43,29 @@ export const SCALE_QUESTIONS: readonly { id: string; trait: TraitKey; reverse: b
   { id: 'q12', trait: 'budget', reverse: true, text: '여행 경비를 아끼려고 더 싼 곳을 찾아보는 편이다' },
 ];
 
-/** 13번 좋아요: TourAPI 대분류(tourCategory)와 인기 검색어(keyword) */
-export const LIKE_OPTIONS: readonly { id: string; text: string; emoji: string; tourCategory: string | null; keyword: string | null }[] = [
-  { id: 'like_nature', text: '자연·풍경', emoji: '🌲', tourCategory: 'NA', keyword: null },
-  { id: 'like_sea', text: '바다', emoji: '🌊', tourCategory: null, keyword: '바다' },
-  { id: 'like_spa', text: '온천·스파', emoji: '♨️', tourCategory: null, keyword: '온천' },
-  { id: 'like_history', text: '역사', emoji: '🏯', tourCategory: 'HS', keyword: null },
-  { id: 'like_culture', text: '문화·전시', emoji: '🎨', tourCategory: 'VE', keyword: null },
-  { id: 'like_festival', text: '축제·공연', emoji: '🎪', tourCategory: 'EV', keyword: null },
-  { id: 'like_experience', text: '체험', emoji: '🧪', tourCategory: 'EX', keyword: null },
-  { id: 'like_leisure', text: '레저·스포츠', emoji: '🏄', tourCategory: 'LS', keyword: null },
-  { id: 'like_shopping', text: '쇼핑', emoji: '🛍️', tourCategory: 'SH', keyword: null },
-  { id: 'like_food', text: '맛집', emoji: '🍽️', tourCategory: 'FD', keyword: null },
-  { id: 'like_cafe', text: '카페', emoji: '☕', tourCategory: null, keyword: '카페' },
-  { id: 'like_night', text: '야경', emoji: '🌃', tourCategory: null, keyword: '야경' },
+/**
+ * 13번 좋아요: 보기마다 맞는 장소의 한국관광공사 공식 분류 코드 앞부분 (장소 이름·소개글의 글자는 보지 않음)
+ * 2자리는 대분류 전체(NA 자연관광), 6자리는 소분류 묶음(NA0209 해변·해수욕장)
+ */
+export const LIKE_OPTIONS: readonly { id: string; text: string; emoji: string; codes: readonly string[] }[] = [
+  { id: 'like_nature', text: '자연·풍경', emoji: '🌲', codes: ['NA'] },
+  { id: 'like_sea', text: '바다', emoji: '🌊', codes: ['NA0207', 'NA0208', 'NA0209'] }, // 항구·포구, 해안절경, 해변·해수욕장
+  { id: 'like_spa', text: '온천·스파', emoji: '♨️', codes: ['EX0501', 'EX0502'] }, // 온천·사우나·스파, 찜질방
+  { id: 'like_history', text: '역사', emoji: '🏯', codes: ['HS'] },
+  { id: 'like_culture', text: '문화·전시', emoji: '🎨', codes: ['VE'] },
+  { id: 'like_festival', text: '축제·공연', emoji: '🎪', codes: ['EV'] },
+  { id: 'like_experience', text: '체험', emoji: '🧪', codes: ['EX'] },
+  { id: 'like_leisure', text: '레저·스포츠', emoji: '🏄', codes: ['LS'] },
+  { id: 'like_shopping', text: '쇼핑', emoji: '🛍️', codes: ['SH'] },
+  { id: 'like_food', text: '맛집', emoji: '🍽️', codes: ['FD'] },
+  { id: 'like_cafe', text: '카페', emoji: '☕', codes: ['FD05'] }, // 카페·찻집
+  // 야경은 공식 분류가 없어 가장 가까운 타워·전망대만 둠 (밤 풍경 여부는 회의 LLM이 소개글로 판단)
+  { id: 'like_night', text: '야경', emoji: '🌃', codes: ['VE0102'] },
 ];
 
-/** 14번 싫어요: 데이터로 확인할 수 있는 조건만 둠 */
-export const DISLIKE_OPTIONS: readonly { id: string; text: string; emoji: string }[] = [
-  { id: 'dislike_walk', text: '오래 걷기', emoji: '🚶' },
+/** 14번 싫어요: 데이터로 확인할 수 있는 조건만 둠 (codes: 걸리는 장소의 공식 분류 코드 앞부분) */
+export const DISLIKE_OPTIONS: readonly { id: string; text: string; emoji: string; codes?: readonly string[] }[] = [
+  { id: 'dislike_walk', text: '오래 걷기', emoji: '🚶', codes: ['NA01', 'NA04'] }, // 산·숲·계곡, 자연공원·휴양림·수목원
   { id: 'dislike_early', text: '이른 출발', emoji: '⏰' },
   { id: 'dislike_crowd', text: '붐비는 곳', emoji: '👥' },
   { id: 'dislike_pricey', text: '비싼 곳', emoji: '💸' },

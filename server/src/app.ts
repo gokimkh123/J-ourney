@@ -7,7 +7,9 @@ import { ApiError } from './lib/errors.js';
 import { writeRateLimit } from './lib/rate-limit.js';
 import { nowKst } from './lib/time.js';
 import type { LlmClient } from './llm/client.js';
+import { meetingDevRoutes } from './routes/meeting-dev.js';
 import { personaRoutes } from './routes/persona.js';
+import type { TourClient } from './tour/client.js';
 import { tripRoutes } from './routes/trips.js';
 
 export { nowKst } from './lib/time.js';
@@ -24,9 +26,12 @@ export interface AppOptions {
   llmPerIpDaily?: number;
   ipHashSecret?: string;
   rateLimitPerMinute?: number;
+  /** 집중률 예측 호출기 (회의 후보 찾기에서 씀, null이면 받아 둔 예측만 씀) */
+  crowdClient?: TourClient | null;
 }
 
 const devUiFile = new URL('../dev-ui/index.html', import.meta.url);
+const devMeetingFile = new URL('../dev-ui/meeting.html', import.meta.url);
 
 /** 요청 본문 상한 (가장 큰 요청인 설문 응답도 약 1KB). 넘으면 읽지 않고 413 */
 const MAX_BODY_BYTES = 32 * 1024;
@@ -40,6 +45,7 @@ export function createApp({
   llmPerIpDaily = config.llmPerIpDaily,
   ipHashSecret = config.ipHashSecret,
   rateLimitPerMinute = config.rateLimitPerMinute,
+  crowdClient = null,
 }: AppOptions) {
   const api = new Hono();
   api.use('*', writeRateLimit(rateLimitPerMinute));
@@ -59,6 +65,7 @@ export function createApp({
   if (db) {
     api.route('/', tripRoutes(db));
     api.route('/', personaRoutes({ db, llm, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret }));
+    if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient }));
   } else {
     api.all('*', () => {
       throw new ApiError('INTERNAL_ERROR', 'DB가 설정되지 않아 사용할 수 없음');
@@ -73,6 +80,11 @@ export function createApp({
     app.get('/dev/', async (c) => {
       c.header('Cache-Control', 'no-store');
       return c.html(await readFile(devUiFile, 'utf8'));
+    });
+    // 회의 엔진 단계별 시험 화면 (1–15단계를 하나씩 실행해 봄)
+    app.get('/dev/meeting', async (c) => {
+      c.header('Cache-Control', 'no-store');
+      return c.html(await readFile(devMeetingFile, 'utf8'));
     });
   }
 

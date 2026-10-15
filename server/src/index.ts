@@ -3,6 +3,8 @@ import { createApp } from './app.js';
 import { config } from './config.js';
 import { connectDb } from './db/client.js';
 import { createLangChainLlm, type LlmClient, type ModelSpec, parseModelSpec, withFallbacks } from './llm/client.js';
+import { createTourClient } from './tour/client.js';
+import { tryConsumeTourCall } from './tour/usage.js';
 
 if (!config.databaseUrl) console.warn('DATABASE_URL이 없어 DB 없이 실행함 (/health만 동작)');
 const db = config.databaseUrl ? await connectDb(config.databaseUrl) : null;
@@ -26,8 +28,20 @@ const llm: LlmClient | null = clients.length ? withFallbacks(clients) : null;
 console.log(`LLM: ${llm ? llm.name : '없음 (규칙 카드만 만듦)'}`);
 if (!process.env.IP_HASH_SECRET) console.warn('IP_HASH_SECRET이 없어 임시 값을 씀 (서버를 다시 켜면 IP별 AI 횟수가 초기화됨)');
 
+// 집중률 예측 호출기: 기능별 하루 상한을 tour_api_usage 표로 셈 (회의 후보 찾기에서 구·군마다 하루 1회)
+const crowdClient =
+  db && config.dataGoKrKey
+    ? createTourClient({
+        baseUrl: config.tourCrowdBase,
+        serviceKey: config.dataGoKrKey,
+        mobileApp: config.tourMobileApp,
+        beforeAttempt: (operation) => tryConsumeTourCall(db, `TatsCnctrRateService/${operation}`, config.tourDailyLimit),
+      })
+    : null;
+
 const app = createApp({
   db,
+  crowdClient,
   devUi: config.devUi,
   llm,
   llmDailyLimit: config.llmDailyLimit,
@@ -39,5 +53,5 @@ const app = createApp({
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`J-ourney 서버 실행 중: http://localhost:${info.port}/api/v1/health`);
-  if (config.devUi) console.log(`백엔드 시험 화면: http://localhost:${info.port}/dev/`);
+  if (config.devUi) console.log(`백엔드 시험 화면: http://localhost:${info.port}/dev/ · 회의 엔진: http://localhost:${info.port}/dev/meeting`);
 });

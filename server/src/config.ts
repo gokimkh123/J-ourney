@@ -39,4 +39,12 @@ export const config = {
   ipHashSecret: process.env.IP_HASH_SECRET || randomBytes(32).toString('hex'),
   /** IP별 쓰기 요청 제한 (1분당) */
   rateLimitPerMinute: num('RATE_LIMIT_PER_MINUTE', 60),
+  /** 공공데이터포털 서비스 키 (TourAPI·집중률 등) */
+  dataGoKrKey: process.env.DATA_GO_KR_SERVICE_KEY || null,
+  /** 한국관광공사 관광지 집중률 예측 주소 */
+  tourCrowdBase: process.env.TOUR_CROWD_API_BASE ?? 'https://apis.data.go.kr/B551011/TatsCnctrRateService',
+  /** TourAPI MobileApp 값. 운영계정 심의에서 서비스 고유명을 확인하므로 바꾸지 않음 */
+  tourMobileApp: process.env.TOUR_MOBILE_APP ?? 'J-ourney',
+  /** 기능별 하루 TourAPI 호출 상한 (공공데이터포털 개발계정은 기능마다 하루 1,000건) */
+  tourDailyLimit: num('TOUR_DAILY_LIMIT', 1000),
 };

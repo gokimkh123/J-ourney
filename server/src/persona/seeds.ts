@@ -24,7 +24,7 @@ export const DEMO_SEEDS: readonly Seed[] = [
       title: '반짝반짝 탐험가',
       catchphrase: '여기 사진 각 나와요!',
       tmi: '카메라 배터리는 늘 두 개',
-      mustKeep: [{ type: 'include', label: '흰여울문화마을 사진', quote: '흰여울문화마을에서 사진은 꼭 찍고 싶어요', keyword: '흰여울문화마을', start: null, end: null, amount: null }],
+      mustKeep: [{ type: 'include', label: '흰여울문화마을 사진', quote: '흰여울문화마을에서 사진은 꼭 찍고 싶어요', keyword: '흰여울문화마을', target: 'place', codes: [], start: null, end: null, amount: null }],
       wishes: [],
     },
   },
@@ -41,7 +41,7 @@ export const DEMO_SEEDS: readonly Seed[] = [
       catchphrase: '동선부터 정리해 볼게요!',
       tmi: '여행 전날 일정표가 완성됨',
       mustKeep: [
-        { type: 'include', label: '돼지국밥 먹기', quote: '돼지국밥은 꼭 먹고', keyword: '돼지국밥', start: null, end: null, amount: null },
+        { type: 'include', label: '돼지국밥 먹기', quote: '돼지국밥은 꼭 먹고', keyword: '돼지국밥', target: 'food', codes: [], start: null, end: null, amount: null },
         { type: 'budget', label: '1인 25만 원 이하', quote: '1인 25만 원은 넘지 않았으면 해요', keyword: null, start: null, end: null, amount: 250000 },
       ],
       wishes: [],
@@ -60,7 +60,7 @@ export const DEMO_SEEDS: readonly Seed[] = [
       catchphrase: '오후엔 온천에서 쉬어 가요~',
       tmi: '여행 가방은 늘 반만 채움',
       mustKeep: [
-        { type: 'include', label: '온천 가기', quote: '온천은 꼭 가고', keyword: '온천', start: null, end: null, amount: null },
+        { type: 'include', label: '온천 가기', quote: '온천은 꼭 가고', keyword: '온천', target: 'category', codes: ['EX050100'], start: null, end: null, amount: null },
         { type: 'steps', label: '하루 1만 보 이하', quote: '하루 1만 보는 넘지 않았으면 해요', keyword: null, start: null, end: null, amount: 10000 },
       ],
       wishes: [],

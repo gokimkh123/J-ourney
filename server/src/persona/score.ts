@@ -69,6 +69,17 @@ export function readAnswers(answers: RawAnswer[]): PersonaAnswers {
   };
 }
 
+/** 두 응답이 같은지 (좋아요·싫어요는 고른 순서와 상관없이 비교). 같은 응답으로 다시 제출하면 이전 카드를 그대로 씀 */
+export function sameAnswers(a: PersonaAnswers, b: PersonaAnswers): boolean {
+  const sameSet = (x: readonly string[], y: readonly string[]) => x.length === y.length && x.every((v) => y.includes(v));
+  return (
+    SCALE_QUESTIONS.every((q) => a.scale[q.id] === b.scale[q.id]) &&
+    sameSet(a.likes, b.likes) &&
+    sameSet(a.dislikes, b.dislikes) &&
+    a.mustKeepText === b.mustKeepText
+  );
+}
+
 /** 성향 점수 = ((+)문항 + (10 − (−)문항)) ÷ 2 → 3단계 판정 */
 export function scoreTraits(scale: Record<string, number>): TraitResult[] {
   return TRAITS.map((t) => {
