@@ -1,6 +1,5 @@
-import { isComplete } from '../persona/answers.ts';
 import { buildRulePersona } from '../persona/scoring.ts';
-import type { Answer, AnswerState, Member, Persona, Question, Trip } from '../persona/types.ts';
+import type { AnswerState, Member, Persona, Trip } from '../persona/types.ts';
 import { memberColors } from '../theme.ts';
 import type { MockRoute } from './mock.ts';
 import { MOCK_QUESTIONS } from './mockQuestions.ts';
@@ -15,6 +14,8 @@ const MAX_MEMBERS = 4;
 const FIRST_INVITE_CODE = 'BSN482';
 const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+// 실서버의 AI 한도를 흉내 낸다: 구성원당 이 횟수까지만 source가 'llm'이다.
+const LLM_LIMIT = 2;
 
 const SEEDS = [
   { nickname: '지은', title: '반짝반짝 탐험가' },
@@ -60,40 +61,61 @@ function nowKst(): string {
   return `${date}T${time}+09:00`;
 }
 
-function toAnswer(question: Question, item: Record<string, unknown>): Answer | null {
-  if (question.type === 'scale') {
-    const { value } = item;
-    if (
-      typeof value !== 'number' ||
-      !Number.isInteger(value) ||
-      value < question.min ||
-      value > question.max
-    ) {
-      return null;
-    }
-    return { type: 'scale', value };
-  }
-  if (question.type === 'multi') {
-    const { optionIds } = item;
-    if (!Array.isArray(optionIds) || !optionIds.every((id) => typeof id === 'string')) {
-      return null;
-    }
-    return { type: 'multi', optionIds: optionIds as string[] };
-  }
-  const { text } = item;
-  return typeof text === 'string' ? { type: 'text', text } : null;
-}
+// 성공하면 AnswerState, 실패하면 400 메시지 문자열을 돌려준다.
+function validateAnswers(raw: unknown): AnswerState | string {
+  if (!Array.isArray(raw)) return 'answers는 배열이어야 합니다.';
 
-function toAnswerState(answers: unknown): AnswerState | null {
-  if (!Array.isArray(answers)) return null;
-  const state: AnswerState = {};
-  for (const raw of answers) {
-    const item = asObject(raw);
+  const items = new Map<string, Record<string, unknown>>();
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return '답변 항목은 객체여야 합니다.';
+    }
+    const item = entry as Record<string, unknown>;
     const question = MOCK_QUESTIONS.find((q) => q.id === item.questionId);
-    if (!question) return null;
-    const answer = toAnswer(question, item);
-    if (answer === null) return null;
-    state[question.id] = answer;
+    if (!question) return '존재하지 않는 문항입니다.';
+    if (items.has(question.id)) return `${question.order}번 문항에 두 번 답했습니다.`;
+    items.set(question.id, item);
+  }
+
+  const state: AnswerState = {};
+  for (const question of MOCK_QUESTIONS) {
+    const n = question.order;
+    const item = items.get(question.id);
+
+    if (question.type === 'scale') {
+      if (item === undefined) return `${n}번 문항에 답해 주세요.`;
+      const { value } = item;
+      if (
+        typeof value !== 'number' ||
+        !Number.isInteger(value) ||
+        value < question.min ||
+        value > question.max
+      ) {
+        return `${n}번 문항은 ${question.min}~${question.max} 사이의 정수로 답해 주세요.`;
+      }
+      state[question.id] = { type: 'scale', value };
+    } else if (question.type === 'multi') {
+      const optionIds = item === undefined ? [] : item.optionIds;
+      if (!Array.isArray(optionIds) || !optionIds.every((id) => typeof id === 'string')) {
+        return `${n}번 문항은 선택지 목록(optionIds)으로 답해 주세요.`;
+      }
+      const ids = optionIds as string[];
+      const unknown = ids.find((id) => !question.options.some((option) => option.id === id));
+      if (unknown !== undefined) return `${n}번 문항에 없는 선택지입니다: ${unknown}`;
+      if (new Set(ids).size !== ids.length) return `${n}번 문항에 같은 선택지가 중복되었습니다.`;
+      if (ids.length < question.minSelect || ids.length > question.maxSelect) {
+        return `${n}번 문항은 ${question.minSelect}~${question.maxSelect}개를 골라 주세요.`;
+      }
+      state[question.id] = { type: 'multi', optionIds: ids };
+    } else {
+      if (item === undefined) continue;
+      if (typeof item.text !== 'string') return `${n}번 문항은 문자열로 답해 주세요.`;
+      const text = item.text.trim();
+      if (Array.from(text).length > question.maxLength) {
+        return `${n}번 문항은 ${question.maxLength}자 이하로 답해 주세요.`;
+      }
+      state[question.id] = { type: 'text', text };
+    }
   }
   return state;
 }
@@ -103,6 +125,7 @@ export function createMockRoutes(): MockRoute[] {
   const tripIdByCode = new Map<string, string>();
   const sessions = new Map<string, Session>();
   const personas = new Map<string, Persona>();
+  const submitCounts = new Map<string, number>();
   let tripCount = 0;
   let memberCount = 0;
 
@@ -231,19 +254,18 @@ export function createMockRoutes(): MockRoute[] {
       handler: ({ headers, body }) => {
         const session = authenticate(headers);
         if (session === null) return unauthorized();
-        const state = toAnswerState(asObject(body).answers);
-        if (state === null) return error(400, 'VALIDATION_ERROR', '답변 형식이 올바르지 않습니다.');
-        if (!isComplete(MOCK_QUESTIONS, state)) {
-          return error(400, 'VALIDATION_ERROR', '모든 필수 문항에 답해 주세요.');
-        }
+        const state = validateAnswers(asObject(body).answers);
+        if (typeof state === 'string') return error(400, 'VALIDATION_ERROR', state);
         const { member } = session;
+        const count = submitCounts.get(member.id) ?? 0;
         const persona = buildRulePersona({
           member: { id: member.id, nickname: member.nickname, color: member.color, no: session.no },
           answers: state,
           questions: MOCK_QUESTIONS,
-          source: 'llm',
+          source: count < LLM_LIMIT ? 'llm' : 'rule',
           now: nowKst(),
         });
+        submitCounts.set(member.id, count + 1);
         personas.set(member.id, persona);
         member.personaReady = true;
         member.title = persona.title;
