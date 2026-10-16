@@ -38,3 +38,18 @@ export function withAlpha(hex: string, alpha: number): string {
 export function sourceBadge(source: 'llm' | 'rule'): string {
   return source === 'llm' ? 'AI가 쓴 카드' : '기본 카드';
 }
+
+export function formatWon(n: number): string {
+  return `${String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}원`;
+}
+
+function utcDay(date: string): number {
+  const [y, m, d] = date.split('-').map(Number);
+  return Date.UTC(y!, m! - 1, d!) / 86400000;
+}
+
+export function nightsLabel(startDate: string, endDate: string): string {
+  const nights = utcDay(endDate) - utcDay(startDate);
+  if (nights === 0) return '당일';
+  return `${nights}박 ${nights + 1}일`;
+}
