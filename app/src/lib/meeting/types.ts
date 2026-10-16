@@ -1,6 +1,7 @@
 export const MEETING_EVENT_TYPES = [
   'meeting.started',
   'research.progress',
+  'board.updated',
   'round.started',
   'agent.message',
   'place.checked',
@@ -16,7 +17,8 @@ export const MEETING_EVENT_TYPES = [
 export type MeetingEventType = (typeof MEETING_EVENT_TYPES)[number];
 
 export type MeetingKind = 'meeting' | 'renegotiation';
-export type ResearchStage = 'queries' | 'search' | 'summarize' | 'done';
+export type ResearchStage = 'planning' | 'searching' | 'picking' | 'done';
+export type ResearchTool = 'tourSearch' | 'tourRank' | 'crowd' | 'price' | 'distance';
 export type AiVote = 'yes' | 'no';
 export type ConfirmDecision = 'approve' | 'revise' | 'reject';
 
@@ -24,26 +26,49 @@ export type AgentInfo = {
   agentId: string;
   memberId: string;
   nickname: string;
-  mbti: string;
   title: string;
+  chips: { label: string; emoji: string }[];
   color: string;
 };
 
-export type ResearchCounts = {
-  queries: number;
-  places: number;
-  reviews: number;
-  tourism: number;
+export type Focus = { lat: number; lng: number; label: string };
+
+export type AgentResearch = {
+  stage: ResearchStage;
+  tool: ResearchTool | null;
+  focus: Focus | null;
+  foundCount: number;
 };
 
-export type ResearchHighlight = { name: string; summary: string };
+export type BoardReaction = {
+  agentId: string;
+  kind: 'like' | 'warn' | 'block';
+  reason: string;
+};
+
+export type BoardCandidate = {
+  placeId: string;
+  name: string;
+  lat: number;
+  lng: number;
+  proposedBy: string[];
+  reactions: BoardReaction[];
+};
+
+export type AgendaItem = { placeId: string; text: string };
+
+export type Board = { candidates: BoardCandidate[]; agenda: AgendaItem[] };
 
 export type PlaceInfo = {
   name: string;
   openHours: string | null;
-  review: { count: number; summary: string } | null;
-  placeUrl: string;
+  popularity: number;
+  crowd: number;
+  links: { kakaoMap: string; naverMap: string };
 };
+
+export type RouteStop = { itemId: string; name: string; lat: number; lng: number };
+export type RouteDay = { day: number; stops: RouteStop[] };
 
 export type MeetingAgreedData = {
   planId: string;
@@ -76,11 +101,15 @@ export type MeetingStartedEvent = EventBase<
 export type ResearchProgressEvent = EventBase<
   'research.progress',
   {
+    agentId: string;
     stage: ResearchStage;
-    counts: ResearchCounts;
-    highlights: ResearchHighlight[];
+    tool?: ResearchTool | null;
+    focus?: Focus | null;
+    foundCount: number;
   }
 >;
+
+export type BoardUpdatedEvent = EventBase<'board.updated', Board>;
 
 export type RoundStartedEvent = EventBase<
   'round.started',
@@ -99,7 +128,7 @@ export type PlaceCheckedEvent = EventBase<
 
 export type PlanProposedEvent = EventBase<
   'plan.proposed',
-  { planId: string; version: number }
+  { planId: string; version: number; route: RouteDay[] }
 >;
 
 export type VoteCastEvent = EventBase<
@@ -129,6 +158,7 @@ export type PlanConfirmedEvent = EventBase<'plan.confirmed', { planId: string }>
 export type MeetingEvent =
   | MeetingStartedEvent
   | ResearchProgressEvent
+  | BoardUpdatedEvent
   | RoundStartedEvent
   | AgentMessageEvent
   | PlaceCheckedEvent
@@ -177,15 +207,16 @@ export type ConfirmVoteStatus = ConfirmDecision | 'pending';
 export type MeetingState = {
   lastSeq: number;
   phase: MeetingPhase;
+  meetingId: string | null;
+  kind: MeetingKind;
   agents: AgentInfo[];
-  research: {
-    stage: ResearchStage | null;
-    counts: ResearchCounts;
-    highlights: ResearchHighlight[];
-  };
+  research: Record<string, AgentResearch>;
+  board: Board;
   round: number;
   maxRounds: number;
   timeline: TimelineItem[];
+  plans: Record<string, { version: number; route: RouteDay[] }>;
+  latestPlanId: string | null;
   votes: Record<string, Record<string, { vote: AiVote; score: number }>>;
   agreement: MeetingAgreedData | null;
   failure: MeetingFailedEvent['data'] | null;

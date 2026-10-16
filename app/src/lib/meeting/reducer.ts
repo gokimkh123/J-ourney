@@ -1,29 +1,32 @@
 import type {
+  AgentResearch,
   ApplyResult,
   ConfirmVoteStatus,
   MeetingEvent,
   MeetingState,
+  RouteDay,
   ServerEvent,
   TimelineItem,
 } from './types.ts';
 
-function initialResearch(): MeetingState['research'] {
-  return {
-    stage: null,
-    counts: { queries: 0, places: 0, reviews: 0, tourism: 0 },
-    highlights: [],
-  };
+function emptyBoard(): MeetingState['board'] {
+  return { candidates: [], agenda: [] };
 }
 
 export function initialMeetingState(): MeetingState {
   return {
     lastSeq: 0,
     phase: 'idle',
+    meetingId: null,
+    kind: 'meeting',
     agents: [],
-    research: initialResearch(),
+    research: {},
+    board: emptyBoard(),
     round: 0,
     maxRounds: 0,
     timeline: [],
+    plans: {},
+    latestPlanId: null,
     votes: {},
     agreement: null,
     failure: null,
@@ -42,14 +45,16 @@ function lastMessageIndex(timeline: TimelineItem[], agentId: string): number {
 
 function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
   switch (event.type) {
-    case 'meeting.started':
-      return {
+    case 'meeting.started': {
+      const { agents, meetingId, kind, maxRounds } = event.data;
+      const base = {
         ...state,
-        phase: 'researching',
-        agents: event.data.agents,
-        research: event.data.kind === 'renegotiation' ? state.research : initialResearch(),
+        phase: 'researching' as const,
+        meetingId,
+        kind,
+        agents,
         round: 0,
-        maxRounds: event.data.maxRounds,
+        maxRounds,
         timeline: [],
         votes: {},
         agreement: null,
@@ -57,10 +62,26 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
         confirmVotes: {},
         confirmedPlanId: null,
       };
-    case 'research.progress': {
-      const { stage, counts, highlights } = event.data;
-      return { ...state, research: { stage, counts, highlights } };
+      if (kind === 'renegotiation') return base;
+      const research: Record<string, AgentResearch> = {};
+      for (const agent of agents) {
+        research[agent.agentId] = { stage: 'planning', tool: null, focus: null, foundCount: 0 };
+      }
+      return { ...base, research, board: emptyBoard(), plans: {}, latestPlanId: null };
     }
+    case 'research.progress': {
+      const { agentId, stage, tool, focus, foundCount } = event.data;
+      if (state.research[agentId] === undefined) return state;
+      return {
+        ...state,
+        research: {
+          ...state.research,
+          [agentId]: { stage, tool: tool ?? null, focus: focus ?? null, foundCount },
+        },
+      };
+    }
+    case 'board.updated':
+      return { ...state, board: event.data };
     case 'round.started': {
       const { round, maxRounds } = event.data;
       return {
@@ -93,9 +114,11 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
       };
     }
     case 'plan.proposed': {
-      const { planId, version } = event.data;
+      const { planId, version, route } = event.data;
       return {
         ...state,
+        plans: { ...state.plans, [planId]: { version, route } },
+        latestPlanId: planId,
         timeline: [...state.timeline, { kind: 'proposal', seq: event.seq, at: event.at, planId, version }],
       };
     }
@@ -111,7 +134,10 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
     case 'meeting.failed':
       return { ...state, phase: 'failed', failure: event.data };
     case 'confirm.requested': {
-      if (state.phase !== 'agreed') return state;
+      const canConfirm =
+        state.phase === 'agreed' ||
+        (state.phase === 'failed' && state.failure !== null && state.failure.planId !== null);
+      if (!canConfirm) return state;
       const confirmVotes: Record<string, ConfirmVoteStatus> = {};
       for (const agent of state.agents) confirmVotes[agent.memberId] = 'pending';
       return { ...state, phase: 'confirming', confirmVotes };
@@ -133,4 +159,31 @@ export function applyEvent(state: MeetingState, event: ServerEvent): ApplyResult
   if (event.seq <= state.lastSeq) return { state, gap: false };
   if (event.seq > state.lastSeq + 1) return { state, gap: true, afterSeq: state.lastSeq };
   return { state: reduce({ ...state, lastSeq: event.seq }, event), gap: false };
+}
+
+export function latestRoute(state: MeetingState): RouteDay[] {
+  if (state.latestPlanId === null) return [];
+  return state.plans[state.latestPlanId]?.route ?? [];
+}
+
+export function yesCount(state: MeetingState, planId: string): number {
+  return Object.values(state.votes[planId] ?? {}).filter((v) => v.vote === 'yes').length;
+}
+
+export function confirmSummary(state: MeetingState): {
+  approve: number;
+  revise: number;
+  reject: number;
+  pending: number;
+} {
+  const summary = { approve: 0, revise: 0, reject: 0, pending: 0 };
+  for (const status of Object.values(state.confirmVotes)) summary[status] += 1;
+  return summary;
+}
+
+export function researchDone(state: MeetingState): boolean {
+  return (
+    state.agents.length > 0 &&
+    state.agents.every((agent) => state.research[agent.agentId]?.stage === 'done')
+  );
 }
