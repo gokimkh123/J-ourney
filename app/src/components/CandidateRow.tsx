@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, View } from "react-native";
 
-import { colors, pressedOpacity, radius, spacing, type Tone } from "../theme/index.ts";
+import { pressedOpacity, radius, spacing, useStyles, useTheme, type Theme, type Tone } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Avatar from "./Avatar.tsx";
 import StatusPill from "./StatusPill.tsx";
@@ -35,6 +35,8 @@ export type CandidateRowProps = {
 
 /** B2 후보 보드 한 줄: 장소 이름 + AI별 반응 라벨 */
 export default function CandidateRow({ name, proposerColor, order, reactions, expanded = false, onPress }: CandidateRowProps) {
+  const { colors } = useTheme();
+  const styles = useStyles(createStyles);
   const content = (
     <>
       <View style={styles.top}>
@@ -85,9 +87,9 @@ export default function CandidateRow({ name, proposerColor, order, reactions, ex
   return <View style={styles.row}>{content}</View>;
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   row: {
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: t.colors.surfaceRaised,
     borderRadius: radius.md,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.sm + spacing.xxs,

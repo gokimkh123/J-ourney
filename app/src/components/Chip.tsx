@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, View } from "react-native";
 
-import { colors, disabledOpacity, pressedOpacity, radius, spacing } from "../theme/index.ts";
+import { disabledOpacity, pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 
 export type ChipProps = {
@@ -16,6 +16,7 @@ export type ChipProps = {
 
 /** 성향 칩, 이동 수단 선택, 좋아요 고르기 등에 쓰는 둥근 칩. */
 export default function Chip({ label, emoji, selected = false, disabled = false, onPress, size = "md" }: ChipProps) {
+  const styles = useStyles(createStyles);
   const text = emoji ? `${emoji} ${label}` : label;
   const pad = size === "sm" ? styles.sm : styles.md;
 
@@ -52,13 +53,13 @@ export default function Chip({ label, emoji, selected = false, disabled = false,
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   base: {
     alignSelf: "flex-start",
     borderRadius: radius.full,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceRaised,
+    borderColor: t.colors.border,
+    backgroundColor: t.colors.surfaceRaised,
   },
   sm: {
     paddingVertical: spacing.xxs,
@@ -71,10 +72,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md - spacing.xs,
   },
   selected: {
-    backgroundColor: colors.accentSoft,
-    borderColor: colors.accent,
+    backgroundColor: t.colors.accentSoft,
+    borderColor: t.colors.accent,
   },
   selectedText: {
-    color: colors.accentSoftText,
+    color: t.colors.accentSoftText,
   },
 });

@@ -1,6 +1,6 @@
 import { ActivityIndicator, Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 
-import { colors, disabledOpacity, hitSize, pressedOpacity, radius, spacing } from "../theme/index.ts";
+import { disabledOpacity, hitSize, pressedOpacity, radius, spacing, useTheme, type ThemeColors } from "../theme/index.ts";
 import AppText, { type TextTone } from "./AppText.tsx";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost";
@@ -22,11 +22,13 @@ export type ButtonProps = {
   style?: StyleProp<ViewStyle>;
 };
 
-const VARIANT: Record<ButtonVariant, { bg: string; border: string; text: TextTone; spinner: string }> = {
-  primary: { bg: colors.accent, border: colors.accent, text: "onAccent", spinner: colors.onAccent },
-  secondary: { bg: colors.surfaceRaised, border: colors.border, text: "default", spinner: colors.text },
-  ghost: { bg: "transparent", border: "transparent", text: "accent", spinner: colors.accent },
-};
+function variantColors(c: ThemeColors): Record<ButtonVariant, { bg: string; border: string; text: TextTone; spinner: string }> {
+  return {
+    primary: { bg: c.accent, border: c.accent, text: "onAccent", spinner: c.onAccent },
+    secondary: { bg: c.surfaceRaised, border: c.border, text: "default", spinner: c.text },
+    ghost: { bg: "transparent", border: "transparent", text: "accent", spinner: c.accent },
+  };
+}
 
 const SIZE: Record<ButtonSize, { height: number; padH: number; radius: number }> = {
   sm: { height: 36, padH: spacing.md, radius: radius.md },
@@ -46,7 +48,8 @@ export default function Button({
   accessibilityHint,
   style,
 }: ButtonProps) {
-  const v = VARIANT[variant];
+  const { colors } = useTheme();
+  const v = variantColors(colors)[variant];
   const s = SIZE[size];
   const inactive = disabled || loading;
 

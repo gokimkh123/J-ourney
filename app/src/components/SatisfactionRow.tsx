@@ -1,6 +1,6 @@
 import { StyleSheet, View } from "react-native";
 
-import { colors, spacing } from "../theme/index.ts";
+import { spacing } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Avatar from "./Avatar.tsx";
 import ProgressBar from "./ProgressBar.tsx";
@@ -41,7 +41,6 @@ const styles = StyleSheet.create({
   },
   name: {
     width: 44,
-    color: colors.text,
   },
   bar: {
     flex: 1,

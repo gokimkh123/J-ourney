@@ -27,11 +27,26 @@ export const borderWidth = {
 // 눌리는 영역 최소 크기(안드로이드 권장 48dp)
 export const hitSize = 48;
 
-// 그림자는 떠 있는 것(시트·말풍선)에만 쓴다.
-export const elevation = {
-  sheet: '0px -8px 24px rgba(0, 0, 0, 0.35)',
-  float: '0px 6px 18px rgba(0, 0, 0, 0.35)',
-} as const;
+// 그림자는 떠 있는 것(시트·말풍선)에만 쓴다. 밝은 모드는 옅게, 다크는 진하게.
+export type Elevation = { sheet: string; float: string };
+
+const ELEVATION: Record<'light' | 'dark', Elevation> = {
+  light: {
+    sheet: '0px -6px 20px rgba(0, 0, 0, 0.10)',
+    float: '0px 2px 10px rgba(0, 0, 0, 0.12)',
+  },
+  dark: {
+    sheet: '0px -8px 24px rgba(0, 0, 0, 0.40)',
+    float: '0px 6px 18px rgba(0, 0, 0, 0.40)',
+  },
+};
+
+export function makeElevation(scheme: 'light' | 'dark'): Elevation {
+  return ELEVATION[scheme];
+}
+
+/** 호환용 별칭(밝은 모드). 새 코드는 useTheme().elevation을 쓴다. */
+export const elevation = ELEVATION.light;
 
 export type Spacing = keyof typeof spacing;
 export type Radius = keyof typeof radius;

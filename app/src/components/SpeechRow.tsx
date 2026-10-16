@@ -1,6 +1,6 @@
 import { StyleSheet, View } from "react-native";
 
-import { colors, spacing } from "../theme/index.ts";
+import { spacing, useTheme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Avatar, { type AvatarChip } from "./Avatar.tsx";
 
@@ -17,6 +17,7 @@ export type SpeechRowProps = {
 
 /** 누가 무슨 말을 했는지 한 덩어리: AI 발언(B2), 장소를 고른 이유(C2) */
 export default function SpeechRow({ name, color, chips, text, meta, surface = "surface" }: SpeechRowProps) {
+  const { colors } = useTheme();
   return (
     <View style={styles.row}>
       <Avatar

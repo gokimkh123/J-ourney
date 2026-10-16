@@ -1,59 +1,145 @@
 // 앱 전체 색. 화면·컴포넌트는 hex를 직접 쓰지 않고 여기 이름만 쓴다.
+// 밝은·다크 두 벌이 같은 키를 가진다. 컴포넌트는 useTheme()로 지금 모드의 색을 받는다.
 // 구성원 색은 서버·가짜 서버가 쓰는 lib/theme.ts의 memberColors를 그대로 가져온다(한 곳에서만 정의).
 import { memberColors } from '../lib/theme.ts';
 
 export { memberColors };
 
-export const colors = {
-  // 바탕 → 패널 → 행 순서로 한 단계씩 밝아진다.
-  background: '#0b0d16',
-  surface: '#141828',
-  surfaceRaised: '#1c2136',
-  surfaceSunken: '#0f1220',
-  border: '#2a3050',
+export type ThemeColors = {
+  // 바탕 → 패널 → 행 순서로 구분된다.
+  background: string;
+  surface: string;
+  surfaceRaised: string;
+  surfaceSunken: string;
+  border: string;
 
-  text: '#eceef8',
-  textMuted: '#98a1bd',
-  textOnColor: '#ffffff',
+  text: string;
+  textMuted: string;
+  textBody: string;
+  textOnColor: string;
 
-  // 포인트(보라)
-  accent: '#a78bfa',
-  onAccent: '#1a1233',
-  accentSoft: '#2a2250',
-  accentSoftText: '#d9ccff',
+  // 주요 버튼 바탕(검정/흰색). 색은 구성원 색만 쓴다.
+  accent: string;
+  onAccent: string;
+  accentSoft: string;
+  accentSoftText: string;
 
   // 상태
-  success: '#5be0a0',
-  warning: '#ffcc4d',
-  danger: '#ff7a8a',
-  warningSurface: '#3a2f12',
-  warningBorder: '#6b5518',
-  warningText: '#ffe29a',
-  dangerSurface: '#3a1820',
-  dangerBorder: '#6b2a36',
+  success: string;
+  warning: string;
+  danger: string;
+  warningSurface: string;
+  warningBorder: string;
+  warningText: string;
+  dangerSurface: string;
+  dangerBorder: string;
 
-  // 말풍선(지도 위)은 밝은 바탕에 어두운 글자
-  bubble: '#ffffff',
-  onBubble: '#231d36',
+  // 말풍선(지도 위)
+  bubble: string;
+  onBubble: string;
 
   // 지도
-  mapSea: '#101528',
-  mapGrid: '#1a2038',
-  mapLand: '#1c2340',
-  mapLandEdge: '#2c3560',
+  mapSea: string;
+  mapLand: string;
+  mapLandEdge: string;
+  mapGrid: string;
 
-  scrim: 'rgba(5, 6, 12, 0.6)',
-} as const;
+  scrim: string;
+};
 
-export type ColorName = keyof typeof colors;
+export const lightColors: ThemeColors = {
+  background: '#FFFFFF',
+  surface: '#FFFFFF',
+  surfaceRaised: '#F2F4F6',
+  surfaceSunken: '#F7F8FA',
+  border: '#E5E8EB',
+
+  text: '#191F28',
+  textMuted: '#8B95A1',
+  textBody: '#333D4B',
+  textOnColor: '#FFFFFF',
+
+  accent: '#191F28',
+  onAccent: '#FFFFFF',
+  accentSoft: '#EEF0F3',
+  accentSoftText: '#191F28',
+
+  success: '#22C55E',
+  warning: '#F5A524',
+  danger: '#F04452',
+  warningSurface: '#FFF6E0',
+  warningBorder: '#F5D58A',
+  warningText: '#7A5200',
+  dangerSurface: '#FFECEE',
+  dangerBorder: '#F7B5BC',
+
+  bubble: '#FFFFFF',
+  onBubble: '#191F28',
+
+  mapSea: '#BFE4F2',
+  mapLand: '#FFF3D6',
+  mapLandEdge: '#E7CF9E',
+  mapGrid: '#F0DDB3',
+
+  scrim: 'rgba(0, 0, 0, 0.4)',
+};
+
+export const darkColors: ThemeColors = {
+  background: '#17181C',
+  surface: '#1F2026',
+  surfaceRaised: '#26272D',
+  surfaceSunken: '#1B1C21',
+  border: '#33343B',
+
+  text: '#F2F4F6',
+  textMuted: '#8B95A1',
+  textBody: '#C9CDD2',
+  textOnColor: '#FFFFFF',
+
+  accent: '#F2F4F6',
+  onAccent: '#17181C',
+  accentSoft: '#33343B',
+  accentSoftText: '#F2F4F6',
+
+  success: '#34D27B',
+  warning: '#FFC24D',
+  danger: '#FF6B78',
+  warningSurface: '#3A2F12',
+  warningBorder: '#6B5518',
+  warningText: '#FFE29A',
+  dangerSurface: '#3A1820',
+  dangerBorder: '#6B2A36',
+
+  bubble: '#2A2B33',
+  onBubble: '#F2F4F6',
+
+  mapSea: '#13223A',
+  mapLand: '#2B2840',
+  mapLandEdge: '#17141F',
+  mapGrid: '#38334F',
+
+  scrim: 'rgba(0, 0, 0, 0.6)',
+};
+
+/** 호환용 별칭(밝은 모드). 새 코드는 useTheme().colors를 쓴다. */
+export const colors = lightColors;
+
+export type ColorName = keyof ThemeColors;
 
 export type Tone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger';
 
-// 상태 라벨·배너가 공통으로 쓰는 색 짝
-export const toneColors: Record<Tone, { fg: string; bg: string; border: string }> = {
-  neutral: { fg: colors.textMuted, bg: colors.surfaceRaised, border: colors.border },
-  accent: { fg: colors.accent, bg: colors.accentSoft, border: colors.accent },
-  success: { fg: colors.success, bg: colors.surfaceRaised, border: colors.border },
-  warning: { fg: colors.warning, bg: colors.warningSurface, border: colors.warningBorder },
-  danger: { fg: colors.danger, bg: colors.dangerSurface, border: colors.dangerBorder },
-};
+export type ToneColors = Record<Tone, { fg: string; bg: string; border: string }>;
+
+// 상태 라벨·배너가 공통으로 쓰는 색 짝(모드별)
+export function makeToneColors(c: ThemeColors): ToneColors {
+  return {
+    neutral: { fg: c.textMuted, bg: c.surfaceRaised, border: c.border },
+    accent: { fg: c.accentSoftText, bg: c.accentSoft, border: c.accent },
+    success: { fg: c.success, bg: c.surfaceRaised, border: c.border },
+    warning: { fg: c.warning, bg: c.warningSurface, border: c.warningBorder },
+    danger: { fg: c.danger, bg: c.dangerSurface, border: c.dangerBorder },
+  };
+}
+
+/** 호환용 별칭(밝은 모드). */
+export const toneColors: ToneColors = makeToneColors(lightColors);

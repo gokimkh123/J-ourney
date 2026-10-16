@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { StyleSheet, TextInput, View, type TextInputProps } from "react-native";
 
-import { colors, hitSize, radius, spacing, typography } from "../theme/index.ts";
+import { hitSize, radius, spacing, typography, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 
 export type TextFieldProps = Omit<TextInputProps, "style" | "placeholderTextColor"> & {
@@ -13,6 +13,8 @@ export type TextFieldProps = Omit<TextInputProps, "style" | "placeholderTextColo
 };
 
 export default function TextField({ label, hint, error, editable = true, onFocus, onBlur, ...rest }: TextFieldProps) {
+  const { colors } = useTheme();
+  const styles = useStyles(createStyles);
   const [focused, setFocused] = useState(false);
   const hasError = error !== undefined && error !== null && error !== "";
   const borderColor = hasError ? colors.danger : focused ? colors.accent : colors.border;
@@ -52,21 +54,21 @@ export default function TextField({ label, hint, error, editable = true, onFocus
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   wrap: {
     gap: spacing.xs + spacing.xxs,
   },
   input: {
     ...typography.body,
-    color: colors.text,
+    color: t.colors.text,
     minHeight: hitSize,
     paddingHorizontal: spacing.sm + spacing.xs,
     paddingVertical: spacing.sm,
     borderRadius: radius.md,
     borderWidth: 1,
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: t.colors.surfaceRaised,
   },
   disabled: {
-    color: colors.textMuted,
+    color: t.colors.textMuted,
   },
 });

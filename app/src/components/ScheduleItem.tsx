@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, View } from "react-native";
 
-import { colors, pressedOpacity, radius, spacing } from "../theme/index.ts";
+import { pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import { AvatarStack } from "./Avatar.tsx";
 import StatusPill from "./StatusPill.tsx";
@@ -35,6 +35,7 @@ export default function ScheduleItem({
   moveLabel,
   onPress,
 }: ScheduleItemProps) {
+  const styles = useStyles(createStyles);
   return (
     <View style={styles.wrap}>
       {moveLabel !== undefined && (
@@ -78,7 +79,7 @@ export default function ScheduleItem({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   wrap: {
     gap: spacing.xs,
   },
@@ -92,7 +93,7 @@ const styles = StyleSheet.create({
     width: 2,
     height: spacing.md,
     borderRadius: radius.full,
-    backgroundColor: colors.border,
+    backgroundColor: t.colors.border,
   },
   row: {
     flexDirection: "row",
@@ -106,9 +107,9 @@ const styles = StyleSheet.create({
   card: {
     flex: 1,
     minWidth: 0,
-    backgroundColor: colors.surface,
+    backgroundColor: t.colors.surface,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: t.colors.border,
     borderRadius: radius.lg,
     paddingVertical: spacing.sm + spacing.xxs,
     paddingHorizontal: spacing.sm + spacing.xs,

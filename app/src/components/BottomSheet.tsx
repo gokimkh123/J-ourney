@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 
-import { colors, elevation, radius, spacing } from "../theme/index.ts";
+import { radius, spacing, useStyles, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 
 export type BottomSheetProps = {
@@ -20,6 +20,7 @@ export type BottomSheetProps = {
  * 위쪽 지도와 겹치도록 부모에서 marginTop을 음수로 주거나 position으로 놓는다.
  */
 export default function BottomSheet({ title, meta, children, footer, style }: BottomSheetProps) {
+  const styles = useStyles(createStyles);
   return (
     <View style={[styles.sheet, style]}>
       <View style={styles.handle} accessibilityElementsHidden importantForAccessibility="no" />
@@ -43,23 +44,23 @@ export default function BottomSheet({ title, meta, children, footer, style }: Bo
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   sheet: {
-    backgroundColor: colors.surface,
+    backgroundColor: t.colors.surface,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
     paddingTop: spacing.sm,
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.md,
     gap: spacing.sm + spacing.xs,
-    boxShadow: elevation.sheet,
+    boxShadow: t.elevation.sheet,
   },
   handle: {
     alignSelf: "center",
     width: 36,
     height: 4,
     borderRadius: radius.full,
-    backgroundColor: colors.border,
+    backgroundColor: t.colors.border,
   },
   header: {
     flexDirection: "row",

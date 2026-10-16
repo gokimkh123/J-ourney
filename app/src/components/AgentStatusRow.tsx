@@ -1,6 +1,6 @@
 import { StyleSheet, View } from "react-native";
 
-import { colors, radius, spacing, type Tone } from "../theme/index.ts";
+import { radius, spacing, useStyles, useTheme, type Theme, type Tone } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Avatar, { type AvatarChip } from "./Avatar.tsx";
 
@@ -27,6 +27,8 @@ export default function AgentStatusRow({
   statusTone = "accent",
   active = false,
 }: AgentStatusRowProps) {
+  const { colors } = useTheme();
+  const styles = useStyles(createStyles);
   return (
     <View
       style={styles.row}
@@ -49,12 +51,12 @@ export default function AgentStatusRow({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm + spacing.xxs,
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: t.colors.surfaceRaised,
     borderRadius: radius.md,
     paddingVertical: spacing.xs + spacing.xxs,
     paddingLeft: spacing.xs + spacing.xxs,

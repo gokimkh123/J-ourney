@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 
-import { colors, pressedOpacity, radius, spacing } from "../theme/index.ts";
+import { pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 
 export type CardProps = {
@@ -20,6 +20,7 @@ export type CardProps = {
 
 /** 패널 상자. 안쪽 항목 사이 간격은 sm(8)로 고정. */
 export default function Card({ title, meta, tone = "default", onPress, accessibilityLabel, children, style }: CardProps) {
+  const styles = useStyles(createStyles);
   const toneStyle =
     tone === "accent" ? styles.accent : tone === "sunken" ? styles.sunken : undefined;
 
@@ -58,20 +59,20 @@ export default function Card({ title, meta, tone = "default", onPress, accessibi
   return <View style={[styles.card, toneStyle, style]}>{body}</View>;
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   card: {
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
+    backgroundColor: t.colors.surface,
+    borderColor: t.colors.border,
     borderWidth: 1,
     borderRadius: radius.lg,
     padding: spacing.md,
     gap: spacing.sm,
   },
   accent: {
-    borderColor: colors.accent,
+    borderColor: t.colors.accent,
   },
   sunken: {
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: t.colors.surfaceRaised,
     borderColor: "transparent",
     borderRadius: radius.md,
     padding: spacing.sm + spacing.xs,

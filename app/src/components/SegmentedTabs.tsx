@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, View } from "react-native";
 
-import { colors, hitSize, pressedOpacity, radius, spacing } from "../theme/index.ts";
+import { hitSize, pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 
 export type SegmentOption<K extends string> = { key: K; label: string };
@@ -14,6 +14,7 @@ export type SegmentedTabsProps<K extends string> = {
 
 /** 같은 화면 안에서 보기를 바꾸는 탭: C1 "1일차 / 2일차" */
 export default function SegmentedTabs<K extends string>({ options, value, onChange, accessibilityLabel }: SegmentedTabsProps<K>) {
+  const styles = useStyles(createStyles);
   return (
     <View style={styles.row} accessibilityRole="tablist" accessibilityLabel={accessibilityLabel}>
       {options.map((o) => {
@@ -36,7 +37,7 @@ export default function SegmentedTabs<K extends string>({ options, value, onChan
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   row: {
     flexDirection: "row",
     gap: spacing.sm,
@@ -48,12 +49,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
+    borderColor: t.colors.border,
+    backgroundColor: t.colors.surface,
     paddingHorizontal: spacing.sm,
   },
   selected: {
-    borderColor: colors.accent,
-    backgroundColor: colors.accentSoft,
+    borderColor: t.colors.accent,
+    backgroundColor: t.colors.accentSoft,
   },
 });

@@ -1,6 +1,6 @@
 import { StyleSheet, View } from "react-native";
 
-import { colors, radius, spacing, toneColors } from "../theme/index.ts";
+import { radius, spacing, useTheme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Button from "./Button.tsx";
 
@@ -14,6 +14,7 @@ export type BannerProps = {
 
 /** 화면 위쪽 안내 띠: "지도 확인 필요", 연결 끊김, 오류 등. */
 export default function Banner({ text, tone = "warning", actionLabel, onAction }: BannerProps) {
+  const { colors, toneColors } = useTheme();
   const t = toneColors[tone];
   return (
     <View

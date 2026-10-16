@@ -1,6 +1,6 @@
 import { StyleSheet, View } from "react-native";
 
-import { colors, radius } from "../theme/index.ts";
+import { radius, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
 export type ProgressBarProps = {
   /** 0~1. 범위를 벗어나면 잘라낸다. */
@@ -11,7 +11,9 @@ export type ProgressBarProps = {
   accessibilityLabel?: string;
 };
 
-export default function ProgressBar({ value, color = colors.accent, size = "md", accessibilityLabel }: ProgressBarProps) {
+export default function ProgressBar({ value, color, size = "md", accessibilityLabel }: ProgressBarProps) {
+  const { colors } = useTheme();
+  const styles = useStyles(createStyles);
   const ratio = Number.isNaN(value) ? 0 : Math.min(1, Math.max(0, value));
   const height = size === "sm" ? 6 : 8;
   return (
@@ -21,17 +23,17 @@ export default function ProgressBar({ value, color = colors.accent, size = "md",
       accessibilityValue={{ min: 0, max: 100, now: Math.round(ratio * 100) }}
       style={[styles.track, { height }]}
     >
-      <View style={[styles.fill, { width: `${ratio * 100}%`, backgroundColor: color }]} />
+      <View style={[styles.fill, { width: `${ratio * 100}%`, backgroundColor: color ?? colors.accent }]} />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   track: {
     alignSelf: "stretch",
     borderRadius: radius.full,
     overflow: "hidden",
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: t.colors.surfaceRaised,
   },
   fill: {
     height: "100%",

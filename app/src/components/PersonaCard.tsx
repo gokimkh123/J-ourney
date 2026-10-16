@@ -2,7 +2,7 @@ import { StyleSheet, View } from "react-native";
 
 import { sourceBadge, traitRatio } from "../lib/ui/format.ts";
 import type { Persona } from "../lib/persona/types.ts";
-import { colors, radius, spacing } from "../theme/index.ts";
+import { lightColors, outline, pastel, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Avatar from "./Avatar.tsx";
 import Card from "./Card.tsx";
@@ -10,45 +10,52 @@ import Chip from "./Chip.tsx";
 import ProgressBar from "./ProgressBar.tsx";
 import StatusPill from "./StatusPill.tsx";
 
+// 파스텔 위에 올리는 글자는 어느 모드에서든 어두워야 읽힌다.
+const ON_PASTEL = lightColors.text;
+
 function joinItems(items: { text: string; emoji: string }[]): string {
   return items.map((item) => `${item.emoji} ${item.text}`).join(" · ");
 }
 
 /** A3 캐릭터 카드. props는 이전과 같다(persona 하나). */
 export default function PersonaCard({ persona }: { persona: Persona }) {
+  const { colors } = useTheme();
+  const styles = useStyles(createStyles);
   const color = persona.color;
+  const soft = pastel(color);
+  const line = outline(color);
   const likes = joinItems(persona.likes);
   const dislikes = persona.dislikes.length > 0 ? joinItems(persona.dislikes) : "없음";
 
   return (
     <View style={styles.stack}>
-      <View style={[styles.card, { borderColor: color }]}>
+      <View style={[styles.card, { borderColor: line }]}>
         <View style={styles.topRow}>
-          <AppText variant="label" color={color}>
+          <AppText variant="label" color={line}>
             J-ourney 여행 캐릭터
           </AppText>
-          <View style={[styles.no, { backgroundColor: color }]}>
-            <AppText variant="label" tone="onColor">
+          <View style={[styles.no, { backgroundColor: soft }]}>
+            <AppText variant="label" color={ON_PASTEL}>
               NO. {persona.no}
             </AppText>
           </View>
         </View>
 
         <View style={styles.hero}>
-          <Avatar color={color} chips={persona.chips} name={persona.nickname} size="xl" />
+          <Avatar color={color} chips={persona.chips} name={persona.nickname} size="xl" variant="full" />
           <View style={styles.names}>
             <AppText variant="title" align="center">
               {persona.nickname}
             </AppText>
-            <View style={[styles.titlePill, { backgroundColor: color }]}>
-              <AppText variant="smallStrong" tone="onColor">
+            <View style={[styles.titlePill, { backgroundColor: soft }]}>
+              <AppText variant="smallStrong" color={ON_PASTEL}>
                 {persona.title}
               </AppText>
             </View>
           </View>
         </View>
 
-        <View style={[styles.bubble, { borderColor: color }]}>
+        <View style={[styles.bubble, { borderColor: line }]}>
           <AppText variant="body" align="center">
             “{persona.catchphrase}”
           </AppText>
@@ -83,7 +90,7 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
 
         <View style={styles.tmi}>
           <View style={styles.tmiTag}>
-            <AppText variant="label" color={colors.warningSurface}>
+            <AppText variant="label" color={ON_PASTEL}>
               ???
             </AppText>
           </View>
@@ -147,7 +154,7 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   stack: {
     gap: spacing.md,
   },
@@ -157,7 +164,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderWidth: 2,
     borderRadius: radius.lg,
-    backgroundColor: colors.surface,
+    backgroundColor: t.colors.surface,
   },
   topRow: {
     flexDirection: "row",
@@ -188,7 +195,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md - spacing.xxs,
     borderWidth: 1,
     borderRadius: radius.md,
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: t.colors.surfaceRaised,
   },
   chips: {
     flexDirection: "row",
@@ -216,13 +223,13 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.sm + spacing.xxs,
     borderRadius: radius.md,
-    backgroundColor: colors.warningSurface,
+    backgroundColor: t.colors.warningSurface,
   },
   tmiTag: {
     paddingVertical: spacing.xxs,
     paddingHorizontal: spacing.sm,
     borderRadius: radius.sm,
-    backgroundColor: colors.warning,
+    backgroundColor: t.colors.warning,
   },
   source: {
     alignItems: "center",

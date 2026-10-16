@@ -11,11 +11,11 @@ import Animated, {
   withRepeat,
   withTiming,
 } from "react-native-reanimated";
-import Svg, { Defs, Line, Path, Polygon, Polyline, RadialGradient, Rect, Stop } from "react-native-svg";
+import Svg, { Line, Path, Polygon, Polyline, Rect } from "react-native-svg";
 
-import { colors, duration, easing, elevation, radius, spacing } from "../theme/index.ts";
+import { duration, easing, lightColors, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
-import Avatar, { type AvatarChip } from "./Avatar.tsx";
+import Avatar, { fullAvatarSize, type AvatarChip } from "./Avatar.tsx";
 
 export type LatLng = { lat: number; lng: number };
 export type MapBounds = { north: number; south: number; east: number; west: number };
@@ -57,9 +57,16 @@ export type MeetingMapProps = {
 const PAD = spacing.lg; // 가장자리 핀이 잘리지 않게
 const PIN_W = 24;
 const PIN_H = 32;
-const AGENT_PX = 28 + 4; // Avatar sm + 테두리
-// 핀 머리 오른쪽에 붙여서 핀 번호를 가리지 않게 한다.
-const AGENT_OFFSET = { x: PIN_W / 2 + AGENT_PX / 2 - 4, y: -PIN_H * 0.55 };
+// 지도 위 캐릭터는 전신(sm ≈ 50px). 말하는 중이면 1.25배로 커진다.
+const AGENT = fullAvatarSize("sm");
+const AGENT_ACTIVE_H = Math.round(AGENT.height * 1.25);
+// 위쪽 가장자리에서 말하는 캐릭터가 잘리지 않게 위 여백을 더 둔다.
+const PAD_TOP = AGENT_ACTIVE_H + spacing.xs;
+// 캐릭터는 핀 오른쪽 바닥에 서 있게 해서 핀 번호를 가리지 않는다.
+const AGENT_OFFSET = { x: PIN_W / 2 + AGENT.width / 2 - 2, y: 0 };
+// 핀 머리 안은 늘 흰 바탕이라 글자는 모드와 상관없이 어둡게.
+const PIN_INK = lightColors.text;
+const PIN_STROKE = lightColors.textOnColor;
 
 /** 위도·경도 묶음을 감싸는 범위. 화면이 bounds를 만들 때 쓴다. margin은 비율. */
 export function boundsAround(points: LatLng[], margin = 0.12): MapBounds {
@@ -84,13 +91,15 @@ function project(p: LatLng, b: MapBounds, w: number, h: number): { x: number; y:
   const spanLat = b.north - b.south || 1;
   return {
     x: PAD + ((p.lng - b.west) / spanLng) * (w - PAD * 2),
-    y: PAD + ((b.north - p.lat) / spanLat) * (h - PAD * 2),
+    y: PAD_TOP + ((b.north - p.lat) / spanLat) * (h - PAD_TOP - PAD),
   };
 }
 
 const travelEasing = Easing.bezier(easing.travel[0], easing.travel[1], easing.travel[2], easing.travel[3]);
 
+/** x, y는 캐릭터 발 위치(바닥 가운데). */
 function AgentMarker({ agent, x, y, active }: { agent: MapAgent; x: number; y: number; active: boolean }) {
+  const styles = useStyles(createStyles);
   const reduce = useReducedMotion();
   const tx = useSharedValue(x);
   const ty = useSharedValue(y);
@@ -112,7 +121,7 @@ function AgentMarker({ agent, x, y, active }: { agent: MapAgent; x: number; y: n
   }, [agent.searching, reduce, pulse]);
 
   const moveStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: tx.value - AGENT_PX / 2 }, { translateY: ty.value - AGENT_PX / 2 }],
+    transform: [{ translateX: tx.value - AGENT.width / 2 }, { translateY: ty.value - AGENT.height }],
   }));
   const ringStyle = useAnimatedStyle(() => ({
     opacity: agent.searching ? (reduce ? 0.5 : 0.9 * (1 - pulse.value)) : 0,
@@ -122,12 +131,13 @@ function AgentMarker({ agent, x, y, active }: { agent: MapAgent; x: number; y: n
   return (
     <Animated.View style={[styles.agent, moveStyle]} pointerEvents="none">
       <Animated.View style={[styles.ring, { borderColor: agent.color }, ringStyle]} />
-      <Avatar color={agent.color} name={agent.name} chips={agent.chips} size="sm" active={active} separatorColor={colors.mapSea} />
+      <Avatar color={agent.color} name={agent.name} chips={agent.chips} size="sm" variant="full" active={active} />
     </Animated.View>
   );
 }
 
 function Pin({ pin, x, y }: { pin: MapPin; x: number; y: number }) {
+  const styles = useStyles(createStyles);
   return (
     <Animated.View
       entering={ZoomIn.duration(duration.slow)}
@@ -140,13 +150,13 @@ function Pin({ pin, x, y }: { pin: MapPin; x: number; y: number }) {
         <Path
           d="M12 31 C7 24 2 19 2 12 A10 10 0 1 1 22 12 C22 19 17 24 12 31 Z"
           fill={pin.color}
-          stroke={colors.textOnColor}
+          stroke={PIN_STROKE}
           strokeWidth={1.6}
         />
       </Svg>
       <View style={styles.pinHead}>
         {pin.label !== undefined && pin.label !== "" ? (
-          <AppText variant="micro" color={colors.onBubble}>
+          <AppText variant="micro" color={PIN_INK}>
             {pin.label}
           </AppText>
         ) : (
@@ -171,6 +181,8 @@ export default function MeetingMap({
   height = 300,
   accessibilityLabel = "회의 지도",
 }: MeetingMapProps) {
+  const { colors } = useTheme();
+  const styles = useStyles(createStyles);
   const [width, setWidth] = useState(0);
   const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
 
@@ -188,12 +200,6 @@ export default function MeetingMap({
       {width > 0 && (
         <>
           <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
-            <Defs>
-              <RadialGradient id="glow" cx="50%" cy="40%" r="70%">
-                <Stop offset="0" stopColor={colors.accent} stopOpacity={0.08} />
-                <Stop offset="1" stopColor={colors.accent} stopOpacity={0} />
-              </RadialGradient>
-            </Defs>
             <Rect width={width} height={height} fill={colors.mapSea} />
             {Array.from({ length: Math.ceil(width / gridStep) }, (_, i) => (
               <Line key={`v${i}`} x1={(i + 0.5) * gridStep} y1={0} x2={(i + 0.5) * gridStep} y2={height} stroke={colors.mapGrid} strokeWidth={1} />
@@ -214,7 +220,6 @@ export default function MeetingMap({
                 strokeLinejoin="round"
               />
             ))}
-            <Rect width={width} height={height} fill="url(#glow)" />
             {routes.map((r, i) => (
               <Polyline
                 key={`route${i}`}
@@ -256,12 +261,15 @@ export default function MeetingMap({
 
 const BUBBLE_MAX = 220;
 
+/** anchor는 말하는 캐릭터의 발 위치. 말풍선은 커진 캐릭터 머리 위에 뜬다. */
 function SpeechBubble({ text, anchor, mapWidth }: { text: string; anchor: { x: number; y: number }; mapWidth: number }) {
+  const { colors } = useTheme();
+  const styles = useStyles(createStyles);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  // 위쪽 공간이 모자라면 아바타 아래에 띄운다.
-  const below = anchor.y - AGENT_PX / 2 - size.h - 10 < spacing.sm;
+  // 위쪽 공간이 모자라면 캐릭터 발 아래에 띄운다.
+  const below = anchor.y - AGENT_ACTIVE_H - size.h - 10 < spacing.sm;
   const left = Math.min(Math.max(anchor.x - size.w / 2, spacing.sm), mapWidth - size.w - spacing.sm);
-  const top = below ? anchor.y + AGENT_PX / 2 + 8 : anchor.y - AGENT_PX / 2 - size.h - 8;
+  const top = below ? anchor.y + 10 : anchor.y - AGENT_ACTIVE_H - size.h - 8;
   const tailLeft = Math.min(Math.max(anchor.x - left - 5, radius.md), Math.max(size.w - radius.md - 10, radius.md));
 
   return (
@@ -281,10 +289,10 @@ function SpeechBubble({ text, anchor, mapWidth }: { text: string; anchor: { x: n
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (t: Theme) => StyleSheet.create({
   map: {
     overflow: "hidden",
-    backgroundColor: colors.mapSea,
+    backgroundColor: t.colors.mapSea,
   },
   pin: {
     position: "absolute",
@@ -299,7 +307,7 @@ const styles = StyleSheet.create({
     width: 16,
     height: 16,
     borderRadius: radius.full,
-    backgroundColor: colors.textOnColor,
+    backgroundColor: PIN_STROKE,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -307,32 +315,34 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: radius.full,
-    backgroundColor: colors.onBubble,
+    backgroundColor: PIN_INK,
   },
   agent: {
     position: "absolute",
     left: 0,
     top: 0,
-    width: AGENT_PX,
-    height: AGENT_PX,
+    width: AGENT.width,
+    height: AGENT.height,
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "flex-end",
   },
+  // 조사 중이면 발밑 바닥에 퍼지는 타원
   ring: {
     position: "absolute",
-    width: AGENT_PX,
-    height: AGENT_PX,
+    bottom: -AGENT.width * 0.2,
+    width: AGENT.width * 1.4,
+    height: AGENT.width * 0.55,
     borderRadius: radius.full,
     borderWidth: 2,
   },
   bubble: {
     position: "absolute",
     maxWidth: BUBBLE_MAX,
-    backgroundColor: colors.bubble,
+    backgroundColor: t.colors.bubble,
     borderRadius: radius.md,
     paddingVertical: spacing.xs + spacing.xxs,
     paddingHorizontal: spacing.sm + spacing.xxs,
-    boxShadow: elevation.float,
+    boxShadow: t.elevation.float,
   },
   bubbleText: {
     fontWeight: "500",
@@ -341,7 +351,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     width: 10,
     height: 10,
-    backgroundColor: colors.bubble,
+    backgroundColor: t.colors.bubble,
     transform: [{ rotate: "45deg" }],
   },
 });
