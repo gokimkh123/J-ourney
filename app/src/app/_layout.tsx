@@ -1,8 +1,10 @@
+import { NavigationBar } from "expo-navigation-bar";
 import { Tabs } from "expo-router";
 import type { BottomTabBarProps } from "expo-router/js-tabs";
 import { StatusBar } from "expo-status-bar";
+import * as SystemUI from "expo-system-ui";
 import { useEffect, useState } from "react";
-import { View } from "react-native";
+import { Appearance, View } from "react-native";
 
 import TabBar, { type TabBarIcon, type TabBarItem } from "../components/TabBar.tsx";
 import { session } from "../lib/session/index.ts";
@@ -27,6 +29,7 @@ const TRIP_ONLY = new Set(["persona", "meeting", "plan"]);
 const HOME_FLOW = new Set(["questionnaire", "invite/[code]"]);
 
 function AppTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
+  const hasTrip = useSession() !== null;
   const focusedName = state.routes[state.index]?.name;
   const items: TabBarItem[] = [];
 
@@ -34,7 +37,8 @@ function AppTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
     const options = descriptors[route.key]?.options;
     const icon = TAB_ICONS[route.name];
     if (options === undefined || icon === undefined) continue;
-    if ((options as { href?: unknown }).href === null) continue;
+    // expo-router는 href: null 옵션을 지우고 display:none으로 바꾸므로, 보일 탭은 여기서 직접 정한다.
+    if (TRIP_ONLY.has(route.name) && !hasTrip) continue;
 
     const focused = focusedName === route.name || (route.name === "index" && focusedName !== undefined && HOME_FLOW.has(focusedName));
     items.push({
@@ -58,9 +62,16 @@ function ThemedTabs() {
   const hasTrip = useSession() !== null;
   const tripTab = (title: string) => ({ title, href: hasTrip ? undefined : null });
 
+  // 앱 바탕색을 시스템 창 바탕에도 깔아, 키보드·스크롤 끝·시스템 바 뒤에 다른 색이 비치지 않게 한다.
+  useEffect(() => {
+    SystemUI.setBackgroundColorAsync(colors.background).catch(() => undefined);
+  }, [colors.background]);
+
   return (
     <>
       <StatusBar style={scheme === "dark" ? "light" : "dark"} />
+      {/* 안드로이드 아래 시스템 막대(버튼 3개 방식)의 버튼 색. 막대 바탕을 앱과 잇는 설정은 app.json 플러그인에 있다. */}
+      <NavigationBar style={scheme === "dark" ? "light" : "dark"} />
       <Tabs
         tabBar={(props) => <AppTabBar {...props} />}
         screenOptions={{
@@ -86,6 +97,15 @@ function ThemedTabs() {
 export default function RootLayout() {
   const mode = useThemeMode();
   const [ready, setReady] = useState(false);
+
+  // 앱 안에서 고른 모드를 시스템 바(상태·내비게이션 막대) 글자색에도 알린다. 시스템이면 휴대폰 설정을 따른다.
+  useEffect(() => {
+    try {
+      Appearance.setColorScheme(mode === "system" ? "unspecified" : mode);
+    } catch {
+      // 지원하지 않는 환경에서는 앱 안 색만 바뀐다.
+    }
+  }, [mode]);
 
   useEffect(() => {
     let alive = true;

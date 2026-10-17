@@ -5,7 +5,6 @@ import Svg, { Circle, Path, Rect } from "react-native-svg";
 import { pressedOpacity, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Avatar, { type AvatarChip } from "./Avatar.tsx";
-import { tabFlexes } from "./tabBarLayout.ts";
 
 export type TabBarIcon = "home" | "chat" | "plan" | "me" | "settings";
 
@@ -25,8 +24,11 @@ export type TabBarProps = {
   me?: { color: string; chips?: AvatarChip[]; name?: string };
 };
 
-const PILL = 44;
-const ICON = 26;
+/** 탭 한 칸의 높이(손가락으로 누르기 좋게 48 이상) */
+const ITEM_HEIGHT = 52;
+/** 켜진 탭의 둥근 바탕 지름 */
+const DOT = 40;
+const ICON = 24;
 
 function IconShape({ icon, color, width }: { icon: Exclude<TabBarIcon, "me">; color: string; width: number }) {
   const common = { stroke: color, strokeWidth: width, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, fill: "none" };
@@ -79,18 +81,19 @@ function TabIcon({ icon, color, focused, me }: { icon: TabBarIcon; color: string
   );
 }
 
-/** 아래 탭바(납작 + 알약). 켜진 탭만 알약 안에 아이콘과 라벨이 같이 나온다. 연결은 화면(_layout)이 한다. */
+/**
+ * 아래 탭바. 평소엔 아이콘 밑에 작은 글자로 이름이 떠 있고,
+ * 켜진 탭은 글자가 사라지고 아이콘만 둥근 바탕 안에 들어간다. 연결은 화면(_layout)이 한다.
+ */
 export default function TabBar({ items, me }: TabBarProps) {
   const { colors } = useTheme();
   const styles = useStyles(createStyles);
   const insets = useSafeAreaInsets();
-  const focusedIndex = items.findIndex((item) => item.focused);
-  const flexes = tabFlexes(items.length, focusedIndex);
 
   return (
     <View style={[styles.bar, { paddingBottom: insets.bottom }]} accessibilityRole="tablist">
       <View style={styles.row}>
-        {items.map((item, i) => (
+        {items.map((item) => (
           <Pressable
             key={item.key}
             onPress={item.onPress}
@@ -98,18 +101,19 @@ export default function TabBar({ items, me }: TabBarProps) {
             accessibilityRole="tab"
             accessibilityState={{ selected: item.focused }}
             accessibilityLabel={item.label}
-            style={({ pressed }) => [
-              styles.item,
-              { flex: flexes[i] },
-              item.focused && styles.itemFocused,
-              pressed && { opacity: pressedOpacity },
-            ]}
+            style={({ pressed }) => [styles.item, pressed && { opacity: pressedOpacity }]}
           >
-            <TabIcon icon={item.icon} color={item.focused ? colors.onAccent : colors.iconFaint} focused={item.focused} me={me} />
-            {item.focused && (
-              <AppText variant="label" tone="onAccent" numberOfLines={1} style={styles.label}>
-                {item.label}
-              </AppText>
+            {item.focused ? (
+              <View style={styles.dot}>
+                <TabIcon icon={item.icon} color={colors.onAccent} focused me={me} />
+              </View>
+            ) : (
+              <>
+                <TabIcon icon={item.icon} color={colors.iconFaint} focused={false} me={me} />
+                <AppText variant="caption" tone="muted" numberOfLines={1} maxFontSizeMultiplier={1.15} style={styles.label}>
+                  {item.label}
+                </AppText>
+              </>
             )}
           </Pressable>
         ))}
@@ -124,28 +128,31 @@ const createStyles = (t: Theme) =>
       backgroundColor: t.colors.surface,
       borderTopWidth: 1,
       borderTopColor: t.colors.border,
-      paddingTop: 10,
-      paddingHorizontal: spacing.md - spacing.xs,
+      paddingTop: 6,
+      paddingHorizontal: spacing.sm,
     },
     row: {
       flexDirection: "row",
       alignItems: "center",
-      gap: spacing.xxs,
     },
     item: {
-      height: PILL,
-      minHeight: PILL,
-      borderRadius: PILL / 2,
-      flexDirection: "row",
+      flex: 1,
+      height: ITEM_HEIGHT,
       alignItems: "center",
       justifyContent: "center",
-      gap: 6,
+      gap: 2,
     },
-    itemFocused: {
+    dot: {
+      width: DOT,
+      height: DOT,
+      borderRadius: DOT / 2,
       backgroundColor: t.colors.accent,
+      alignItems: "center",
+      justifyContent: "center",
     },
     label: {
-      fontWeight: "700",
-      fontSize: 14,
+      fontSize: 11,
+      lineHeight: 14,
+      fontWeight: "600",
     },
   });
