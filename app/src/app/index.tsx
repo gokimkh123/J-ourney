@@ -10,7 +10,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 
 import { api, endpoints } from "../lib/api/index.ts";
 import { checkHealth } from "../lib/api/health.ts";
@@ -26,6 +26,7 @@ import { describeError, inviteLink, normalizeInviteCode } from "../lib/ui/format
 const POLL_MS = 3000;
 
 export default function Index() {
+  const router = useRouter();
   const styles = useStyles(createStyles);
   const { colors } = useTheme();
   const [checking, setChecking] = useState(false);
@@ -312,6 +313,9 @@ export default function Index() {
           <Text style={styles.link}>{inviteLink(current.inviteCode)}</Text>
           <Pressable style={styles.button} onPress={onShare}>
             <Text style={styles.buttonText}>공유하기</Text>
+          </Pressable>
+          <Pressable style={styles.button} onPress={() => router.push("/conditions")}>
+            <Text style={styles.buttonText}>회의 조건 정하기</Text>
           </Pressable>
 
           <Text style={[styles.sectionTitle, styles.membersTitle]}>구성원</Text>

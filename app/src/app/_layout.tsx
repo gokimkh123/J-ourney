@@ -1,10 +1,11 @@
 import { NavigationBar } from "expo-navigation-bar";
-import { Tabs } from "expo-router";
+import { Tabs, useRouter } from "expo-router";
 import type { BottomTabBarProps } from "expo-router/js-tabs";
 import { StatusBar } from "expo-status-bar";
 import * as SystemUI from "expo-system-ui";
 import { useEffect, useState } from "react";
-import { Appearance, View } from "react-native";
+import { Appearance, Pressable, View } from "react-native";
+import Svg, { Path } from "react-native-svg";
 
 import TabBar, { type TabBarIcon, type TabBarItem } from "../components/TabBar.tsx";
 import { session } from "../lib/session/index.ts";
@@ -26,7 +27,11 @@ const TAB_ICONS: Record<string, TabBarIcon> = {
 const TRIP_ONLY = new Set(["persona", "meeting", "plan"]);
 
 /** 홈에서 이어지는 숨은 화면(설문·초대 링크)이 열려 있을 때는 홈 탭이 켜진 것으로 본다. */
-const HOME_FLOW = new Set(["questionnaire", "invite/[code]"]);
+const HOME_FLOW = new Set(["questionnaire", "invite/[code]", "conditions"]);
+/** 회의 탭에서 이어지는 숨은 화면은 회의 탭이 켜진 것으로 본다. */
+const MEETING_FLOW = new Set(["agreement"]);
+/** 일정 탭에서 이어지는 숨은 화면(장소 근거 보기)은 일정 탭이 켜진 것으로 본다. */
+const PLAN_FLOW = new Set(["place/[id]"]);
 
 function AppTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const hasTrip = useSession() !== null;
@@ -40,7 +45,11 @@ function AppTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
     // expo-router는 href: null 옵션을 지우고 display:none으로 바꾸므로, 보일 탭은 여기서 직접 정한다.
     if (TRIP_ONLY.has(route.name) && !hasTrip) continue;
 
-    const focused = focusedName === route.name || (route.name === "index" && focusedName !== undefined && HOME_FLOW.has(focusedName));
+    const focused =
+      focusedName === route.name ||
+      (route.name === "index" && focusedName !== undefined && HOME_FLOW.has(focusedName)) ||
+      (route.name === "meeting" && focusedName !== undefined && MEETING_FLOW.has(focusedName)) ||
+      (route.name === "plan" && focusedName !== undefined && PLAN_FLOW.has(focusedName));
     items.push({
       key: route.key,
       label: typeof options.title === "string" ? options.title : route.name,
@@ -55,6 +64,25 @@ function AppTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   }
 
   return <TabBar items={items} />;
+}
+
+/** 탭에 없는 화면(여행 조건 등) 왼쪽 위의 뒤로 가기. 돌아갈 곳이 없으면 홈으로. */
+function BackButton() {
+  const router = useRouter();
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))}
+      accessibilityRole="button"
+      accessibilityLabel="뒤로 가기"
+      hitSlop={8}
+      style={{ width: 44, height: 44, alignItems: "center", justifyContent: "center" }}
+    >
+      <Svg width={24} height={24} viewBox="0 0 24 24">
+        <Path d="M15 5l-7 7 7 7" stroke={colors.text} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </Svg>
+    </Pressable>
+  );
 }
 
 function ThemedTabs() {
@@ -87,6 +115,9 @@ function ThemedTabs() {
         <Tabs.Screen name="meeting" options={tripTab("AI 회의")} />
         <Tabs.Screen name="plan" options={tripTab("일정")} />
         <Tabs.Screen name="settings" options={{ title: "설정" }} />
+        <Tabs.Screen name="conditions" options={{ href: null, title: "여행 조건", headerLeft: () => <BackButton /> }} />
+        <Tabs.Screen name="agreement" options={{ href: null, title: "AI 합의안", headerLeft: () => <BackButton /> }} />
+        <Tabs.Screen name="place/[id]" options={{ href: null, title: "장소", headerLeft: () => <BackButton /> }} />
         <Tabs.Screen name="questionnaire" options={{ href: null }} />
         <Tabs.Screen name="invite/[code]" options={{ href: null }} />
       </Tabs>
