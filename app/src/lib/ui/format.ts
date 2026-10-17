@@ -63,3 +63,35 @@ export function durationLabel(sec: number): string {
   if (seconds === 0) return `${minutes}분`;
   return `${minutes}분 ${seconds}초`;
 }
+
+const MOVE_MODE_LABELS: Record<string, string> = {
+  walk: '도보',
+  bus: '버스',
+  subway: '지하철',
+  taxi: '택시',
+  car: '자동차',
+};
+
+export function moveModeLabel(mode: string): string {
+  return Object.hasOwn(MOVE_MODE_LABELS, mode) ? MOVE_MODE_LABELS[mode]! : mode;
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  food: '식사',
+  cafe: '카페',
+  sightseeing: '관광',
+  market: '시장',
+  spa: '휴식',
+  walk: '산책',
+};
+
+export function categoryLabel(category: string): string {
+  return Object.hasOwn(CATEGORY_LABELS, category) ? CATEGORY_LABELS[category]! : category;
+}
+
+export function crowdLabel(crowd: number): string {
+  if (Number.isNaN(crowd) || crowd < 0 || crowd > 100) return '정보 없음';
+  if (crowd <= 33) return '한산';
+  if (crowd <= 66) return '보통';
+  return '붐빔';
+}
