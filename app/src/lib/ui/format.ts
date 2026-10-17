@@ -53,3 +53,13 @@ export function nightsLabel(startDate: string, endDate: string): string {
   if (nights === 0) return '당일';
   return `${nights}박 ${nights + 1}일`;
 }
+
+export function durationLabel(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return '0초';
+  const total = Math.floor(sec);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes === 0) return `${seconds}초`;
+  if (seconds === 0) return `${minutes}분`;
+  return `${minutes}분 ${seconds}초`;
+}
