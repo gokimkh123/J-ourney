@@ -67,7 +67,8 @@ export default function Avatar({
           width: box.width,
           height: box.height,
           // 커져도 발이 제자리에 있도록 아래 가운데를 기준으로 키운다.
-          transform: active ? [{ scale: ACTIVE_SCALE }] : undefined,
+          // undefined로 되돌리면 안드로이드에서 transform이 null로 넘어가 오류가 나므로 항상 배열로 둔다.
+          transform: [{ scale: active ? ACTIVE_SCALE : 1 }],
           transformOrigin: "50% 100%",
         }}
       >

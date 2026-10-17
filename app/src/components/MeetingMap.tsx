@@ -58,6 +58,8 @@ export type MeetingMapProps = {
   /** 그림 지도에서 'full'은 그림 전체(회의 진행), 'fit'은 핀·경로가 들어오게 확대(일정 위쪽 작은 지도) */
   artView?: "full" | "fit";
   height?: number;
+  /** 지도 그림을 어디에 맞출지 계산할 때 쓰는 높이. 생략하면 height. 아래를 시트가 가릴 때 보이는 부분 높이를 준다. */
+  viewHeight?: number;
   accessibilityLabel?: string;
 };
 
@@ -76,6 +78,9 @@ const PIN_INK = lightColors.text;
 // 그림 지도에서 캐릭터는 깃발 오른쪽 바닥에 선다. 깃발 천의 번호가 가려지지 않게 천 중간부터 시작한다.
 const ART_AGENT_DX = 14 + AGENT.width / 2;
 const PIN_STROKE = lightColors.textOnColor;
+// 가까이 모인 캐릭터는 이 간격으로 좌우로 벌린다.
+const FAN_RADIUS = 26;
+const FAN_STEP = 24;
 
 /** 위도·경도 묶음을 감싸는 범위. 화면이 bounds를 만들 때 쓴다. margin은 비율. */
 export function boundsAround(points: LatLng[], margin = 0.12): MapBounds {
@@ -113,6 +118,16 @@ function AgentMarker({ agent, x, y, active }: { agent: MapAgent; x: number; y: n
   const tx = useSharedValue(x);
   const ty = useSharedValue(y);
   const pulse = useSharedValue(0);
+  const bob = useSharedValue(0);
+
+  // 서 있는 동안에도 살짝 통통 튀어 살아 있는 느낌을 준다(말하는 중이면 더 크게). 모션 줄이기 설정이면 멈춘다.
+  useEffect(() => {
+    if (reduce) {
+      bob.value = 0;
+      return;
+    }
+    bob.value = withRepeat(withTiming(1, { duration: active ? 420 : 780, easing: Easing.inOut(Easing.quad) }), -1, true);
+  }, [active, reduce, bob]);
 
   useEffect(() => {
     const cfg = { duration: reduce ? 0 : duration.travel, easing: travelEasing };
@@ -132,6 +147,9 @@ function AgentMarker({ agent, x, y, active }: { agent: MapAgent; x: number; y: n
   const moveStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: tx.value - AGENT.width / 2 }, { translateY: ty.value - AGENT.height }],
   }));
+  const bobStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: -bob.value * (active ? 5 : 3) }],
+  }));
   const ringStyle = useAnimatedStyle(() => ({
     opacity: agent.searching ? (reduce ? 0.5 : 0.9 * (1 - pulse.value)) : 0,
     transform: [{ scale: 0.6 + pulse.value * 1.1 }],
@@ -140,7 +158,9 @@ function AgentMarker({ agent, x, y, active }: { agent: MapAgent; x: number; y: n
   return (
     <Animated.View style={[styles.agent, moveStyle]} pointerEvents="none">
       <Animated.View style={[styles.ring, { borderColor: agent.color }, ringStyle]} />
-      <Avatar color={agent.color} name={agent.name} chips={agent.chips} size="sm" variant="full" active={active} />
+      <Animated.View style={bobStyle}>
+        <Avatar color={agent.color} name={agent.name} chips={agent.chips} size="sm" variant="full" active={active} />
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -204,6 +224,7 @@ export default function MeetingMap({
   art,
   artView = "full",
   height = 300,
+  viewHeight,
   accessibilityLabel = "회의 지도",
 }: MeetingMapProps) {
   const { colors, scheme } = useTheme();
@@ -220,8 +241,8 @@ export default function MeetingMap({
       ...agents.map((a) => projectBusan(a)),
       ...routes.flatMap((r) => r.points.map((p) => projectBusan(p))),
     ];
-    return computeArtViewport(points, width, height, artView);
-  }, [art, artView, width, height, pins, agents, routes]);
+    return computeArtViewport(points, width, viewHeight ?? height, artView);
+  }, [art, artView, width, height, viewHeight, pins, agents, routes]);
 
   const at = (p: LatLng) => {
     if (viewport) {
@@ -230,11 +251,25 @@ export default function MeetingMap({
     }
     return project(p, bounds, width, height);
   };
+  // 같은 곳에 모인 캐릭터는 겹치지 않게 좌우로 벌려 세운다.
+  const fanOut = new Map<string, number>();
+  const placed: { x: number; y: number }[] = [];
+  for (const a of agents) {
+    const p = at(a);
+    const k = placed.filter((q) => Math.hypot(q.x - p.x, q.y - p.y) < FAN_RADIUS).length;
+    placed.push(p);
+    fanOut.set(a.id, k === 0 ? 0 : (k % 2 === 1 ? 1 : -1) * Math.ceil(k / 2) * FAN_STEP);
+  }
   const agentAt = (a: MapAgent) => {
     const p = at(a);
-    return viewport ? { x: p.x + ART_AGENT_DX, y: p.y } : { x: p.x + AGENT_OFFSET.x, y: p.y + AGENT_OFFSET.y };
+    const dx = fanOut.get(a.id) ?? 0;
+    return viewport
+      ? { x: p.x + ART_AGENT_DX + dx, y: p.y }
+      : { x: p.x + AGENT_OFFSET.x + dx, y: p.y + AGENT_OFFSET.y };
   };
 
+  // viewHeight가 따로 있으면 그림 위치·배율은 그 기준으로 두고, 아래쪽은 같은 배율로 이어서 더 보여 준다(시트가 접히면 드러나는 부분).
+  const viewBoxHeight = viewport ? (viewHeight !== undefined ? height / viewport.scale : viewport.h) : 0;
   const gridStep = 40;
   const bubbleAgent = bubble ? agents.find((a) => a.id === bubble.agentId) : undefined;
 
@@ -246,7 +281,7 @@ export default function MeetingMap({
             <Svg
               width={width}
               height={height}
-              viewBox={`${viewport.x} ${viewport.y} ${viewport.w} ${viewport.h}`}
+              viewBox={`${viewport.x} ${viewport.y} ${viewport.w} ${viewBoxHeight}`}
               style={StyleSheet.absoluteFill}
             >
               <BusanArt palette={palette} />
@@ -351,18 +386,21 @@ function SpeechBubble({ text, anchor, mapWidth }: { text: string; anchor: { x: n
   const tailLeft = Math.min(Math.max(anchor.x - left - 5, radius.md), Math.max(size.w - radius.md - 10, radius.md));
 
   return (
+    // 나타나는 애니메이션(Animated.View)과 투명도(opacity)를 한 요소에 같이 두면 서로 덮어쓰므로 겹으로 나눈다.
     <Animated.View
       entering={FadeIn.duration(duration.normal)}
       exiting={FadeOut.duration(duration.fast)}
       onLayout={(e) => setSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
-      style={[styles.bubble, { left, top, opacity: size.w === 0 ? 0 : 1 }]}
+      style={{ position: "absolute", left, top, maxWidth: BUBBLE_MAX }}
       accessibilityLiveRegion="polite"
       pointerEvents="none"
     >
-      <View style={[styles.tail, below ? { top: -5 } : { bottom: -5 }, { left: tailLeft }]} />
-      <AppText variant="caption" color={colors.onBubble} style={styles.bubbleText}>
-        {text}
-      </AppText>
+      <View style={[styles.bubble, { opacity: size.w === 0 ? 0 : 1 }]}>
+        <View style={[styles.tail, below ? { top: -5 } : { bottom: -5 }, { left: tailLeft }]} />
+        <AppText variant="caption" color={colors.onBubble} style={styles.bubbleText}>
+          {text}
+        </AppText>
+      </View>
     </Animated.View>
   );
 }
@@ -414,7 +452,6 @@ const createStyles = (t: Theme) => StyleSheet.create({
     borderWidth: 2,
   },
   bubble: {
-    position: "absolute",
     maxWidth: BUBBLE_MAX,
     backgroundColor: t.colors.bubble,
     borderRadius: radius.md,

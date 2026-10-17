@@ -50,6 +50,7 @@ const TOP_ROOM_PX = 120;
 /** 'full'에서 가장 아래 점 아래 여백(화면 픽셀) */
 const BOTTOM_ROOM_PX = 24;
 const FIT_PAD = 24;
+const FIT_FLAG_ROOM = 28;
 const FIT_MAX_SCALE = 2.2;
 
 /**
@@ -79,7 +80,8 @@ export function computeArtViewport(
 
   const minX = Math.min(...finite.map((p) => p.x)) - FIT_PAD;
   const maxX = Math.max(...finite.map((p) => p.x)) + FIT_PAD;
-  const minY = Math.min(...finite.map((p) => p.y)) - FIT_PAD;
+  // 깃발은 발(점) 위로 솟아 있으므로 위쪽에 깃발 높이만큼 더 둔다.
+  const minY = Math.min(...finite.map((p) => p.y)) - FIT_PAD - FIT_FLAG_ROOM;
   const maxY = Math.max(...finite.map((p) => p.y)) + FIT_PAD;
   const aspect = cw / ch;
   let w = Math.max(maxX - minX, cw / FIT_MAX_SCALE);

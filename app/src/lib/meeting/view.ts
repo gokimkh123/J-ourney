@@ -128,11 +128,19 @@ export function mapAgents(state: MeetingState): {
   searching: boolean;
 }[] {
   const result = [];
+  // 회의 중에는 방금 말한 AI가, 말하면서 확인한 장소(후보) 쪽으로 걸어간다. 그래서 지도 위에서 계속 움직인다.
+  const speaker = state.phase === 'meeting' ? lastMessage(state) : undefined;
+  const mentioned = speaker?.places.at(-1);
+  const target =
+    mentioned === undefined ? undefined : state.board.candidates.find((c) => c.name === mentioned.name);
   for (const agent of state.agents) {
     const research = state.research[agent.agentId];
     let lat: number;
     let lng: number;
-    if (research?.focus) {
+    if (target !== undefined && speaker?.agentId === agent.agentId && !research?.focus) {
+      lat = target.lat;
+      lng = target.lng;
+    } else if (research?.focus) {
       lat = research.focus.lat;
       lng = research.focus.lng;
     } else {

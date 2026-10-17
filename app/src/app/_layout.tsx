@@ -8,10 +8,14 @@ import { Appearance, Pressable, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 
 import TabBar, { type TabBarIcon, type TabBarItem } from "../components/TabBar.tsx";
+import { config } from "../lib/config/index.ts";
+import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { session } from "../lib/session/index.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { themeMode } from "../lib/settings/index.ts";
 import { useThemeMode } from "../lib/settings/useThemeMode.ts";
+import { conditionsStore } from "../lib/trip/conditionsStore.ts";
+import { watchTripChange } from "../lib/trip/tripReset.ts";
 import { ThemeProvider, useTheme } from "../theme/index.ts";
 
 /** 탭바에 나오는 화면과 아이콘. 순서가 탭 순서다. */
@@ -57,7 +61,8 @@ function AppTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
       focused,
       onPress: () => {
         const event = navigation.emit({ type: "tabPress", target: route.key, canPreventDefault: true });
-        if (!focused && !event.defaultPrevented) navigation.navigate(route.name, route.params);
+        // 켜짐 표시는 부모 탭 기준이지만, 이동은 실제 화면 기준으로 판단한다(조건 화면에서 홈 탭을 누르면 홈으로).
+        if (focusedName !== route.name && !event.defaultPrevented) navigation.navigate(route.name, route.params);
       },
       onLongPress: () => navigation.emit({ type: "tabLongPress", target: route.key }),
     });
@@ -102,6 +107,8 @@ function ThemedTabs() {
       <NavigationBar style={scheme === "dark" ? "light" : "dark"} />
       <Tabs
         tabBar={(props) => <AppTabBar {...props} />}
+        // 폰의 뒤로 가기는 방금 있던 화면으로 돌아간다(기본값은 어디서든 첫 탭인 홈으로 간다).
+        backBehavior="history"
         screenOptions={{
           headerStyle: { backgroundColor: colors.background },
           headerTintColor: colors.text,
@@ -125,6 +132,15 @@ function ThemedTabs() {
   );
 }
 
+/**
+ * 저장된 세션을 읽는다. 가짜 데이터 모드의 가짜 서버는 앱을 다시 켜면 기억이 사라지므로,
+ * 그때 저장돼 있던 세션은 이미 없는 여행을 가리킨다. 그대로 두면 "여행에 다시 참여해 주세요" 오류가 나서 지운다.
+ */
+async function loadSession() {
+  const saved = await session.load();
+  if (saved !== null && config.useMock) await session.clear();
+}
+
 export default function RootLayout() {
   const mode = useThemeMode();
   const [ready, setReady] = useState(false);
@@ -138,10 +154,20 @@ export default function RootLayout() {
     }
   }, [mode]);
 
+  // 나가거나 다른 여행에 들어가면 이전 여행의 회의 조건·합의안을 비운다.
+  useEffect(
+    () =>
+      watchTripChange(session, () => {
+        conditionsStore.set(null);
+        meetingResultStore.set(null);
+      }),
+    [],
+  );
+
   useEffect(() => {
     let alive = true;
     // 저장된 화면 모드와 세션을 먼저 읽어 둔다. 하나가 실패해도 앱은 뜬다.
-    void Promise.allSettled([themeMode.load(), session.load()]).then(() => {
+    void Promise.allSettled([themeMode.load(), loadSession()]).then(() => {
       if (alive) setReady(true);
     });
     return () => {

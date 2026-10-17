@@ -1,9 +1,10 @@
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { Linking, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, Linking, ScrollView, StyleSheet, View } from "react-native";
 
 import { AppText, Button, InfoList, PlaceSticker, SpeechRow, StatusPill } from "../../components/index.ts";
 import { currentMembers, currentPlan } from "../../lib/plan/current.ts";
 import { placeKindOf } from "../../lib/plan/placeKind.ts";
+import { placeEvidenceRows } from "../../lib/plan/evidence.ts";
 import { findItem, placeDetail } from "../../lib/plan/view.ts";
 import { spacing, useStyles, type Theme } from "../../theme/index.ts";
 
@@ -27,6 +28,12 @@ export default function PlaceScreen() {
     );
   }
 
+  const address = item.place.address;
+  // 지도 앱·브라우저를 못 열면 주소라도 보여 줘서 직접 찾을 수 있게 한다.
+  const openMap = (url: string) => {
+    Linking.openURL(url).catch(() => Alert.alert("지도를 열 수 없어요", `주소: ${address}`));
+  };
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.scroll}>
       <Stack.Screen options={{ title: detail.title }} />
@@ -44,6 +51,11 @@ export default function PlaceScreen() {
           </View>
         </View>
       </View>
+      {!detail.verified && (
+        <AppText variant="small" tone="muted">
+          지도에서 위치를 확인하지 못한 장소예요. 가기 전에 지도에서 한 번 더 찾아봐 주세요.
+        </AppText>
+      )}
 
       {detail.reasons.length > 0 && (
         <View style={styles.section}>
@@ -60,12 +72,12 @@ export default function PlaceScreen() {
         <AppText variant="heading" accessibilityRole="header">
           장소 정보
         </AppText>
-        <InfoList rows={detail.rows} />
+        <InfoList rows={[...detail.rows, ...placeEvidenceRows(item.place)]} />
       </View>
 
       <View style={styles.links}>
-        <Button label="카카오맵" variant="secondary" onPress={() => void Linking.openURL(detail.kakaoMapUrl)} style={styles.half} />
-        <Button label="네이버지도" variant="secondary" onPress={() => void Linking.openURL(detail.naverMapUrl)} style={styles.half} />
+        <Button label="카카오맵에서 찾기" variant="secondary" onPress={() => openMap(detail.kakaoMapUrl)} style={styles.half} />
+        <Button label="네이버지도에서 찾기" variant="secondary" onPress={() => openMap(detail.naverMapUrl)} style={styles.half} />
       </View>
     </ScrollView>
   );

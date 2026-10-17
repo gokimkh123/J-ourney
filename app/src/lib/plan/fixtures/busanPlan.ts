@@ -27,9 +27,8 @@ function place(
     priceLevel,
     kakaoPlaceId: verified ? `kk_${id}` : null,
     verified,
-    links: verified
-      ? { kakaoMap: `https://place.map.kakao.com/kk_${id}`, naverMap: `https://map.naver.com/p/search/${q}` }
-      : { kakaoMap: `https://map.kakao.com/link/search/${q}`, naverMap: `https://map.naver.com/p/search/${q}` },
+    // 예시 장소의 카카오 장소 ID는 가짜라 장소 페이지 링크가 열리지 않는다. 확인 여부와 관계없이 이름 검색 링크를 쓴다.
+    links: { kakaoMap: `https://map.kakao.com/link/search/${q}`, naverMap: `https://map.naver.com/p/search/${q}` },
     sources: verified ? ['tourapi', 'kakao'] : ['tourapi'],
     baseDate: '2026-10-01',
     checkedAt: '2026-10-24T14:00:00+09:00',
@@ -40,7 +39,7 @@ function move(mode: string, minutes: number, distanceM: number, fareWon: number)
   return { mode, minutes, distanceM, fareWon, source: 'kakao', routeUrl: `https://map.kakao.com/link/by/${mode}/route` };
 }
 
-const items: Record<string, PlanItem> = {
+export const items: Record<string, PlanItem> = {
   itm_01: {
     id: 'itm_01',
     startTime: '09:00',

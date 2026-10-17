@@ -9,6 +9,7 @@ import {
   MemberBand,
   SatisfactionRow,
   StatGroup,
+  StatusPill,
 } from "../components/index.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { agreementView } from "../lib/meeting/view.ts";
@@ -46,22 +47,25 @@ export default function AgreementScreen() {
         <MemberBand members={state.agents.map((a) => ({ id: a.agentId, name: a.nickname, color: a.color, chips: a.chips }))} />
 
         <View style={styles.body}>
-          <View style={styles.titleRow}>
-            <AppText variant="display" accessibilityRole="header">
-              합의했어요
+          <View style={styles.titleBlock}>
+            <View style={styles.pills}>
+              <StatusPill label="사람 확정 전" tone="warning" />
+              <StatusPill label="예시 데이터" />
+            </View>
+            <AppText variant="title" accessibilityRole="header">
+              AI가 제안한 일정이에요
             </AppText>
-            {time !== undefined && (
-              <AppText variant="small" tone="muted">
-                {time.value} 걸렸어요
-              </AppText>
-            )}
+            <AppText variant="small" tone="muted">
+              {time !== undefined ? `AI ${state.agents.length}명이 ${time.value} 동안 회의해서 맞췄어요. ` : ""}
+              확정은 함께 가는 사람들이 해요.
+            </AppText>
           </View>
 
           <StatGroup items={stats} />
 
           <View style={styles.section}>
             <AppText variant="heading" accessibilityRole="header">
-              만족도
+              AI 예상 만족도
             </AppText>
             {view.satisfaction.map((s) => (
               <SatisfactionRow key={s.name} name={s.name} color={s.color} score={s.score} threshold={threshold} />
@@ -94,7 +98,8 @@ const createStyles = (t: Theme) =>
     screen: { flex: 1, backgroundColor: t.colors.background },
     scroll: { paddingBottom: spacing.lg },
     body: { padding: spacing.md, gap: spacing.md },
-    titleRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: spacing.sm },
+    titleBlock: { gap: spacing.xs },
+    pills: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginBottom: spacing.xxs },
     section: { gap: spacing.sm },
     footer: {
       flexDirection: "row",

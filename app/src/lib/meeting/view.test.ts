@@ -219,3 +219,23 @@ test('회의 중 알 수 없는 agentId 발언이 끼어도 말풍선·active �
   assert.equal(active.length, 1);
   assert.equal(active[0]?.name, '지은');
 });
+
+test('회의 중 말한 AI는 확인한 장소 후보 위치로 이동하고, 다른 AI는 자기 후보 평균에 머문다', () => {
+  let state = initialMeetingState();
+  let moved = 0;
+  for (const event of busanEvents) {
+    state = applyEvent(state, event).state;
+    if (state.phase !== 'meeting' || event.type !== 'place.checked') continue;
+    const speaker = state.timeline.filter((t) => t.kind === 'message').at(-1);
+    if (speaker === undefined || speaker.kind !== 'message') continue;
+    const place = speaker.places.at(-1);
+    const candidate = state.board.candidates.find((c) => c.name === place?.name);
+    if (candidate === undefined) continue;
+    const agent = mapAgents(state).find((a) => a.id === speaker.agentId);
+    assert.ok(agent !== undefined);
+    assert.equal(agent.lat, candidate.lat);
+    assert.equal(agent.lng, candidate.lng);
+    moved += 1;
+  }
+  assert.ok(moved > 0);
+});

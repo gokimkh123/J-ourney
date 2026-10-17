@@ -2,14 +2,22 @@ import { useRouter } from "expo-router";
 import { useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 
-import { AppText, MeetingMap, ScheduleItem, SegmentedTabs, boundsAround } from "../components/index.ts";
+import { AppText, MeetingMap, ScheduleItem, SegmentedTabs, StatusPill, boundsAround } from "../components/index.ts";
+import type { PlanStatus } from "../lib/plan/types.ts";
 import { currentMembers, currentPlan } from "../lib/plan/current.ts";
 import { placeKindOf } from "../lib/plan/placeKind.ts";
 import { dayTabs, planSummary, scheduleRows } from "../lib/plan/view.ts";
 import { dateLabel } from "../lib/trip/dateRange.ts";
 import { spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
-const MAP_HEIGHT = 230;
+// 하루 일정이 동래~영도처럼 위아래로 길게 퍼져도 다 들어오는 높이
+const MAP_HEIGHT = 360;
+
+const STATUS: Record<PlanStatus, { label: string; tone: "warning" | "accent" | "success" }> = {
+  voting: { label: "사람 확정 전", tone: "warning" },
+  revising: { label: "수정 중", tone: "accent" },
+  confirmed: { label: "확정됨", tone: "success" },
+};
 
 /** C1 합의 일정: 날짜별 지도와 시간표. 항목을 누르면 C2 근거 보기. 지금은 가짜 일정(부산)이다. */
 export default function PlanScreen() {
@@ -59,6 +67,10 @@ export default function PlanScreen() {
 
       <View style={styles.body}>
         <View style={styles.summary}>
+          <View style={styles.pills}>
+            <StatusPill label={STATUS[plan.status].label} tone={STATUS[plan.status].tone} />
+            <StatusPill label="예시 데이터" />
+          </View>
           <AppText variant="display" accessibilityRole="header">
             부산 {summary.dayCount}일
           </AppText>
@@ -102,6 +114,7 @@ const createStyles = (t: Theme) =>
     scroll: { paddingBottom: spacing.lg },
     body: { padding: spacing.md, gap: spacing.md },
     summary: { gap: spacing.xxs },
+    pills: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginBottom: spacing.xs },
     list: { gap: spacing.xs },
     empty: {
       flex: 1,
