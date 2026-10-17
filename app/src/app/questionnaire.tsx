@@ -28,7 +28,7 @@ import type {
   ScaleQuestion,
   TextQuestion,
 } from "../lib/persona/types.ts";
-import { colors } from "../lib/theme.ts";
+import { useStyles, useTheme, type Theme } from "../theme/index.ts";
 import { describeError, formatCount } from "../lib/ui/format.ts";
 
 const PERSONA_ROUTE = "/persona" as Href;
@@ -40,6 +40,7 @@ function ScaleInput({ question, answers, update }: {
   answers: AnswerState;
   update: UpdateAnswers;
 }) {
+  const styles = useStyles(createStyles);
   const answer = answers[question.id];
   const values = Array.from(
     { length: question.max - question.min + 1 },
@@ -74,6 +75,7 @@ function MultiInput({ question, answers, update }: {
   answers: AnswerState;
   update: UpdateAnswers;
 }) {
+  const styles = useStyles(createStyles);
   const answer = answers[question.id];
   const selectedIds = answer?.type === "multi" ? answer.optionIds : [];
   const full = selectedIds.length >= question.maxSelect;
@@ -110,12 +112,15 @@ function TextAnswerInput({ question, draft, onChangeText }: {
   draft: string;
   onChangeText: (text: string) => void;
 }) {
+  const styles = useStyles(createStyles);
+  const { colors } = useTheme();
   return (
     <View>
       <TextInput
         style={styles.textInput}
         multiline
         placeholder={question.placeholder}
+        placeholderTextColor={colors.textMuted}
         maxLength={question.maxLength}
         value={draft}
         onChangeText={onChangeText}
@@ -127,6 +132,8 @@ function TextAnswerInput({ question, draft, onChangeText }: {
 }
 
 export default function Questionnaire() {
+  const styles = useStyles(createStyles);
+  const { colors } = useTheme();
   const router = useRouter();
   const [questions, setQuestions] = useState<Question[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -186,7 +193,7 @@ export default function Questionnaire() {
   if (loading || loadError !== null || questions === null) {
     return (
       <View style={styles.center}>
-        {loading && <ActivityIndicator color={colors.primary} />}
+        {loading && <ActivityIndicator color={colors.accent} />}
         {loading && <Text style={styles.line}>문항을 불러오는 중...</Text>}
         {!loading && loadError !== null && (
           <>
@@ -261,7 +268,7 @@ export default function Questionnaire() {
           </Pressable>
           {submitting && (
             <View style={styles.submitting}>
-              <ActivityIndicator color={colors.primary} />
+              <ActivityIndicator color={colors.accent} />
               <Text style={styles.line}>AI가 캐릭터 카드를 쓰고 있어요. 몇 초 걸려요</Text>
             </View>
           )}
@@ -279,144 +286,145 @@ export default function Questionnaire() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  container: {
-    padding: 24,
-  },
-  center: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    backgroundColor: colors.background,
-  },
-  progress: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: colors.primary,
-  },
-  question: {
-    marginTop: 8,
-    marginBottom: 16,
-    fontSize: 20,
-    fontWeight: "bold",
-    color: colors.text,
-  },
-  line: {
-    marginTop: 8,
-    fontSize: 16,
-    color: colors.text,
-    textAlign: "center",
-  },
-  hint: {
-    marginTop: 6,
-    fontSize: 13,
-    color: colors.text,
-  },
-  error: {
-    marginTop: 12,
-    fontSize: 14,
-    color: colors.text,
-    textAlign: "center",
-  },
-  scaleRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-  },
-  scaleButton: {
-    margin: 4,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFFFFF",
-  },
-  scaleText: {
-    fontSize: 16,
-    color: colors.text,
-  },
-  labelRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  chipRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginTop: 8,
-  },
-  chip: {
-    margin: 4,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: colors.primary,
-    backgroundColor: "#FFFFFF",
-  },
-  chipText: {
-    fontSize: 14,
-    color: colors.text,
-  },
-  selected: {
-    backgroundColor: colors.primary,
-  },
-  selectedText: {
-    color: colors.background,
-    fontWeight: "bold",
-  },
-  dimmed: {
-    opacity: 0.35,
-  },
-  textInput: {
-    minHeight: 120,
-    padding: 12,
-    borderWidth: 1,
-    borderRadius: 8,
-    borderColor: colors.primary,
-    fontSize: 16,
-    color: colors.text,
-    textAlignVertical: "top",
-    backgroundColor: "#FFFFFF",
-  },
-  navRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 24,
-  },
-  navButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    backgroundColor: colors.primary,
-  },
-  submitArea: {
-    marginTop: 24,
-    alignItems: "center",
-  },
-  submitting: {
-    marginTop: 16,
-    alignItems: "center",
-  },
-  button: {
-    marginTop: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    backgroundColor: colors.primary,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: colors.background,
-  },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: t.colors.background,
+    },
+    container: {
+      padding: 24,
+    },
+    center: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+      backgroundColor: t.colors.background,
+    },
+    progress: {
+      fontSize: 14,
+      fontWeight: "bold",
+      color: t.colors.accent,
+    },
+    question: {
+      marginTop: 8,
+      marginBottom: 16,
+      fontSize: 20,
+      fontWeight: "bold",
+      color: t.colors.text,
+    },
+    line: {
+      marginTop: 8,
+      fontSize: 16,
+      color: t.colors.text,
+      textAlign: "center",
+    },
+    hint: {
+      marginTop: 6,
+      fontSize: 13,
+      color: t.colors.text,
+    },
+    error: {
+      marginTop: 12,
+      fontSize: 14,
+      color: t.colors.text,
+      textAlign: "center",
+    },
+    scaleRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+    },
+    scaleButton: {
+      margin: 4,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: t.colors.accent,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: t.colors.surface,
+    },
+    scaleText: {
+      fontSize: 16,
+      color: t.colors.text,
+    },
+    labelRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+    },
+    chipRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      marginTop: 8,
+    },
+    chip: {
+      margin: 4,
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: t.colors.accent,
+      backgroundColor: t.colors.surface,
+    },
+    chipText: {
+      fontSize: 14,
+      color: t.colors.text,
+    },
+    selected: {
+      backgroundColor: t.colors.accent,
+    },
+    selectedText: {
+      color: t.colors.onAccent,
+      fontWeight: "bold",
+    },
+    dimmed: {
+      opacity: 0.35,
+    },
+    textInput: {
+      minHeight: 120,
+      padding: 12,
+      borderWidth: 1,
+      borderRadius: 8,
+      borderColor: t.colors.accent,
+      fontSize: 16,
+      color: t.colors.text,
+      textAlignVertical: "top",
+      backgroundColor: t.colors.surface,
+    },
+    navRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      marginTop: 24,
+    },
+    navButton: {
+      paddingVertical: 12,
+      paddingHorizontal: 24,
+      borderRadius: 8,
+      backgroundColor: t.colors.accent,
+    },
+    submitArea: {
+      marginTop: 24,
+      alignItems: "center",
+    },
+    submitting: {
+      marginTop: 16,
+      alignItems: "center",
+    },
+    button: {
+      marginTop: 12,
+      paddingVertical: 12,
+      paddingHorizontal: 24,
+      borderRadius: 8,
+      backgroundColor: t.colors.accent,
+    },
+    buttonDisabled: {
+      opacity: 0.6,
+    },
+    buttonText: {
+      fontSize: 16,
+      fontWeight: "bold",
+      color: t.colors.onAccent,
+    },
+  });

@@ -1,8 +1,9 @@
 import { Text, View, StyleSheet } from "react-native";
 
-import { colors } from "../lib/theme.ts";
+import { useStyles, type Theme } from "../theme/index.ts";
 
 export default function Meeting() {
+  const styles = useStyles(createStyles);
   return (
     <View style={styles.container}>
       <Text style={styles.title}>AI 회의</Text>
@@ -11,21 +12,22 @@ export default function Meeting() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.background,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: colors.text,
-  },
-  notice: {
-    marginTop: 8,
-    fontSize: 16,
-    color: colors.text,
-  },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: t.colors.background,
+    },
+    title: {
+      fontSize: 24,
+      fontWeight: "bold",
+      color: t.colors.text,
+    },
+    notice: {
+      marginTop: 8,
+      fontSize: 16,
+      color: t.colors.text,
+    },
+  });

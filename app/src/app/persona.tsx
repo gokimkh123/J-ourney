@@ -8,7 +8,7 @@ import { endpoints } from "../lib/api/index.ts";
 import { ApiError } from "../lib/api/errors.ts";
 import type { Persona } from "../lib/persona/types.ts";
 import { session } from "../lib/session/index.ts";
-import { colors } from "../lib/theme.ts";
+import { useStyles, useTheme, type Theme } from "../theme/index.ts";
 import { describeError } from "../lib/ui/format.ts";
 
 const QUESTIONNAIRE_ROUTE = "/questionnaire" as Href;
@@ -21,6 +21,8 @@ type View_ =
   | { kind: "error"; message: string };
 
 export default function PersonaScreen() {
+  const styles = useStyles(createStyles);
+  const { colors } = useTheme();
   const router = useRouter();
   const [view, setView] = useState<View_>({ kind: "loading" });
   const requestId = useRef(0);
@@ -70,7 +72,7 @@ export default function PersonaScreen() {
 
   return (
     <View style={styles.center}>
-      {view.kind === "loading" && <ActivityIndicator color={colors.primary} />}
+      {view.kind === "loading" && <ActivityIndicator color={colors.accent} />}
       {view.kind === "noSession" && (
         <Text style={styles.line}>먼저 홈에서 여행에 참여해 주세요</Text>
       )}
@@ -91,40 +93,41 @@ export default function PersonaScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  scroll: {
-    padding: 24,
-  },
-  center: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    backgroundColor: colors.background,
-  },
-  line: {
-    fontSize: 16,
-    color: colors.text,
-    textAlign: "center",
-  },
-  actions: {
-    marginTop: 24,
-    alignItems: "center",
-  },
-  button: {
-    marginTop: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    backgroundColor: colors.primary,
-  },
-  buttonText: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: colors.background,
-  },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: t.colors.background,
+    },
+    scroll: {
+      padding: 24,
+    },
+    center: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+      backgroundColor: t.colors.background,
+    },
+    line: {
+      fontSize: 16,
+      color: t.colors.text,
+      textAlign: "center",
+    },
+    actions: {
+      marginTop: 24,
+      alignItems: "center",
+    },
+    button: {
+      marginTop: 12,
+      paddingVertical: 12,
+      paddingHorizontal: 24,
+      borderRadius: 8,
+      backgroundColor: t.colors.accent,
+    },
+    buttonText: {
+      fontSize: 16,
+      fontWeight: "bold",
+      color: t.colors.onAccent,
+    },
+  });

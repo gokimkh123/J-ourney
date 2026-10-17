@@ -20,13 +20,14 @@ import type { InviteInfo, SessionResponse } from "../lib/persona/types.ts";
 import { session } from "../lib/session/index.ts";
 import { fromSessionResponse } from "../lib/session/session.ts";
 import type { Session } from "../lib/session/session.ts";
-import { colors } from "../lib/theme.ts";
+import { useStyles, useTheme, type Theme } from "../theme/index.ts";
 import { describeError, inviteLink, normalizeInviteCode } from "../lib/ui/format.ts";
 
 const POLL_MS = 3000;
-const WHITE = "#FFFFFF";
 
 export default function Index() {
+  const styles = useStyles(createStyles);
+  const { colors } = useTheme();
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<HealthResult | null>(null);
   const inFlight = useRef(false);
@@ -214,7 +215,7 @@ export default function Index() {
         <Text style={styles.buttonText}>{checking ? "확인 중..." : "서버 연결 확인"}</Text>
       </Pressable>
 
-      {checking && <ActivityIndicator style={styles.spinner} color={colors.primary} />}
+      {checking && <ActivityIndicator style={styles.spinner} color={colors.accent} />}
       {result !== null && result.ok && (
         <Text style={styles.line}>연결 성공 · 응답 시간 {result.latencyMs}ms</Text>
       )}
@@ -224,7 +225,7 @@ export default function Index() {
         </Text>
       )}
 
-      {sessionLoading && <ActivityIndicator style={styles.spinner} color={colors.primary} />}
+      {sessionLoading && <ActivityIndicator style={styles.spinner} color={colors.accent} />}
 
       {!sessionLoading && current === null && (
         <>
@@ -236,6 +237,7 @@ export default function Index() {
               value={title}
               onChangeText={setTitle}
               placeholder="여행 이름"
+        placeholderTextColor={colors.textMuted}
               editable={!submitting}
             />
             <Text style={styles.label}>닉네임</Text>
@@ -244,6 +246,7 @@ export default function Index() {
               value={hostNickname}
               onChangeText={setHostNickname}
               placeholder="닉네임"
+        placeholderTextColor={colors.textMuted}
               editable={!submitting}
             />
             <View style={styles.switchRow}>
@@ -267,6 +270,7 @@ export default function Index() {
               value={joinCode}
               onChangeText={(text) => setJoinCode(normalizeInviteCode(text))}
               placeholder="예: BSN482"
+        placeholderTextColor={colors.textMuted}
               autoCapitalize="characters"
               autoCorrect={false}
               editable={!submitting}
@@ -277,6 +281,7 @@ export default function Index() {
               value={joinNickname}
               onChangeText={setJoinNickname}
               placeholder="닉네임"
+        placeholderTextColor={colors.textMuted}
               editable={!submitting}
             />
             <Pressable
@@ -288,7 +293,7 @@ export default function Index() {
             </Pressable>
           </View>
 
-          {submitting && <ActivityIndicator style={styles.spinner} color={colors.primary} />}
+          {submitting && <ActivityIndicator style={styles.spinner} color={colors.accent} />}
           {formError !== null && <Text style={styles.warning}>{formError}</Text>}
         </>
       )}
@@ -297,7 +302,7 @@ export default function Index() {
         <View style={styles.section}>
           {info === null ? (
             <>
-              <ActivityIndicator color={colors.primary} />
+              <ActivityIndicator color={colors.accent} />
               <Text style={styles.line}>여행 정보를 불러오는 중...</Text>
             </>
           ) : (
@@ -340,123 +345,124 @@ export default function Index() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  container: {
-    flexGrow: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    backgroundColor: colors.background,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: colors.text,
-    marginBottom: 16,
-  },
-  line: {
-    marginTop: 8,
-    fontSize: 16,
-    color: colors.text,
-    textAlign: "center",
-  },
-  warning: {
-    marginTop: 8,
-    fontSize: 14,
-    color: colors.text,
-    textAlign: "center",
-  },
-  button: {
-    marginTop: 24,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    backgroundColor: colors.primary,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: colors.background,
-  },
-  spinner: {
-    marginTop: 16,
-  },
-  section: {
-    alignSelf: "stretch",
-    alignItems: "center",
-    marginTop: 32,
-    padding: 16,
-    borderRadius: 12,
-    backgroundColor: WHITE,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: colors.text,
-  },
-  label: {
-    alignSelf: "stretch",
-    marginTop: 12,
-    fontSize: 14,
-    color: colors.text,
-  },
-  input: {
-    alignSelf: "stretch",
-    marginTop: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderRadius: 8,
-    borderColor: colors.primary,
-    fontSize: 16,
-    color: colors.text,
-    backgroundColor: WHITE,
-  },
-  switchRow: {
-    alignSelf: "stretch",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  link: {
-    marginTop: 4,
-    fontSize: 14,
-    color: colors.primary,
-    textAlign: "center",
-  },
-  membersTitle: {
-    marginTop: 24,
-  },
-  memberRow: {
-    alignSelf: "stretch",
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 12,
-  },
-  dot: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    marginRight: 12,
-  },
-  memberBody: {
-    flex: 1,
-  },
-  memberName: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: colors.text,
-  },
-  memberSub: {
-    marginTop: 2,
-    fontSize: 13,
-    color: colors.text,
-  },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: t.colors.background,
+    },
+    container: {
+      flexGrow: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+      backgroundColor: t.colors.background,
+    },
+    title: {
+      fontSize: 28,
+      fontWeight: "bold",
+      color: t.colors.text,
+      marginBottom: 16,
+    },
+    line: {
+      marginTop: 8,
+      fontSize: 16,
+      color: t.colors.text,
+      textAlign: "center",
+    },
+    warning: {
+      marginTop: 8,
+      fontSize: 14,
+      color: t.colors.text,
+      textAlign: "center",
+    },
+    button: {
+      marginTop: 24,
+      paddingVertical: 12,
+      paddingHorizontal: 24,
+      borderRadius: 8,
+      backgroundColor: t.colors.accent,
+    },
+    buttonDisabled: {
+      opacity: 0.6,
+    },
+    buttonText: {
+      fontSize: 16,
+      fontWeight: "bold",
+      color: t.colors.onAccent,
+    },
+    spinner: {
+      marginTop: 16,
+    },
+    section: {
+      alignSelf: "stretch",
+      alignItems: "center",
+      marginTop: 32,
+      padding: 16,
+      borderRadius: 12,
+      backgroundColor: t.colors.surface,
+    },
+    sectionTitle: {
+      fontSize: 20,
+      fontWeight: "bold",
+      color: t.colors.text,
+    },
+    label: {
+      alignSelf: "stretch",
+      marginTop: 12,
+      fontSize: 14,
+      color: t.colors.text,
+    },
+    input: {
+      alignSelf: "stretch",
+      marginTop: 6,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderWidth: 1,
+      borderRadius: 8,
+      borderColor: t.colors.accent,
+      fontSize: 16,
+      color: t.colors.text,
+      backgroundColor: t.colors.surface,
+    },
+    switchRow: {
+      alignSelf: "stretch",
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    link: {
+      marginTop: 4,
+      fontSize: 14,
+      color: t.colors.accent,
+      textAlign: "center",
+    },
+    membersTitle: {
+      marginTop: 24,
+    },
+    memberRow: {
+      alignSelf: "stretch",
+      flexDirection: "row",
+      alignItems: "center",
+      marginTop: 12,
+    },
+    dot: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      marginRight: 12,
+    },
+    memberBody: {
+      flex: 1,
+    },
+    memberName: {
+      fontSize: 16,
+      fontWeight: "bold",
+      color: t.colors.text,
+    },
+    memberSub: {
+      marginTop: 2,
+      fontSize: 13,
+      color: t.colors.text,
+    },
+  });

@@ -15,7 +15,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 import { session } from "../../lib/session/index.ts";
 import { fromSessionResponse } from "../../lib/session/session.ts";
 import type { Session } from "../../lib/session/session.ts";
-import { colors } from "../../lib/theme.ts";
+import { useStyles, useTheme, type Theme } from "../../theme/index.ts";
 import { describeError, normalizeInviteCode } from "../../lib/ui/format.ts";
 
 function describeJoinError(error: unknown): string {
@@ -24,6 +24,8 @@ function describeJoinError(error: unknown): string {
 }
 
 export default function InviteScreen() {
+  const styles = useStyles(createStyles);
+  const { colors } = useTheme();
   const params = useLocalSearchParams<{ code?: string | string[] }>();
   const router = useRouter();
   const rawCode = Array.isArray(params.code) ? params.code[0] : params.code;
@@ -80,7 +82,7 @@ export default function InviteScreen() {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator color={colors.primary} />
+        <ActivityIndicator color={colors.accent} />
       </View>
     );
   }
@@ -112,6 +114,7 @@ export default function InviteScreen() {
         value={nickname}
         onChangeText={setNickname}
         placeholder="닉네임"
+        placeholderTextColor={colors.textMuted}
         editable={!submitting}
       />
       <Pressable
@@ -121,78 +124,79 @@ export default function InviteScreen() {
       >
         <Text style={styles.buttonText}>{submitting ? "요청 중..." : "참여하기"}</Text>
       </Pressable>
-      {submitting && <ActivityIndicator style={styles.spinner} color={colors.primary} />}
+      {submitting && <ActivityIndicator style={styles.spinner} color={colors.accent} />}
       {error !== null && <Text style={styles.error}>{error}</Text>}
     </ScrollView>
   );
 }
 
-const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  container: {
-    padding: 24,
-  },
-  center: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    backgroundColor: colors.background,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: colors.text,
-    marginBottom: 16,
-  },
-  line: {
-    marginTop: 8,
-    fontSize: 16,
-    color: colors.text,
-    textAlign: "center",
-  },
-  label: {
-    marginTop: 16,
-    fontSize: 14,
-    color: colors.text,
-  },
-  input: {
-    marginTop: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderRadius: 8,
-    borderColor: colors.primary,
-    fontSize: 16,
-    color: colors.text,
-    backgroundColor: "#FFFFFF",
-  },
-  button: {
-    marginTop: 24,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    alignItems: "center",
-    backgroundColor: colors.primary,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    fontSize: 16,
-    fontWeight: "bold",
-    color: colors.background,
-  },
-  spinner: {
-    marginTop: 16,
-  },
-  error: {
-    marginTop: 12,
-    fontSize: 14,
-    color: colors.text,
-    textAlign: "center",
-  },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    screen: {
+      flex: 1,
+      backgroundColor: t.colors.background,
+    },
+    container: {
+      padding: 24,
+    },
+    center: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+      backgroundColor: t.colors.background,
+    },
+    title: {
+      fontSize: 28,
+      fontWeight: "bold",
+      color: t.colors.text,
+      marginBottom: 16,
+    },
+    line: {
+      marginTop: 8,
+      fontSize: 16,
+      color: t.colors.text,
+      textAlign: "center",
+    },
+    label: {
+      marginTop: 16,
+      fontSize: 14,
+      color: t.colors.text,
+    },
+    input: {
+      marginTop: 6,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderWidth: 1,
+      borderRadius: 8,
+      borderColor: t.colors.accent,
+      fontSize: 16,
+      color: t.colors.text,
+      backgroundColor: t.colors.surface,
+    },
+    button: {
+      marginTop: 24,
+      paddingVertical: 12,
+      paddingHorizontal: 24,
+      borderRadius: 8,
+      alignItems: "center",
+      backgroundColor: t.colors.accent,
+    },
+    buttonDisabled: {
+      opacity: 0.6,
+    },
+    buttonText: {
+      fontSize: 16,
+      fontWeight: "bold",
+      color: t.colors.onAccent,
+    },
+    spinner: {
+      marginTop: 16,
+    },
+    error: {
+      marginTop: 12,
+      fontSize: 14,
+      color: t.colors.text,
+      textAlign: "center",
+    },
+  });

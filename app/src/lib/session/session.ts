@@ -20,6 +20,8 @@ export type SessionStore = {
   clear(): Promise<void>;
   getSession(): Session | null;
   getToken(): string | null;
+  /** 세션이 바뀔 때(불러오기·저장·삭제) 부른다. 해제 함수를 돌려준다. */
+  subscribe(listener: () => void): () => void;
 };
 
 const STORAGE_KEY = 'journey.session.v1';
@@ -49,22 +51,35 @@ function parseSession(raw: string | null): Session | null {
 
 export function createSessionStore(kv: KeyValueStore): SessionStore {
   let cache: Session | null = null;
+  const listeners = new Set<() => void>();
+  const notify = () => {
+    for (const listener of [...listeners]) listener();
+  };
 
   return {
     async load() {
       cache = parseSession(await kv.getItem(STORAGE_KEY));
+      notify();
       return cache;
     },
     async save(session) {
       await kv.setItem(STORAGE_KEY, JSON.stringify(session));
       cache = session;
+      notify();
     },
     async clear() {
       cache = null;
+      notify();
       await kv.removeItem(STORAGE_KEY);
     },
     getSession: () => cache,
     getToken: () => cache?.token ?? null,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
   };
 }
 
