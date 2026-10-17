@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Animated, Easing, ScrollView, StyleSheet, View, type LayoutChangeEvent } from "react-native";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Animated, ScrollView, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { useReducedMotion } from "react-native-reanimated";
 
 import {
@@ -28,9 +28,10 @@ import { keepAgentsVisible, type Position } from "../lib/meeting/agentPositions.
 import { latestRoute } from "../lib/meeting/reducer.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { useMeetingPlayback } from "../lib/meeting/usePlayback.ts";
+import { clampSheetHeight, settleCollapsed } from "../lib/ui/sheetSnap.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { conditionsDates, conditionsSummary } from "../lib/trip/conditionsSummary.ts";
-import { duration, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
+import { spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
 type Tab = "ai" | "board" | "talk";
 
@@ -56,23 +57,81 @@ export default function MeetingScreen() {
   // 높이는 레이아웃 값이라 기본 Animated(네이티브 드라이버 없이)로 움직인다.
   const sheetHeight = useRef(new Animated.Value(0)).current;
   const sheetShown = useRef(false);
+  const sheetAnim = useRef<Animated.CompositeAnimation | null>(null);
+  const sheetNow = useRef(0); // 지금 시트 높이(끄는 도중에도 알 수 있게 값 변화를 따라간다)
+  const dragBase = useRef(0);
+  const releaseVelocity = useRef(0);
   const agentMemory = useRef(new Map<string, Position>());
   const expandedHeight = Math.round(areaHeight * SHEET_EXPANDED_RATIO);
   useEffect(() => {
+    const id = sheetHeight.addListener(({ value }) => {
+      sheetNow.current = value;
+    });
+    return () => sheetHeight.removeListener(id);
+  }, [sheetHeight]);
+
+  // 목표 높이로 부드럽게 붙인다. 손을 뗄 때의 속도를 이어받아서 끌던 느낌 그대로 자리 잡는다.
+  const animateSheetTo = useCallback(
+    (target: number, velocity: number) => {
+      sheetAnim.current?.stop();
+      if (reduceMotion) {
+        sheetHeight.setValue(target);
+        return;
+      }
+      const run = Animated.spring(sheetHeight, {
+        toValue: target,
+        velocity,
+        stiffness: 260,
+        damping: 28,
+        mass: 1,
+        overshootClamping: true,
+        useNativeDriver: false,
+      });
+      sheetAnim.current = run;
+      run.start();
+    },
+    [reduceMotion, sheetHeight],
+  );
+
+  useEffect(() => {
     if (areaHeight <= 0) return;
     const target = sheetCollapsed ? SHEET_COLLAPSED : expandedHeight;
-    // 처음 자리 잡을 때와 "움직임 줄이기" 설정일 때는 시간 0으로 바로 맞춘다.
-    const instant = !sheetShown.current || reduceMotion;
-    sheetShown.current = true;
-    const run = Animated.timing(sheetHeight, {
-      toValue: target,
-      duration: instant ? 0 : duration.slow,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    });
-    run.start();
-    return () => run.stop();
-  }, [areaHeight, sheetCollapsed, expandedHeight, reduceMotion, sheetHeight]);
+    const velocity = releaseVelocity.current;
+    releaseVelocity.current = 0;
+    // 처음 자리 잡을 때는 애니메이션 없이 바로 맞춘다.
+    if (!sheetShown.current) {
+      sheetShown.current = true;
+      sheetHeight.setValue(target);
+      return;
+    }
+    animateSheetTo(target, velocity);
+    return () => sheetAnim.current?.stop();
+  }, [areaHeight, sheetCollapsed, expandedHeight, animateSheetTo, sheetHeight]);
+
+  const onSheetDragStart = useCallback(() => {
+    sheetAnim.current?.stop();
+    dragBase.current = sheetNow.current;
+  }, []);
+  const onSheetDragMove = useCallback(
+    (dy: number) => {
+      // 엄지를 따라 위아래로 움직이되, 접힌 높이와 펼친 높이를 벗어나지 않는다.
+      sheetHeight.setValue(clampSheetHeight(dragBase.current - dy, SHEET_COLLAPSED, expandedHeight));
+    },
+    [expandedHeight, sheetHeight],
+  );
+  const onSheetDragEnd = useCallback(
+    (_dy: number, vy: number) => {
+      const next = settleCollapsed({ height: sheetNow.current, min: SHEET_COLLAPSED, max: expandedHeight, vy });
+      const target = next ? SHEET_COLLAPSED : expandedHeight;
+      // 위로 올리면 높이가 커지므로 손가락 속도(아래가 +)의 부호를 뒤집어 넘긴다. px/ms → px/ms 그대로.
+      if (next === sheetCollapsed) animateSheetTo(target, -vy);
+      else {
+        releaseVelocity.current = -vy;
+        setSheetCollapsed(next);
+      }
+    },
+    [animateSheetTo, expandedHeight, sheetCollapsed],
+  );
 
   // 회의가 시작되면 대화 탭으로 옮겨 준다(그 뒤로는 사용자가 고른 탭을 그대로 둔다).
   const lastPhase = useRef(play.state.phase);
@@ -134,6 +193,9 @@ export default function MeetingScreen() {
               meta={`${play.applied}/${play.total}`}
               collapsed={sheetCollapsed}
               onCollapsedChange={setSheetCollapsed}
+              onDragStart={onSheetDragStart}
+              onDragMove={onSheetDragMove}
+              onDragEnd={onSheetDragEnd}
               style={styles.sheet}
             >
               <ScrollView nestedScrollEnabled style={styles.sheetScroll} contentContainerStyle={styles.sheetContent}>

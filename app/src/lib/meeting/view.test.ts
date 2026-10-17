@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { busanEvents } from './fixtures/busan.ts';
+import { eventsUntilFirstAgreed } from './player.ts';
 import { applyEvent, initialMeetingState } from './reducer.ts';
 import type { MeetingEvent, MeetingState } from './types.ts';
 import {
@@ -220,7 +221,7 @@ test('회의 중 알 수 없는 agentId 발언이 끼어도 말풍선·active �
   assert.equal(active[0]?.name, '지은');
 });
 
-test('회의 중 말한 AI는 확인한 장소 후보 위치로 이동하고, 다른 AI는 자기 후보 평균에 머문다', () => {
+test('회의 중 말한 AI는 확인한 장소 후보 위치로 이동한다', () => {
   let state = initialMeetingState();
   let moved = 0;
   for (const event of busanEvents) {
@@ -238,4 +239,33 @@ test('회의 중 말한 AI는 확인한 장소 후보 위치로 이동하고, �
     moved += 1;
   }
   assert.ok(moved > 0);
+});
+
+test('다른 AI가 말해도 이미 장소로 간 AI는 제자리로 돌아가지 않는다', () => {
+  let state = initialMeetingState();
+  const moved = new Map<string, { lat: number; lng: number }>();
+  let checked = 0;
+  for (const event of eventsUntilFirstAgreed(busanEvents)) {
+    state = applyEvent(state, event).state;
+    if (state.phase !== 'meeting') continue;
+    for (const agent of mapAgents(state)) {
+      const before = moved.get(agent.id);
+      if (before !== undefined) {
+        // 한번 장소로 간 AI는 새 장소를 확인하기 전까지 같은 자리에 있다.
+        const msgs = state.timeline.filter((t) => t.kind === 'message' && t.agentId === agent.id);
+        const lastPlace = msgs.length === 0 ? undefined : msgs[msgs.length - 1];
+        if (lastPlace !== undefined && lastPlace.kind === 'message' && lastPlace.places.length === 0) {
+          assert.deepEqual({ lat: agent.lat, lng: agent.lng }, before);
+          checked += 1;
+        }
+      }
+    }
+    const speaker = state.timeline.filter((t) => t.kind === 'message').at(-1);
+    if (speaker === undefined || speaker.kind !== 'message') continue;
+    const place = speaker.places.at(-1);
+    const candidate = state.board.candidates.find((c) => c.name === place?.name);
+    if (candidate !== undefined) moved.set(speaker.agentId, { lat: candidate.lat, lng: candidate.lng });
+  }
+  assert.ok(moved.size > 0);
+  assert.ok(checked > 0);
 });

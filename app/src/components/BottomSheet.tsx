@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useRef, type ReactNode } from "react";
 import { PanResponder, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 
 import { radius, spacing, useStyles, type Theme } from "../theme/index.ts";
@@ -16,6 +16,13 @@ export type BottomSheetProps = {
   collapsed?: boolean;
   /** 있으면 손잡이·제목 줄을 누르거나 위아래로 쓸어서 접고 펼 수 있다. */
   onCollapsedChange?: (collapsed: boolean) => void;
+  /**
+   * 있으면 손잡이·제목 줄을 잡고 끄는 동안 손가락을 따라 움직일 수 있다(부모가 높이를 바꾼다).
+   * 손을 떼면 onDragEnd(총 이동 dy, 놓을 때 속도 vy)로 알려 주고, 어디에 붙일지는 부모가 정한다. 짧게 누르기만 하면 onCollapsedChange가 불린다.
+   */
+  onDragStart?: () => void;
+  onDragMove?: (dy: number) => void;
+  onDragEnd?: (dy: number, vy: number) => void;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -33,22 +40,39 @@ export default function BottomSheet({
   footer,
   collapsed = false,
   onCollapsedChange,
+  onDragStart,
+  onDragMove,
+  onDragEnd,
   style,
 }: BottomSheetProps) {
   const styles = useStyles(createStyles);
   const toggleable = onCollapsedChange !== undefined;
 
+  // PanResponder는 한 번만 만들고, 최신 값은 ref로 읽는다(드래그 도중 부모가 다시 그려져도 제스처가 끊기지 않게).
+  const latest = useRef({ collapsed, onCollapsedChange, onDragStart, onDragMove, onDragEnd });
+  latest.current = { collapsed, onCollapsedChange, onDragStart, onDragMove, onDragEnd };
+
   const pan = useMemo(
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
+        // 시트 안 스크롤이 제스처를 가져가지 못하게 한다.
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => latest.current.onDragStart?.(),
+        onPanResponderMove: (_e, g) => latest.current.onDragMove?.(g.dy),
         onPanResponderRelease: (_e, g) => {
-          if (Math.abs(g.dy) < TAP_SLOP) onCollapsedChange?.(!collapsed);
-          else if (g.dy > SWIPE_MIN) onCollapsedChange?.(true);
-          else if (g.dy < -SWIPE_MIN) onCollapsedChange?.(false);
+          const cur = latest.current;
+          if (Math.abs(g.dy) < TAP_SLOP) {
+            // 눌렀다 뗀 것: 접고 펴기. 끄는 중 조금 움직였어도 부모가 새 목표 높이로 자연스럽게 이어 간다.
+            cur.onCollapsedChange?.(!cur.collapsed);
+          } else if (cur.onDragEnd !== undefined) {
+            cur.onDragEnd(g.dy, g.vy);
+          } else if (g.dy > SWIPE_MIN) cur.onCollapsedChange?.(true);
+          else if (g.dy < -SWIPE_MIN) cur.onCollapsedChange?.(false);
         },
+        onPanResponderTerminate: (_e, g) => latest.current.onDragEnd?.(g.dy, g.vy),
       }),
-    [collapsed, onCollapsedChange],
+    [],
   );
 
   const top = (

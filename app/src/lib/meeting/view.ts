@@ -118,6 +118,23 @@ export function agentRows(state: MeetingState): {
   });
 }
 
+function lastVisitedCandidate(
+  state: MeetingState,
+  messages: MessageItem[],
+  agentId: string,
+): { lat: number; lng: number } | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message === undefined || message.agentId !== agentId) continue;
+    for (let j = message.places.length - 1; j >= 0; j -= 1) {
+      const name = message.places[j]?.name;
+      const found = state.board.candidates.find((c) => c.name === name);
+      if (found !== undefined) return { lat: found.lat, lng: found.lng };
+    }
+  }
+  return undefined;
+}
+
 export function mapAgents(state: MeetingState): {
   id: string;
   name: string;
@@ -128,18 +145,16 @@ export function mapAgents(state: MeetingState): {
   searching: boolean;
 }[] {
   const result = [];
-  // 회의 중에는 방금 말한 AI가, 말하면서 확인한 장소(후보) 쪽으로 걸어간다. 그래서 지도 위에서 계속 움직인다.
-  const speaker = state.phase === 'meeting' ? lastMessage(state) : undefined;
-  const mentioned = speaker?.places.at(-1);
-  const target =
-    mentioned === undefined ? undefined : state.board.candidates.find((c) => c.name === mentioned.name);
+  const messages = messagesOf(state);
   for (const agent of state.agents) {
     const research = state.research[agent.agentId];
     let lat: number;
     let lng: number;
-    if (target !== undefined && speaker?.agentId === agent.agentId && !research?.focus) {
-      lat = target.lat;
-      lng = target.lng;
+    // 회의 중에는 AI가 마지막으로 확인한 장소 후보에 계속 머문다. 다른 AI가 말해도 제자리로 돌아가지 않는다.
+    const visited = state.phase === 'meeting' ? lastVisitedCandidate(state, messages, agent.agentId) : undefined;
+    if (visited !== undefined && !research?.focus) {
+      lat = visited.lat;
+      lng = visited.lng;
     } else if (research?.focus) {
       lat = research.focus.lat;
       lng = research.focus.lng;
