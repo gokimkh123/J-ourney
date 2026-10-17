@@ -54,7 +54,7 @@ export default function SettingsScreen() {
   };
 
   const onLeave = () => {
-    Alert.alert("여행에서 나갈까요?", "이 휴대폰에서 로그아웃돼요. 초대 코드로 다시 들어올 수 있어요.", [
+    Alert.alert("여행에서 나갈까요?", "이 휴대폰에서 이 여행 정보가 지워져요. 같은 초대 코드로 다시 들어오면 새 구성원으로 참여해요.", [
       { text: "취소", style: "cancel" },
       { text: "나가기", style: "destructive", onPress: () => void doLeave() },
     ]);
