@@ -4,6 +4,8 @@ export type { ColorName, Tone, ThemeColors, ToneColors } from './colors.ts';
 export { ThemeProvider, useTheme, useStyles, resolveScheme } from './ThemeProvider.tsx';
 export type { ThemeMode, ThemeScheme, Theme } from './ThemeProvider.tsx';
 export { pastel, outline, backdrop } from './memberColor.ts';
+export { mapArtPalettes } from './mapArt.ts';
+export type { MapArtPalette } from './mapArt.ts';
 export { spacing, radius, borderWidth, hitSize, elevation, makeElevation } from './layout.ts';
 export type { Spacing, Radius, Elevation } from './layout.ts';
 export { typography, fontFamily } from './typography.ts';

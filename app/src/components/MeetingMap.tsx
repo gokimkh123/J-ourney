@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
   Easing,
@@ -11,11 +11,14 @@ import Animated, {
   withRepeat,
   withTiming,
 } from "react-native-reanimated";
-import Svg, { Line, Path, Polygon, Polyline, Rect } from "react-native-svg";
+import Svg, { G, Line, Path, Polygon, Polyline, Rect } from "react-native-svg";
 
-import { duration, easing, lightColors, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
+import { duration, easing, lightColors, mapArtPalettes, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Avatar, { fullAvatarSize, type AvatarChip } from "./Avatar.tsx";
+import BusanArt from "./map/BusanArt.tsx";
+import Flag, { FLAG_FOOT, FLAG_H, FLAG_W } from "./map/Flag.tsx";
+import { computeArtViewport, projectBusan, smoothPath, type ArtViewport } from "./map/busanArt.ts";
 
 export type LatLng = { lat: number; lng: number };
 export type MapBounds = { north: number; south: number; east: number; west: number };
@@ -50,6 +53,10 @@ export type MeetingMapProps = {
   bubble?: { agentId: string; text: string } | null;
   /** 목적지 해안선 등 간단한 땅 모양(선택). 없으면 격자만 그린다. */
   land?: LatLng[][];
+  /** 'busan'이면 격자 대신 부산 그림 지도(낮·밤)와 깃발 핀을 쓴다. 이때 bounds·land는 무시한다. */
+  art?: "busan";
+  /** 그림 지도에서 'full'은 그림 전체(회의 진행), 'fit'은 핀·경로가 들어오게 확대(일정 위쪽 작은 지도) */
+  artView?: "full" | "fit";
   height?: number;
   accessibilityLabel?: string;
 };
@@ -66,6 +73,8 @@ const PAD_TOP = AGENT_ACTIVE_H + spacing.xs;
 const AGENT_OFFSET = { x: PIN_W / 2 + AGENT.width / 2 - 2, y: 0 };
 // 핀 머리 안은 늘 흰 바탕이라 글자는 모드와 상관없이 어둡게.
 const PIN_INK = lightColors.text;
+// 그림 지도에서 캐릭터는 깃발 오른쪽 바닥에 선다. 깃발 천의 번호가 가려지지 않게 천 중간부터 시작한다.
+const ART_AGENT_DX = 14 + AGENT.width / 2;
 const PIN_STROKE = lightColors.textOnColor;
 
 /** 위도·경도 묶음을 감싸는 범위. 화면이 bounds를 만들 때 쓴다. margin은 비율. */
@@ -167,6 +176,20 @@ function Pin({ pin, x, y }: { pin: MapPin; x: number; y: number }) {
   );
 }
 
+function FlagPin({ pin, x, y, palette }: { pin: MapPin; x: number; y: number; palette: (typeof mapArtPalettes)["light"] }) {
+  return (
+    <Animated.View
+      entering={ZoomIn.duration(duration.slow)}
+      exiting={FadeOut.duration(duration.normal)}
+      style={{ position: "absolute", width: FLAG_W, height: FLAG_H, left: x - FLAG_FOOT.x, top: y - FLAG_FOOT.y, transformOrigin: "9% 95%" }}
+      accessible={pin.name !== undefined}
+      accessibilityLabel={pin.name}
+    >
+      <Flag color={pin.color} label={pin.label} palette={palette} />
+    </Animated.View>
+  );
+}
+
 /**
  * B2 회의 진행 지도. 단순 SVG 바탕 위에 핀(후보)·아바타(AI)·말풍선을 겹친다.
  * 위치는 위도·경도로 받고 bounds 안에서 화면 좌표로 바꾼다.
@@ -178,18 +201,38 @@ export default function MeetingMap({
   routes = [],
   bubble = null,
   land = [],
+  art,
+  artView = "full",
   height = 300,
   accessibilityLabel = "회의 지도",
 }: MeetingMapProps) {
-  const { colors } = useTheme();
+  const { colors, scheme } = useTheme();
+  const palette = mapArtPalettes[scheme];
   const styles = useStyles(createStyles);
   const [width, setWidth] = useState(0);
   const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
 
-  const at = (p: LatLng) => project(p, bounds, width, height);
+  // 그림 지도: 그림 좌표로 바꾼 뒤, 보여 줄 사각형(viewport)으로 화면 좌표를 만든다.
+  const viewport = useMemo<ArtViewport | null>(() => {
+    if (art !== "busan" || width <= 0) return null;
+    const points = [
+      ...pins.map((p) => projectBusan(p)),
+      ...agents.map((a) => projectBusan(a)),
+      ...routes.flatMap((r) => r.points.map((p) => projectBusan(p))),
+    ];
+    return computeArtViewport(points, width, height, artView);
+  }, [art, artView, width, height, pins, agents, routes]);
+
+  const at = (p: LatLng) => {
+    if (viewport) {
+      const q = projectBusan(p);
+      return { x: (q.x - viewport.x) * viewport.scale, y: (q.y - viewport.y) * viewport.scale };
+    }
+    return project(p, bounds, width, height);
+  };
   const agentAt = (a: MapAgent) => {
     const p = at(a);
-    return { x: p.x + AGENT_OFFSET.x, y: p.y + AGENT_OFFSET.y };
+    return viewport ? { x: p.x + ART_AGENT_DX, y: p.y } : { x: p.x + AGENT_OFFSET.x, y: p.y + AGENT_OFFSET.y };
   };
 
   const gridStep = 40;
@@ -199,6 +242,36 @@ export default function MeetingMap({
     <View style={[styles.map, { height }]} onLayout={onLayout} accessibilityLabel={accessibilityLabel} accessibilityRole="image">
       {width > 0 && (
         <>
+          {viewport && (
+            <Svg
+              width={width}
+              height={height}
+              viewBox={`${viewport.x} ${viewport.y} ${viewport.w} ${viewport.h}`}
+              style={StyleSheet.absoluteFill}
+            >
+              <BusanArt palette={palette} />
+            </Svg>
+          )}
+          {viewport && routes.length > 0 && (
+            <Svg width={width} height={height} style={StyleSheet.absoluteFill} pointerEvents="none">
+              {routes.map((r, i) => {
+                const d = smoothPath(r.points.map(at));
+                if (d === "") return null;
+                return (
+                  <G key={`route${i}`}>
+                    {palette.night && (
+                      <Path d={d} stroke={palette.trail} strokeWidth={14} strokeLinecap="round" fill="none" opacity={0.18} />
+                    )}
+                    <G transform="translate(0 2)">
+                      <Path d={d} stroke={palette.trailUnder} strokeWidth={7} strokeDasharray="0.1 12" strokeLinecap="round" fill="none" />
+                    </G>
+                    <Path d={d} stroke={palette.trail} strokeWidth={7} strokeDasharray="0.1 12" strokeLinecap="round" fill="none" />
+                  </G>
+                );
+              })}
+            </Svg>
+          )}
+          {!viewport && (
           <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
             <Rect width={width} height={height} fill={colors.mapSea} />
             {Array.from({ length: Math.ceil(width / gridStep) }, (_, i) => (
@@ -236,10 +309,15 @@ export default function MeetingMap({
               />
             ))}
           </Svg>
+          )}
 
           {pins.map((pin) => {
             const p = at(pin);
-            return <Pin key={pin.id} pin={pin} x={p.x} y={p.y} />;
+            return viewport ? (
+              <FlagPin key={pin.id} pin={pin} x={p.x} y={p.y} palette={palette} />
+            ) : (
+              <Pin key={pin.id} pin={pin} x={p.x} y={p.y} />
+            );
           })}
 
           {/* 말하는 AI를 맨 위에 그리도록 마지막으로 보낸다. */}

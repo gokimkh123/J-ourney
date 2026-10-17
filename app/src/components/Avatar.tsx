@@ -31,6 +31,8 @@ export type AvatarProps = {
   variant?: "face" | "full";
   /** full에서 size 대신 쓰는 그림 높이 */
   height?: number;
+  /** face에서 size 대신 쓰는 얼굴 지름(탭바 아이콘처럼 정해진 크기가 필요할 때) */
+  diameter?: number;
   /** face를 겹쳐 놓을 때 사이를 가르는 테두리 색(놓인 바탕색). 기본은 패널 색. */
   separatorColor?: string;
 };
@@ -50,6 +52,7 @@ export default function Avatar({
   active = false,
   variant = "face",
   height,
+  diameter,
   separatorColor,
 }: AvatarProps) {
   const { colors } = useTheme();
@@ -73,8 +76,8 @@ export default function Avatar({
     );
   }
 
-  const px = FACE_PX[size];
-  const ring = size === "xs" || size === "sm" ? 2 : 3;
+  const px = diameter ?? FACE_PX[size];
+  const ring = diameter !== undefined || size === "xs" || size === "sm" ? 2 : 3;
   return (
     <View
       accessible={name !== undefined}

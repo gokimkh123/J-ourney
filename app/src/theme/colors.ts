@@ -17,6 +17,8 @@ export type ThemeColors = {
   textMuted: string;
   textBody: string;
   textOnColor: string;
+  /** 켜지지 않은 탭 아이콘처럼 textMuted보다 더 옅게 둘 선·아이콘 색 */
+  iconFaint: string;
 
   // 주요 버튼 바탕(검정/흰색). 색은 구성원 색만 쓴다.
   accent: string;
@@ -58,6 +60,7 @@ export const lightColors: ThemeColors = {
   textMuted: '#8B95A1',
   textBody: '#333D4B',
   textOnColor: '#FFFFFF',
+  iconFaint: '#B0B8C1',
 
   accent: '#191F28',
   onAccent: '#FFFFFF',
@@ -95,6 +98,7 @@ export const darkColors: ThemeColors = {
   textMuted: '#8B95A1',
   textBody: '#C9CDD2',
   textOnColor: '#FFFFFF',
+  iconFaint: '#6B7684',
 
   accent: '#F2F4F6',
   onAccent: '#17181C',
