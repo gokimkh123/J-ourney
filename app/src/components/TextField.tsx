@@ -39,7 +39,7 @@ export default function TextField({ label, hint, error, editable = true, onFocus
           setFocused(false);
           onBlur?.(e);
         }}
-        style={[styles.input, { borderColor }, !editable && styles.disabled]}
+        style={[styles.input, rest.multiline && styles.multiline, { borderColor }, !editable && styles.disabled]}
       />
       {hasError ? (
         <AppText variant="caption" tone="danger">
@@ -67,6 +67,11 @@ const createStyles = (t: Theme) => StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
     backgroundColor: t.colors.surfaceRaised,
+  },
+  // 여러 줄 입력칸은 처음부터 넉넉하게 보이고, 글은 위에서부터 쓴다.
+  multiline: {
+    minHeight: 120,
+    textAlignVertical: "top",
   },
   disabled: {
     color: t.colors.textMuted,

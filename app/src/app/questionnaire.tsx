@@ -1,17 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import type { Href } from "expo-router";
 
+import { AppText, Banner, Button, Chip, ProgressBar, StateView, TextField } from "../components/index.ts";
 import { endpoints } from "../lib/api/index.ts";
 import {
   buildSubmitBody,
@@ -28,13 +21,15 @@ import type {
   ScaleQuestion,
   TextQuestion,
 } from "../lib/persona/types.ts";
-import { useStyles, useTheme, type Theme } from "../theme/index.ts";
+import { pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
 import { describeError, formatCount } from "../lib/ui/format.ts";
 
 const PERSONA_ROUTE = "/persona" as Href;
+const SCALE_GAP = 8;
 
 type UpdateAnswers = Dispatch<SetStateAction<AnswerState>>;
 
+/** 1~N 점수 고르기. 숫자 칸은 같은 너비로 한 줄에 놓고 양 끝에 뜻을 적는다. */
 function ScaleInput({ question, answers, update }: {
   question: ScaleQuestion;
   answers: AnswerState;
@@ -46,30 +41,45 @@ function ScaleInput({ question, answers, update }: {
     { length: question.max - question.min + 1 },
     (_, i) => question.min + i,
   );
+  // 칸이 많으면(0~10) 두 줄로 나눠서 손가락으로 누를 만한 너비를 지킨다.
+  const columns = values.length > 7 ? Math.ceil(values.length / 2) : values.length;
+  const cellWidth = `${100 / columns}%` as const;
   return (
-    <View>
-      <View style={styles.scaleRow}>
+    <View style={styles.inputBlock}>
+      <View style={styles.scaleRow} accessibilityRole="radiogroup" accessibilityLabel={question.text}>
         {values.map((value) => {
           const selected = answer?.type === "scale" && answer.value === value;
           return (
+            <View key={value} style={[styles.scaleCell, { width: cellWidth }]}>
             <Pressable
-              key={value}
-              style={[styles.scaleButton, selected && styles.selected]}
+              accessibilityRole="radio"
+              accessibilityState={{ selected }}
+              accessibilityLabel={`${value}점`}
+              accessibilityHint={value === question.min ? question.minLabel : value === question.max ? question.maxLabel : undefined}
               onPress={() => update((state) => setScale(state, question, value))}
+              style={({ pressed }) => [styles.scaleButton, selected && styles.scaleSelected, pressed && { opacity: pressedOpacity }]}
             >
-              <Text style={[styles.scaleText, selected && styles.selectedText]}>{value}</Text>
+              <AppText variant="bodyStrong" tone={selected ? "onAccent" : "default"}>
+                {value}
+              </AppText>
             </Pressable>
+            </View>
           );
         })}
       </View>
       <View style={styles.labelRow}>
-        <Text style={styles.hint}>{question.minLabel}</Text>
-        <Text style={styles.hint}>{question.maxLabel}</Text>
+        <AppText variant="caption" tone="muted">
+          {question.minLabel}
+        </AppText>
+        <AppText variant="caption" tone="muted">
+          {question.maxLabel}
+        </AppText>
       </View>
     </View>
   );
 }
 
+/** 여러 개 고르기. 고를 수 있는 수가 차면 나머지 칩은 흐려진다. */
 function MultiInput({ question, answers, update }: {
   question: MultiQuestion;
   answers: AnswerState;
@@ -80,26 +90,24 @@ function MultiInput({ question, answers, update }: {
   const selectedIds = answer?.type === "multi" ? answer.optionIds : [];
   const full = selectedIds.length >= question.maxSelect;
   return (
-    <View>
-      <Text style={styles.hint}>{formatCount(selectedIds.length, question.maxSelect)}</Text>
-      {question.minSelect === 0 && <Text style={styles.hint}>없으면 넘어가도 돼요</Text>}
+    <View style={styles.inputBlock}>
+      <AppText variant="small" tone="muted">
+        {question.minSelect === 0
+          ? `${formatCount(selectedIds.length, question.maxSelect)} 선택 · 없으면 넘어가도 돼요`
+          : `${formatCount(selectedIds.length, question.maxSelect)} 선택`}
+      </AppText>
       <View style={styles.chipRow}>
         {question.options.map((option) => {
           const selected = selectedIds.includes(option.id);
-          const blocked = full && !selected;
           return (
-            <Pressable
+            <Chip
               key={option.id}
-              style={[styles.chip, selected && styles.selected, blocked && styles.dimmed]}
-              onPress={() => {
-                if (blocked) return;
-                update((state) => toggleOption(state, question, option.id));
-              }}
-            >
-              <Text style={[styles.chipText, selected && styles.selectedText]}>
-                {option.emoji} {option.text}
-              </Text>
-            </Pressable>
+              label={option.text}
+              emoji={option.emoji}
+              selected={selected}
+              disabled={full && !selected}
+              onPress={() => update((state) => toggleOption(state, question, option.id))}
+            />
           );
         })}
       </View>
@@ -112,28 +120,22 @@ function TextAnswerInput({ question, draft, onChangeText }: {
   draft: string;
   onChangeText: (text: string) => void;
 }) {
-  const styles = useStyles(createStyles);
-  const { colors } = useTheme();
+  const hint = `남은 글자 ${Math.max(0, question.maxLength - draft.length)}${question.required ? "" : " · 비워 둬도 돼요"}`;
   return (
-    <View>
-      <TextInput
-        style={styles.textInput}
-        multiline
-        placeholder={question.placeholder}
-        placeholderTextColor={colors.textMuted}
-        maxLength={question.maxLength}
-        value={draft}
-        onChangeText={onChangeText}
-      />
-      <Text style={styles.hint}>남은 글자 {Math.max(0, question.maxLength - draft.length)}</Text>
-      {!question.required && <Text style={styles.hint}>비워 둬도 돼요</Text>}
-    </View>
+    <TextField
+      label="내 답"
+      multiline
+      placeholder={question.placeholder}
+      maxLength={question.maxLength}
+      value={draft}
+      onChangeText={onChangeText}
+      hint={hint}
+    />
   );
 }
 
 export default function Questionnaire() {
   const styles = useStyles(createStyles);
-  const { colors } = useTheme();
   const router = useRouter();
   const [questions, setQuestions] = useState<Question[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -190,20 +192,16 @@ export default function Questionnaire() {
     setAnswers((state) => setText(state, question, text));
   }
 
-  if (loading || loadError !== null || questions === null) {
+  if (loading) return <StateView loading title="문항을 불러오는 중이에요" />;
+  if (loadError !== null || questions === null) {
     return (
-      <View style={styles.center}>
-        {loading && <ActivityIndicator color={colors.accent} />}
-        {loading && <Text style={styles.line}>문항을 불러오는 중...</Text>}
-        {!loading && loadError !== null && (
-          <>
-            <Text style={styles.error}>{loadError}</Text>
-            <Pressable style={styles.button} onPress={loadQuestions}>
-              <Text style={styles.buttonText}>다시 시도</Text>
-            </Pressable>
-          </>
-        )}
-      </View>
+      <StateView
+        tone="danger"
+        title="문항을 불러오지 못했어요"
+        text={loadError ?? undefined}
+        actionLabel="다시 시도"
+        onAction={() => void loadQuestions()}
+      />
     );
   }
 
@@ -213,218 +211,102 @@ export default function Questionnaire() {
   const canSubmit = isComplete(questions, answers) && !submitting;
 
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={styles.container}
-      keyboardShouldPersistTaps="handled"
-    >
-      <Text style={styles.progress}>{formatCount(index + 1, questions.length)}</Text>
-      {question !== undefined && (
-        <>
-          <Text style={styles.question}>{question.text}</Text>
-          {question.type === "scale" && (
-            <ScaleInput question={question} answers={answers} update={setAnswers} />
-          )}
-          {question.type === "multi" && (
-            <MultiInput question={question} answers={answers} update={setAnswers} />
-          )}
-          {question.type === "text" && (
-            <TextAnswerInput
-              question={question}
-              draft={drafts[question.id] ?? ""}
-              onChangeText={(text) => onChangeText(question, text)}
+    <View style={styles.screen}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <View style={styles.progress}>
+          <AppText variant="label" tone="accent">
+            {formatCount(index + 1, questions.length)}
+          </AppText>
+          <ProgressBar value={(index + 1) / questions.length} size="sm" accessibilityLabel={`문항 ${index + 1}/${questions.length}`} />
+        </View>
+        {question !== undefined && (
+          <>
+            <AppText variant="title" accessibilityRole="header">
+              {question.text}
+            </AppText>
+            {question.type === "scale" && (
+              <ScaleInput question={question} answers={answers} update={setAnswers} />
+            )}
+            {question.type === "multi" && (
+              <MultiInput question={question} answers={answers} update={setAnswers} />
+            )}
+            {question.type === "text" && (
+              <TextAnswerInput
+                question={question}
+                draft={drafts[question.id] ?? ""}
+                onChangeText={(text) => onChangeText(question, text)}
+              />
+            )}
+          </>
+        )}
+      </ScrollView>
+
+      <View style={styles.footer}>
+        {submitting && <Banner tone="accent" text="AI가 캐릭터 카드를 쓰고 있어요. 몇 초 걸려요" />}
+        {!submitting && submitError !== null && (
+          <Banner tone="danger" text={submitError} actionLabel="다시 시도" onAction={() => void onSubmit()} />
+        )}
+        <View style={styles.navRow}>
+          {index > 0 && (
+            <Button
+              label="이전"
+              variant="secondary"
+              disabled={submitting}
+              onPress={() => setIndex((i) => Math.max(0, i - 1))}
+              style={styles.navPrev}
             />
           )}
-        </>
-      )}
-
-      <View style={styles.navRow}>
-        <Pressable
-          style={[styles.navButton, (index === 0 || submitting) && styles.buttonDisabled]}
-          disabled={index === 0 || submitting}
-          onPress={() => setIndex((i) => Math.max(0, i - 1))}
-        >
-          <Text style={styles.buttonText}>이전</Text>
-        </Pressable>
-        {!isLast && (
-          <Pressable
-            style={[styles.navButton, !canNext && styles.buttonDisabled]}
-            disabled={!canNext}
-            onPress={() => setIndex((i) => Math.min(questions.length - 1, i + 1))}
-          >
-            <Text style={styles.buttonText}>다음</Text>
-          </Pressable>
-        )}
-      </View>
-
-      {isLast && (
-        <View style={styles.submitArea}>
-          <Pressable
-            style={[styles.button, !canSubmit && styles.buttonDisabled]}
-            disabled={!canSubmit}
-            onPress={onSubmit}
-          >
-            <Text style={styles.buttonText}>내 캐릭터 카드 만들기</Text>
-          </Pressable>
-          {submitting && (
-            <View style={styles.submitting}>
-              <ActivityIndicator color={colors.accent} />
-              <Text style={styles.line}>AI가 캐릭터 카드를 쓰고 있어요. 몇 초 걸려요</Text>
-            </View>
-          )}
-          {!submitting && submitError !== null && (
-            <>
-              <Text style={styles.error}>{submitError}</Text>
-              <Pressable style={styles.button} onPress={onSubmit}>
-                <Text style={styles.buttonText}>다시 시도</Text>
-              </Pressable>
-            </>
+          {isLast ? (
+            <Button
+              label="내 캐릭터 카드 만들기"
+              disabled={!canSubmit}
+              loading={submitting}
+              onPress={() => void onSubmit()}
+              style={styles.navNext}
+            />
+          ) : (
+            <Button
+              label="다음"
+              disabled={!canNext}
+              onPress={() => setIndex((i) => Math.min(questions.length - 1, i + 1))}
+              style={styles.navNext}
+            />
           )}
         </View>
-      )}
-    </ScrollView>
+      </View>
+    </View>
   );
 }
 
 const createStyles = (t: Theme) =>
   StyleSheet.create({
-    screen: {
-      flex: 1,
-      backgroundColor: t.colors.background,
-    },
-    container: {
-      padding: 24,
-    },
-    center: {
-      flex: 1,
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 24,
-      backgroundColor: t.colors.background,
-    },
-    progress: {
-      fontSize: 14,
-      fontWeight: "bold",
-      color: t.colors.accent,
-    },
-    question: {
-      marginTop: 8,
-      marginBottom: 16,
-      fontSize: 20,
-      fontWeight: "bold",
-      color: t.colors.text,
-    },
-    line: {
-      marginTop: 8,
-      fontSize: 16,
-      color: t.colors.text,
-      textAlign: "center",
-    },
-    hint: {
-      marginTop: 6,
-      fontSize: 13,
-      color: t.colors.text,
-    },
-    error: {
-      marginTop: 12,
-      fontSize: 14,
-      color: t.colors.text,
-      textAlign: "center",
-    },
-    scaleRow: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-    },
+    screen: { flex: 1, backgroundColor: t.colors.background },
+    content: { padding: spacing.md, paddingTop: spacing.sm, gap: spacing.md },
+    progress: { gap: spacing.xs + spacing.xxs },
+    inputBlock: { gap: spacing.sm },
+    // 칸마다 가장자리 여백을 반씩 주고, 줄 전체를 그만큼 바깥으로 당겨 양끝을 맞춘다.
+    scaleRow: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: -SCALE_GAP / 2 },
+    scaleCell: { padding: SCALE_GAP / 2 },
     scaleButton: {
-      margin: 4,
-      width: 44,
-      height: 44,
-      borderRadius: 22,
+      minHeight: 52,
+      borderRadius: radius.md,
       borderWidth: 1,
-      borderColor: t.colors.accent,
+      borderColor: t.colors.border,
+      backgroundColor: t.colors.surfaceRaised,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: t.colors.surface,
     },
-    scaleText: {
-      fontSize: 16,
-      color: t.colors.text,
+    scaleSelected: { backgroundColor: t.colors.accent, borderColor: t.colors.accent },
+    labelRow: { flexDirection: "row", justifyContent: "space-between" },
+    chipRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+    footer: {
+      padding: spacing.md,
+      gap: spacing.sm,
+      backgroundColor: t.colors.background,
+      borderTopWidth: 1,
+      borderTopColor: t.colors.border,
     },
-    labelRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-    },
-    chipRow: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      marginTop: 8,
-    },
-    chip: {
-      margin: 4,
-      paddingVertical: 8,
-      paddingHorizontal: 12,
-      borderRadius: 999,
-      borderWidth: 1,
-      borderColor: t.colors.accent,
-      backgroundColor: t.colors.surface,
-    },
-    chipText: {
-      fontSize: 14,
-      color: t.colors.text,
-    },
-    selected: {
-      backgroundColor: t.colors.accent,
-    },
-    selectedText: {
-      color: t.colors.onAccent,
-      fontWeight: "bold",
-    },
-    dimmed: {
-      opacity: 0.35,
-    },
-    textInput: {
-      minHeight: 120,
-      padding: 12,
-      borderWidth: 1,
-      borderRadius: 8,
-      borderColor: t.colors.accent,
-      fontSize: 16,
-      color: t.colors.text,
-      textAlignVertical: "top",
-      backgroundColor: t.colors.surface,
-    },
-    navRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      marginTop: 24,
-    },
-    navButton: {
-      paddingVertical: 12,
-      paddingHorizontal: 24,
-      borderRadius: 8,
-      backgroundColor: t.colors.accent,
-    },
-    submitArea: {
-      marginTop: 24,
-      alignItems: "center",
-    },
-    submitting: {
-      marginTop: 16,
-      alignItems: "center",
-    },
-    button: {
-      marginTop: 12,
-      paddingVertical: 12,
-      paddingHorizontal: 24,
-      borderRadius: 8,
-      backgroundColor: t.colors.accent,
-    },
-    buttonDisabled: {
-      opacity: 0.6,
-    },
-    buttonText: {
-      fontSize: 16,
-      fontWeight: "bold",
-      color: t.colors.onAccent,
-    },
+    navRow: { flexDirection: "row", gap: spacing.sm },
+    navPrev: { flex: 1 },
+    navNext: { flex: 2 },
   });

@@ -9,6 +9,8 @@ export { default as StatusPill } from './StatusPill.tsx';
 export { default as ProgressBar } from './ProgressBar.tsx';
 export { default as TextField } from './TextField.tsx';
 export { default as Banner } from './Banner.tsx';
+export { default as StateView } from './StateView.tsx';
+export type { StateViewProps } from './StateView.tsx';
 export { default as Avatar, AvatarStack } from './Avatar.tsx';
 export type { AvatarProps, AvatarChip, AvatarSize } from './Avatar.tsx';
 export { default as SegmentedTabs } from './SegmentedTabs.tsx';
