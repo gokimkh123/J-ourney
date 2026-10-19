@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
@@ -20,6 +20,8 @@ import { memberColor } from './views.js';
 export interface PersonaDeps {
   db: Db;
   llm: LlmClient | null;
+  /** LLM_REPLAY: LLM 대신 같은 응답으로 AI가 만든 카드를 다시 씀 (없으면 규칙 카드) */
+  replay?: boolean;
   llmDailyLimit: number;
   llmCardsPerMember: number;
   llmPerIpDaily: number;
@@ -39,12 +41,26 @@ const answersBody = z.object({
     .max(30),
 });
 
-/** 설문 응답 → 성향·칩(규칙) → 카드 문장(LLM, 실패 시 규칙) → 회의용 숨은 값(규칙) */
+/**
+ * LLM_REPLAY: 같은 응답으로 AI가 만든 카드 중 가장 최근 것 (카드는 응답만으로 만들고 닉네임은 넣지 않으므로 같은 응답이면 같은 카드)
+ * 1–12번 값이 같은 카드만 DB에서 읽고, 좋아요·싫어요·15번까지 같은지는 코드가 확인함
+ */
+async function savedCard(db: Db, answers: PersonaAnswers): Promise<CardText | null> {
+  const rows = await db
+    .select({ answers: personas.answers, title: personas.title, catchphrase: personas.catchphrase, tmi: personas.tmi, mustKeep: personas.mustKeep, wishes: personas.wishes })
+    .from(personas)
+    .where(and(eq(personas.source, 'llm'), sql`${personas.answers}->'scale' = ${JSON.stringify(answers.scale)}::jsonb`))
+    .orderBy(desc(personas.updatedAt));
+  const hit = rows.find((r) => sameAnswers(r.answers, answers));
+  return hit ? { title: hit.title, catchphrase: hit.catchphrase, tmi: hit.tmi, mustKeep: hit.mustKeep, wishes: hit.wishes, source: 'llm' } : null;
+}
+
+/** 설문 응답 → 성향·칩(규칙) → 카드 문장(LLM, 실패 시 규칙. LLM_REPLAY면 같은 응답의 AI 카드) → 회의용 숨은 값(규칙) */
 async function makePersona(memberId: string, ip: string | null, answers: PersonaAnswers, deps: PersonaDeps) {
   const { db, llm, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret } = deps;
   const traits = scoreTraits(answers.scale);
   const chips = pickChips(traits);
-  let card: CardText = ruleCard(chips, answers);
+  let card: CardText = (deps.replay && (await savedCard(db, answers))) || ruleCard(chips, answers);
   // 개발 기간(llmPerIpDaily 0)에는 터널로 들어온 요청(팀원 앱)에 LLM을 쓰지 않음
   const tunnelBlocked = ip !== null && llmPerIpDaily === 0;
   // AI 카드 확인 순서: 구성원당 llmCardsPerMember회 → 터널 IP당 하루 llmPerIpDaily회 → 서버 전체 하루 상한 (하나라도 막히면 규칙 카드)

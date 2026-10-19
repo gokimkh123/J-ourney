@@ -12,7 +12,15 @@ export const agentIdOf = (memberId: string) => `agt_${memberId.replace(/^mem_/, 
 export const placeIdOf = (contentId: string) => `plc_${contentId}`;
 
 /** 회의 이벤트 이름 (명세서 WebSocket 이벤트 표) */
-export type MeetingEventType = 'meeting.started' | 'research.progress' | 'board.updated' | 'agent.message';
+export type MeetingEventType =
+  | 'meeting.started'
+  | 'research.progress'
+  | 'board.updated'
+  | 'agent.message'
+  | 'review.requested'
+  | 'review.cast'
+  | 'review.closed'
+  | 'meeting.failed';
 
 /** 시험 화면에만 보내는 LLM 과정 이벤트 (요청 내용·받는 글자·원본 응답). DB에 기록하지 않음 */
 export type LlmTraceType = 'llm.request' | 'llm.delta' | 'llm.response';
@@ -39,13 +47,16 @@ export interface MeetingLimits {
   llmDailyLimit: number;
 }
 
+/** 진행 중으로 보는 회의 상태: 실행 중이거나 사람 확인을 기다리는 회의가 있으면 새 회의를 시작하지 않음 */
+const ACTIVE = ['running', 'reviewing'] as const;
+
 /**
  * 회의 실행을 시작함: 진행 중인 실행이 있으면 MEETING_IN_PROGRESS(그 회의를 이어 보기), 실행 횟수를 다 썼으면 MEETING_LIMIT
  * 같은 여행에 동시에 두 요청이 와도 (trip_id, run_no) 고유 조건으로 하나만 만들어짐
  */
 export async function startMeeting(db: Db, tripId: string, limits: MeetingLimits) {
   const rows = await db.select().from(meetings).where(eq(meetings.tripId, tripId)).orderBy(desc(meetings.runNo));
-  const running = rows.find((m) => m.status === 'running');
+  const running = rows.find((m) => (ACTIVE as readonly string[]).includes(m.status));
   if (running) throw new ApiError('MEETING_IN_PROGRESS', `이미 진행 중인 회의가 있음 (${running.id})`);
   if (rows.length >= limits.runsPerTrip) throw new ApiError('MEETING_LIMIT', `이 여행의 회의 실행 횟수(${limits.runsPerTrip}회)를 모두 씀`);
   const id = newId('mtg');
@@ -79,19 +90,46 @@ export async function finishMeeting(db: Db, meetingId: string, status: 'done' | 
   await db.update(meetings).set({ status, finishedAt: new Date() }).where(eq(meetings.id, meetingId));
 }
 
-/** 이벤트를 기록하고 봉투를 돌려줌 (seq는 여행마다 이어짐, 한 회의는 한 곳에서만 기록하므로 순서대로 증가) */
-export function eventRecorder(db: Db, tripId: string, meetingId: string) {
-  let next: number | null = null;
-  return async (e: MeetingEventDraft): Promise<MeetingEnvelope> => {
-    if (next === null) {
+/**
+ * 서버가 켜질 때: 실행 중(running)으로 남은 회의는 끊긴 것이므로 실패로 바꿈 (서버는 한 대라 다른 곳에서 이어서 돌 수 없음)
+ * 사람 확인을 기다리는 회의(reviewing)는 상태가 체크포인트에 있어 그대로 둠
+ */
+export async function failInterruptedMeetings(db: Db): Promise<number> {
+  const rows = await db.update(meetings).set({ status: 'failed', finishedAt: new Date() }).where(eq(meetings.status, 'running')).returning({ id: meetings.id });
+  return rows.length;
+}
+
+/** 여행별 실시간 연결로 이벤트를 보냄 (기록한 뒤 순서대로) */
+export interface EventPublisher {
+  publish(e: MeetingEnvelope): void;
+}
+
+/** 여행마다 이벤트 기록을 한 줄로 세움: 회의 실행과 사람 응답(API)이 동시에 기록해도 seq가 겹치지 않고 순서대로 보냄 */
+const lanes = new Map<string, Promise<unknown>>();
+function inLane<T>(tripId: string, work: () => Promise<T>): Promise<T> {
+  const run = (lanes.get(tripId) ?? Promise.resolve()).then(work, work);
+  const tail = run.catch(() => undefined);
+  lanes.set(tripId, tail);
+  void tail.then(() => {
+    if (lanes.get(tripId) === tail) lanes.delete(tripId);
+  });
+  return run;
+}
+
+/** 이벤트를 기록하고 봉투를 돌려줌 (seq는 여행마다 이어짐). publisher가 있으면 기록 직후 실시간 연결로도 보냄 */
+export function eventRecorder(db: Db, tripId: string, meetingId: string, publisher?: EventPublisher) {
+  return (e: MeetingEventDraft): Promise<MeetingEnvelope> => {
+    if (isLlmTrace(e.type)) return Promise.reject(new Error('LLM 과정 이벤트는 기록하지 않음'));
+    const type = e.type;
+    return inLane(tripId, async () => {
       const [row] = await db.select({ seq: sql<number>`coalesce(max(${meetingEvents.seq}), 0)` }).from(meetingEvents).where(eq(meetingEvents.tripId, tripId));
-      next = Number(row.seq) + 1;
-    }
-    if (isLlmTrace(e.type)) throw new Error('LLM 과정 이벤트는 기록하지 않음');
-    const seq = next++;
-    const at = new Date();
-    await db.insert(meetingEvents).values({ tripId, seq, meetingId, type: e.type, data: e.data, at });
-    return { type: e.type, tripId, seq, at: nowKst(at), data: e.data };
+      const seq = Number(row.seq) + 1;
+      const at = new Date();
+      await db.insert(meetingEvents).values({ tripId, seq, meetingId, type, data: e.data, at });
+      const envelope: MeetingEnvelope = { type, tripId, seq, at: nowKst(at), data: e.data };
+      publisher?.publish(envelope);
+      return envelope;
+    });
   };
 }
 

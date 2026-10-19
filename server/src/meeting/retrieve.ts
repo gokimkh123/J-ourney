@@ -134,8 +134,8 @@ export interface RetrieveResult {
   /** 꼭 지킬 것(넣기)이 여행지에 없고 같은 시·도의 다른 구·군에만 있는 것 (placeId: 넣은 후보 id, 지역 규칙이라 넣지 못했으면 null) */
   /** minutes: 여행지 가운데에서 편도 어림 (분). 넣은 곳은 그 곳까지, 멀어서 못 넣은 규칙은 가장 가까운 곳까지 */
   outsideRules: { memberId: string; label: string; district: string; placeId: string | null; minutes?: number }[];
-  /** 이름 맞추기(LLM)로 찾은 꼭 지킬 것: 사람이 쓴 말(keyword)과 맞춘 장소 이름 */
-  nameMatches: { memberId: string; label: string; keyword: string; places: string[] }[];
+  /** 이름 맞추기(LLM)로 찾은 꼭 지킬 것: 사람이 쓴 말(keyword)과 맞춘 장소 이름·id (보드에 오르면 5단계 사람 확인 안건) */
+  nameMatches: { memberId: string; label: string; keyword: string; places: string[]; ids: string[] }[];
   /** 꼭 지킬 것(넣기)인데 후보에 하나도 없는 것과 그 까닭 (여행지 밖 메모가 있는 것은 빼고) */
   missingRules: { memberId: string; label: string; reason: string }[];
 }
@@ -300,7 +300,7 @@ export async function retrieveCandidates(
       if (!ids.size) continue;
       const byCode = x.k.matches;
       x.k.matches = (v) => byCode(v) || (!!v.id && ids.has(v.id));
-      nameMatches.push({ memberId: x.memberId, label: x.k.rule.label, keyword: x.k.rule.keyword!.trim(), places: [...ids].map((id) => titleOf.get(id)!) });
+      nameMatches.push({ memberId: x.memberId, label: x.k.rule.label, keyword: x.k.rule.keyword!.trim(), places: [...ids].map((id) => titleOf.get(id)!), ids: [...ids] });
     }
   }
   // 이름 맞추기로 여행지 안에서 찾은 규칙은 여행지 밖에서 찾지 않음

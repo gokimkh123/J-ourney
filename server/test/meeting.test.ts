@@ -1,15 +1,24 @@
+import type { AddressInfo } from 'node:net';
+import { serve } from '@hono/node-server';
+import { MemorySaver } from '@langchain/langgraph';
+import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { categories, crowdFetches, placeRelations, places, regions, relatedFetches } from '../src/db/schema.js';
+import { WebSocketServer } from 'ws';
+import { createApp } from '../src/app.js';
+import { categories, crowdFetches, members, placeRelations, places, regions, relatedFetches } from '../src/db/schema.js';
+import { hashToken } from '../src/lib/ids.js';
+import { REVIEW, applyReview, reviewRequestOf, tallyReview } from '../src/meeting/review.js';
 import { ruleCategories } from '../src/meeting/categories.js';
 import { closedOn, hoursOn } from '../src/meeting/hours.js';
 import { resolveDestination } from '../src/meeting/regions.js';
-import { type NameMatcher, type NamePlace, type NameRule, decodeNames, nameInput, nameMatcher } from '../src/meeting/names.js';
+import { type NameMatcher, type NamePlace, type NameRule, decodeNames, nameInput, nameMatcher, savedNameMatcher } from '../src/meeting/names.js';
 import { type MemberInput, RETRIEVE, retrieveCandidates } from '../src/meeting/retrieve.js';
 import { ruleMatcher, sameName } from '../src/meeting/rules.js';
 import type { PersonaProfile } from '../src/persona/types.js';
 import type { TourClient } from '../src/tour/client.js';
 import { meetings } from '../src/db/schema.js';
-import { PICK, ensureOwnLimits, ownConflictIds, pickTables } from '../src/meeting/pick.js';
+import { LIVE } from '../src/meeting/live.js';
+import { PICK, type PickResult, ensureOwnLimits, ownConflictIds, pickTables, savedPickFor } from '../src/meeting/pick.js';
 import { REACT, overlapMinutes, reactBoard, reactionOf, reactionScore } from '../src/meeting/react.js';
 import type { Candidate, RetrieveResult } from '../src/meeting/retrieve.js';
 import { MINSU, answersOf, call, createTestApp, fakeLlm } from './helpers.js';
@@ -377,12 +386,16 @@ describe('후보 찾기 (2단계, 코드)', () => {
     expect(asked).toHaveLength(1); // 맞추지 못한 규칙을 한 번에 보냄
     expect(asked[0].map((x) => x.keyword)).toEqual(['엘시티 전망대', '없는곳']);
     expect(r.candidates.find((c) => c.name === '부산엑스더스카이')?.marks.m7).toContainEqual({ kind: 'must', label: '엘시티 전망대 가기' });
-    expect(r.nameMatches).toEqual([{ memberId: 'm7', label: '엘시티 전망대 가기', keyword: '엘시티 전망대', places: ['부산엑스더스카이'] }]); // 목록에 없는 id는 버림
+    expect(r.nameMatches).toEqual([{ memberId: 'm7', label: '엘시티 전망대 가기', keyword: '엘시티 전망대', places: ['부산엑스더스카이'], ids: ['xsky'] }]); // 목록에 없는 id는 버림
     expect(r.missingRules).toEqual([{ memberId: 'm7', label: '없는곳 가기', reason: '여행지 자료에서 찾지 못함' }]);
     // 4단계 안건에 메모로 보임
     const board = reactBoard({ candidates: [], agenda: [] }, r, [fan]);
     expect(board.agenda.map((a) => a.text)).toContain(`${fan.nickname}의 꼭 지킬 것 '없는곳 가기' — 여행지 자료에서 찾지 못함`);
     expect(board.agenda.map((a) => a.text)).toContain(`${fan.nickname}의 꼭 지킬 것 '엘시티 전망대' → 부산엑스더스카이 (이름이 달라 AI가 맞춤)`);
+    // 맞춘 곳이 보드에 오르면 메모 대신 장소 안건 (5단계에서 사람이 맞는 곳인지 남김·뺌으로 확인)
+    const picked = reactBoard({ candidates: [{ placeId: 'plc_xsky', name: '부산엑스더스카이', lat: null, lng: null, proposedBy: ['agt_m7'], reactions: [] }], agenda: [] }, r, [fan]);
+    expect(picked.agenda.filter((a) => a.placeId !== null)).toEqual([{ placeId: 'plc_xsky', text: `부산엑스더스카이 — ${fan.nickname} 고름 · 이름이 달라 AI가 맞춘 ${fan.nickname}의 꼭 지킬 곳 ('엘시티 전망대')` }]);
+    expect(picked.agenda.map((a) => a.text).some((x) => x.includes('→ 부산엑스더스카이'))).toBe(false);
     // 이름 맞추기가 없으면(LLM 없음·상한) 맞추지 않고 둘 다 메모로 남김
     const plain = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [fan], crowdClient: null, today: '2026-11-01' });
     expect(plain.nameMatches).toEqual([]);
@@ -507,7 +520,9 @@ describe('회의 조건 API와 시험 경로', () => {
 
     // 그래프 칸: 실제 그래프 구조 (실행·외부 호출 없음), 터널 요청은 막음
     const graph = await call(app, 'GET', '/dev/meeting/graph');
-    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', 'react', '__end__']);
+    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', 'react', 'review', '__end__']);
+    expect(graph.body.edges).toContainEqual({ from: 'react', to: 'review', conditional: true }); // 고를 안건이 있을 때만 사람 확인
+    expect(graph.body.nodes.find((n: { id: string }) => n.id === 'review')).toMatchObject({ step: 5, kind: 'human' });
     expect(graph.body.edges).toContainEqual({ from: 'prepare', to: 'retrieve', conditional: false });
     expect(graph.body.edges).toContainEqual({ from: 'gather', to: 'react', conditional: false });
     expect((await call(app, 'GET', '/dev/meeting/graph', undefined, undefined, { 'cf-connecting-ip': '203.0.113.7' })).status).toBe(403);
@@ -578,6 +593,9 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(events[0]).toMatchObject({ type: 'meeting.started', data: { kind: 'meeting' } });
     expect(events[0].data.agents).toHaveLength(4);
     expect(events.at(-1).type).toBe('board.updated');
+    // 고를 안건(장소 안건)이 없는 보드라 5단계에서 멈추지 않고 끝남
+    expect(events.at(-1).data.agenda.some((a: { placeId: string | null }) => a.placeId !== null)).toBe(false);
+    expect(events.some((e) => e.type.startsWith('review.'))).toBe(false);
     // 4단계: 3단계 끝의 보드(반응 없음) 다음에 반응·안건을 채운 보드를 한 번 더 보냄 (코드, LLM 횟수 그대로)
     const boards = events.filter((e) => e.type === 'board.updated');
     expect(boards).toHaveLength(2);
@@ -863,5 +881,331 @@ describe('이름 맞추기 (2단계, LLM 1회)', () => {
       throw new Error('boom');
     });
     expect((await nameMatcher(broken, async () => true)(rules, list)).size).toBe(0);
+  });
+});
+
+describe('5단계 사람 확인 규칙 (코드, LLM 0회)', () => {
+  const cand = (over: Partial<Candidate>): Candidate => ({
+    id: 'c', name: '장소', type: 12, category: null, popularity: null, crowd: null, hours: null, open: null, restUnknown: false,
+    summary: '', menu: null, lat: null, lng: null, scores: {}, total: 0, reasons: {}, marks: {}, forMembers: [], ...over,
+  });
+  const row = (id: string, name: string, by: string[]) => ({ placeId: `plc_${id}`, name, lat: null, lng: null, proposedBy: by.map((m) => `agt_${m}`), reactions: [] });
+  const spa = cand({ id: 'spa', name: '산방산탄산온천', marks: { m4: [{ kind: 'must', label: '온천 가기' }, { kind: 'crowd', label: '98' }] } });
+  const trail = cand({ id: 'trail', name: '장산', marks: { m4: [{ kind: 'dislike', label: '오래 걷기' }] } });
+  const pool = {
+    candidates: [spa, trail],
+    lodgings: [],
+    outsideRules: [],
+    nameMatches: [],
+    missingRules: [{ memberId: 'm3', label: '돼지국밥 먹기', reason: '여행지 자료에서 찾지 못함' }],
+  } as unknown as RetrieveResult;
+  const board = reactBoard({ candidates: [row('spa', '산방산탄산온천', ['m4']), row('trail', '장산', ['m1'])], agenda: [] }, pool, MEMBERS);
+
+  it('고른 사람 자신의 꼭 지킬 곳에 걸린 ⚠는 "꼭 지킬 곳이지만"으로 적음 (다른 사람의 ⚠는 ↔ 뒤에)', () => {
+    expect(board.agenda.find((a) => a.placeId === 'plc_spa')!.text).toBe('산방산탄산온천 — 서연 고름 · 서연의 꼭 지킬 곳이지만 ⚠ 혼잡 예측 98 (상한 80)');
+    expect(board.agenda.find((a) => a.placeId === 'plc_trail')!.text).toBe('장산 — 민수 고름 ↔ 서연 ⚠ 싫어요: 오래 걷기');
+  });
+
+  it('고르는 안건은 장소 안건, 메모는 보기만 함. 빼면 꼭 지킬 것을 지킬 곳이 보드에 없어지면 그 사실을 붙임', () => {
+    const request = reviewRequestOf(board, pool, MEMBERS);
+    expect(request.items.map((i) => i.placeId).sort()).toEqual(['plc_spa', 'plc_trail']);
+    expect(request.items.find((i) => i.placeId === 'plc_spa')).toMatchObject({ name: '산방산탄산온천', consequence: "빼면 서연의 '온천 가기'를 지킬 곳이 없어짐" });
+    expect(request.items.find((i) => i.placeId === 'plc_trail')!.consequence).toBeNull();
+    expect(request.memos).toEqual(["현우의 꼭 지킬 것 '돼지국밥 먹기' — 여행지 자료에서 찾지 못함"]);
+    // 같은 꼭 지킬 것을 채우는 곳이 보드에 하나 더 있으면 빼도 지킬 수 있음
+    const other = cand({ id: 'spa2', name: '해운대온천', marks: { m4: [{ kind: 'must', label: '온천 가기' }] } });
+    const two = { ...pool, candidates: [spa, trail, other] } as unknown as RetrieveResult;
+    const both = reactBoard({ candidates: [row('spa', '산방산탄산온천', ['m4']), row('trail', '장산', ['m1']), row('spa2', '해운대온천', ['m4'])], agenda: [] }, two, MEMBERS);
+    expect(reviewRequestOf(both, two, MEMBERS).items.find((i) => i.placeId === 'plc_spa')!.consequence).toBeNull();
+    // 안건이 없으면 고를 것이 없음 (회의가 멈추지 않음)
+    expect(reviewRequestOf({ candidates: [], agenda: [{ placeId: null, text: '메모' }] }, pool, MEMBERS)).toEqual({ items: [], memos: ['메모'] });
+  });
+
+  it('안건마다 다수결, 같으면 방장의 응답으로 정하고, 응답하지 않은 사람은 남김으로 셈. 뺀 곳은 보드·안건에서 지움', () => {
+    const request = reviewRequestOf(board, pool, MEMBERS);
+    const people = MEMBERS.map((m, i) => ({ id: m.memberId, isHost: i === 0 }));
+    const responses = new Map([
+      ['m1', [{ placeId: 'plc_trail', keep: false }, { placeId: 'plc_spa', keep: true }]],
+      ['m2', [{ placeId: 'plc_trail', keep: false }, { placeId: 'plc_spa', keep: true }]],
+      ['m3', [{ placeId: 'plc_trail', keep: true }, { placeId: 'plc_spa', keep: false }]],
+    ]);
+    expect(REVIEW.defaultKeep).toBe(true);
+    const decision = tallyReview(request, responses, people, 'host');
+    // 장산: 뺌 2(민수·지은) · 남김 2(현우·응답 안 한 서연) → 같아서 방장(민수, 뺌)으로 정함
+    expect(decision.votes.find((v) => v.placeId === 'plc_trail')).toEqual({ placeId: 'plc_trail', keep: 2, drop: 2, tie: true, kept: false });
+    expect(decision.votes.find((v) => v.placeId === 'plc_spa')).toEqual({ placeId: 'plc_spa', keep: 3, drop: 1, tie: false, kept: true });
+    expect(decision).toMatchObject({ kept: ['plc_spa'], dropped: ['plc_trail'], responded: ['m1', 'm2', 'm3'], defaulted: ['m4'], closedBy: 'host' });
+    const after = applyReview(board, decision);
+    expect(after.candidates.map((c) => c.placeId)).toEqual(['plc_spa']);
+    expect(after.agenda.map((a) => a.placeId)).toEqual(['plc_spa', null]);
+  });
+});
+
+/** 회의를 뒤에서 돌리고 상태를 기다리는 시험이라 CI(느린 컴퓨터)에서도 넉넉하게 둠 (이 PC에서는 1–2초) */
+const STEP5_TIMEOUT_MS = 15_000;
+
+describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
+  /** 가짜 LLM: 내 조건에 걸리지 않으면 장산을 먼저 고름 → 오래 걷기 싫어요인 서연에게 ⚠가 붙어 안건이 생김 */
+  const jangsanLlm = () =>
+    fakeLlm((input) => {
+      if (input.rules) return { matches: [] }; // 2단계 이름 맞추기 (흰여울문화마을은 시험 자료에 없음)
+      const rows = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|'));
+      const ok = rows.filter((r) => !/^[⚠✕]/.test(r[6] ?? ''));
+      const ids = [...new Set([...input.me.mustKeepIds, ...ok.filter((r) => r[1] === '장산').map((r) => r[0]), ...ok.map((r) => r[0])])].slice(0, PICK.count);
+      const lodging = (input.lodgings as string) ? (input.lodgings as string).split('\n')[1].split('|')[0] : '';
+      return { picks: ids.map((id) => ({ id, reason: '좋아요' })), lodging: { id: lodging, reason: lodging ? '편해요' : '' }, comment: '가요!' };
+    });
+  async function reviewTrip(options: Parameters<typeof createTestApp>[0] = {}) {
+    const t = await createTestApp(options);
+    await seedDb(t.db);
+    const demo = await call(t.app, 'POST', '/trips', { title: '부산 시연', nickname: '민수', demoMode: true });
+    const token = demo.body.token as string;
+    const tripId = demo.body.trip.id as string;
+    await call(t.app, 'POST', '/me/persona', { answers: answersOf(MINSU, ['like_night', 'like_sea'], []) }, token, { 'cf-connecting-ip': '203.0.113.7' });
+    await call(t.app, 'PUT', `/trips/${tripId}/conditions`, { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-08' }, token);
+    const people = (await t.db.select().from(members).where(eq(members.tripId, tripId))).sort((a, b) => a.seat - b.seat);
+    return { ...t, token, tripId, people };
+  }
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  async function until<T>(get: () => Promise<T> | T, ok: (v: T) => boolean, what: string) {
+    for (let i = 0; i < 300; i++) {
+      const v = await get();
+      if (ok(v)) return v;
+      await sleep(20);
+    }
+    throw new Error(`기다려도 되지 않음: ${what}`);
+  }
+  type App = Awaited<ReturnType<typeof createTestApp>>['app'];
+  const meetingOf = async (app: App, token: string, id: string) => (await call(app, 'GET', `/meetings/${id}`, undefined, token)).body.meeting;
+  const waitStatus = (app: App, token: string, id: string, status: string) => until(() => meetingOf(app, token, id), (m) => m?.status === status, `회의 ${status}`);
+
+  it('고를 안건이 있으면 멈추고, 응답·덮어쓰기·대리 응답 뒤 방장 마감(2:2는 방장)으로 정해 이어서 실행함 (LLM 횟수 그대로)', async () => {
+    const { app, db, token, tripId, people } = await reviewTrip({ llm: jangsanLlm() });
+    const [host, jieun, hyunwoo, seoyeon] = people;
+    const started = await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token);
+    expect(started.status).toBe(202);
+    expect(started.body.meeting).toMatchObject({ status: 'researching', maxRounds: 5 });
+    const id = started.body.meeting.id as string;
+    const waiting = await waitStatus(app, token, id, 'reviewing');
+    const item = waiting.review.items.find((i: { name: string }) => i.name === '장산');
+    expect(item.text).toContain('서연 ⚠ 싫어요: 오래 걷기');
+    expect(waiting.review).toMatchObject({ total: 4, responded: [], mine: null, decision: null });
+
+    // 회의 중: 여행 상태 meeting → 조건·성향을 바꾸거나 새 회의를 시작할 수 없음
+    expect((await call(app, 'GET', `/trips/${tripId}`, undefined, token)).body.trip.status).toBe('meeting');
+    expect((await call(app, 'PUT', `/trips/${tripId}/conditions`, { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-07' }, token)).body.error.code).toBe('MEETING_IN_PROGRESS');
+    expect((await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.error.code).toBe('MEETING_IN_PROGRESS');
+
+    // 응답 검사: 없는 안건·빠진 안건은 400, 다른 여행 구성원은 403
+    const choose = (drop: string[]) => waiting.review.items.map((i: { placeId: string }) => ({ placeId: i.placeId, keep: !drop.includes(i.placeId) }));
+    expect((await call(app, 'POST', `/meetings/${id}/review`, { choices: [...choose([]), { placeId: 'plc_없음', keep: true }] }, token)).body.error.code).toBe('VALIDATION_ERROR');
+    expect((await call(app, 'POST', `/meetings/${id}/review`, { choices: choose([]).slice(1) }, token)).body.error.code).toBe('VALIDATION_ERROR');
+    const stranger = await call(app, 'POST', '/trips', { title: '다른 여행', nickname: '손님' });
+    expect((await call(app, 'POST', `/meetings/${id}/review`, { choices: choose([]) }, stranger.body.token)).status).toBe(403);
+    expect((await call(app, 'GET', `/meetings/${id}`, undefined, stranger.body.token)).status).toBe(403);
+    expect((await call(app, 'GET', `/trips/${tripId}/events`, undefined, stranger.body.token)).status).toBe(403);
+
+    // 방장: 장산 뺌 · 지은(방장이 대신): 남김 → 다시 내서 뺌(덮어씀) · 현우(직접): 남김 · 서연: 응답 안 함
+    await db.update(members).set({ tokenHash: hashToken('tok_hyunwoo') }).where(eq(members.id, hyunwoo.id));
+    expect((await call(app, 'POST', `/meetings/${id}/review`, { choices: choose([item.placeId]) }, token)).body.meeting.review.responded).toEqual([host.id]);
+    await call(app, 'POST', `/meetings/${id}/review`, { memberId: jieun.id, choices: choose([]) }, token);
+    const over = await call(app, 'POST', `/meetings/${id}/review`, { memberId: jieun.id, choices: choose([item.placeId]) }, token);
+    expect(over.body.meeting.review.responded).toEqual([host.id, jieun.id]);
+    expect((await call(app, 'POST', `/meetings/${id}/review`, { memberId: seoyeon.id, choices: choose([]) }, 'tok_hyunwoo')).status).toBe(403); // 방장이 아니면 남의 몫을 낼 수 없음
+    const mine = await call(app, 'POST', `/meetings/${id}/review`, { choices: choose([]) }, 'tok_hyunwoo');
+    expect(mine.body.meeting.review.mine).toEqual(choose([]));
+    expect((await call(app, 'POST', `/meetings/${id}/review/close`, undefined, 'tok_hyunwoo')).status).toBe(403); // 마감은 방장만
+
+    // 방장 '진행': 서연은 남김으로 셈 → 장산 2:2 → 방장(뺌)으로 정함
+    expect((await call(app, 'POST', `/meetings/${id}/review/close`, undefined, token)).status).toBe(200);
+    const done = await waitStatus(app, token, id, 'done');
+    expect(done.review.decision.votes.find((v: { placeId: string }) => v.placeId === item.placeId)).toEqual({ placeId: item.placeId, keep: 2, drop: 2, tie: true, kept: false });
+    expect(done.review.decision).toMatchObject({ closedBy: 'host', responded: [host.id, jieun.id, hyunwoo.id], defaulted: [seoyeon.id] });
+    expect(done.llmCalls).toBe(waiting.llmCalls); // 5단계는 LLM 0회
+
+    // 이벤트: review.requested → review.cast ×4(덮어쓰기 포함) → review.closed → board.updated(장산 빠짐), seq는 이어짐
+    const { events } = (await call(app, 'GET', `/trips/${tripId}/events?afterSeq=0`, undefined, token)).body;
+    expect(events.map((e: { seq: number }) => e.seq)).toEqual(events.map((_: unknown, i: number) => i + 1));
+    const tail = events.slice(events.findIndex((e: { type: string }) => e.type === 'review.requested'));
+    expect(tail.map((e: { type: string }) => e.type)).toEqual(['review.requested', 'review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated']);
+    expect(tail[0].data).toMatchObject({ meetingId: id, total: 4, items: waiting.review.items });
+    expect(tail[4].data).toMatchObject({ memberId: hyunwoo.id, answered: 3, total: 4 });
+    expect(tail[5].data).toMatchObject({ meetingId: id, dropped: [item.placeId] });
+    expect(tail[6].data.candidates.some((c: { placeId: string }) => c.placeId === item.placeId)).toBe(false);
+
+    // 마감 뒤에는 응답·마감 모두 409 (두 번 이어서 실행되지 않음)
+    expect((await call(app, 'POST', `/meetings/${id}/review`, { choices: choose([]) }, token)).body.error.code).toBe('REVIEW_CLOSED');
+    expect((await call(app, 'POST', `/meetings/${id}/review/close`, undefined, token)).body.error.code).toBe('REVIEW_CLOSED');
+  }, STEP5_TIMEOUT_MS);
+
+  it('4명이 모두 내면 바로 마감하고 이어서 실행함 (자동 마감, 응답하지 않은 사람 없음)', async () => {
+    const { app, token, tripId, people } = await reviewTrip({ llm: jangsanLlm() });
+    const id = (await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.meeting.id as string;
+    const waiting = await waitStatus(app, token, id, 'reviewing');
+    const keepAll = waiting.review.items.map((i: { placeId: string }) => ({ placeId: i.placeId, keep: true }));
+    for (const p of people) await call(app, 'POST', `/meetings/${id}/review`, { memberId: p.id, choices: keepAll }, token);
+    const done = await waitStatus(app, token, id, 'done');
+    expect(done.review.decision).toMatchObject({ closedBy: 'all', defaulted: [], dropped: [] });
+    expect(done.review.decision.responded).toEqual(people.map((p) => p.id));
+  }, STEP5_TIMEOUT_MS);
+
+  it('LLM_REPLAY: 같은 여행을 다시 실행하면 지난 회의에서 AI가 고른 곳을 그대로 써 LLM 0회로 사람 확인까지 가고, 그 뒤 성향을 바꾼 사람·조건이 바뀐 여행은 규칙으로 고름', async () => {
+    const llm = jangsanLlm();
+    const checkpointer = new MemorySaver();
+    const runs = { meetingRunsPerTrip: 10 }; // 같은 여행을 여러 번 실행함
+    const t = await reviewTrip({ llm, devUi: true, checkpointer, ...runs });
+    const replayApp = createApp({ db: t.db, rateLimitPerMinute: 1000, devUi: true, llm, llmReplay: true, checkpointer, ...runs });
+    const runOn = async (app: App) => {
+      const res = await app.request('/api/v1/dev/meeting/run', { method: 'POST', headers: { Authorization: `Bearer ${t.token}` } });
+      return (await res.text()).trim().split('\n').map((l) => JSON.parse(l)).find((l) => l.kind === 'result');
+    };
+    type Pick = { memberId: string; source: string; picks: unknown[]; lodging: unknown; comment: string; llmCalls: number; savedFrom?: string };
+    const core = (list: Pick[]) => [...list].sort((a, b) => a.memberId.localeCompare(b.memberId)).map(({ memberId, picks, lodging, comment }) => ({ memberId, picks, lodging, comment }));
+
+    const first = await runOn(t.app);
+    expect(first.llmCalls).toBe(4 + 1); // 고르기 4 + 이름 맞추기 1
+    const calls = llm.calls;
+    const again = await runOn(replayApp);
+    expect(again).toMatchObject({ replay: true, llmCalls: 0, status: 'reviewing' });
+    expect(llm.calls).toBe(calls); // LLM을 한 번도 부르지 않음
+    expect(core(again.picks)).toEqual(core(first.picks));
+    expect(again.picks.every((p: Pick) => p.source === 'llm' && p.llmCalls === 0 && p.savedFrom === first.meetingId)).toBe(true);
+    expect(again.review).toEqual(first.review); // 같은 고르기 → 같은 안건에서 멈춤
+    // 다시 쓴 결과를 또 다시 써도 처음 AI가 고른 회의를 가리킴
+    expect((await runOn(replayApp)).picks.every((p: Pick) => p.savedFrom === first.meetingId)).toBe(true);
+
+    // 방장이 성향을 다른 응답으로 바꿈 → 카드도 LLM 없이(같은 응답의 AI 카드가 없어 규칙), 회의에서는 방장 몫만 규칙
+    const host = t.people[0].id;
+    expect((await call(replayApp, 'POST', '/me/persona', { answers: answersOf(MINSU, ['like_sea'], []) }, t.token)).body.persona.source).toBe('rule');
+    const changed = await runOn(replayApp);
+    expect(changed.picks.find((p: Pick) => p.memberId === host)).toMatchObject({ source: 'rule', llmCalls: 0 });
+    expect(changed.picks.filter((p: Pick) => p.memberId !== host).every((p: Pick) => p.savedFrom === first.meetingId)).toBe(true);
+    // 조건이 바뀌면 지난 결과를 쓰지 않음 (모두 규칙)
+    await call(replayApp, 'PUT', `/trips/${t.tripId}/conditions`, { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-07' }, t.token);
+    expect((await runOn(replayApp)).picks.every((p: Pick) => p.source === 'rule' && !p.savedFrom)).toBe(true);
+    expect(llm.calls).toBe(calls);
+  }, STEP5_TIMEOUT_MS);
+
+  it('WebSocket: 토큰·여행을 확인하고, 놓친 이벤트를 먼저 보낸 뒤 새 이벤트와 ping을 바로 보냄 (구성원당 연결 수 상한)', async () => {
+    const { app, token, tripId } = await reviewTrip({ llm: jangsanLlm(), livePingMs: 40 });
+    const id = (await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.meeting.id as string;
+    const waiting = await waitStatus(app, token, id, 'reviewing');
+    const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
+      const s = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1', websocket: { server: new WebSocketServer({ noServer: true }) } }, () => resolve(s));
+    });
+    const port = (server.address() as AddressInfo).port;
+    const url = (query: string) => `ws://127.0.0.1:${port}/api/v1/trips/${tripId}/ws?${query}`;
+    const opens = (u: string) =>
+      new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(u);
+        ws.onopen = () => {
+          ws.close();
+          resolve(true);
+        };
+        ws.onerror = () => resolve(false);
+      });
+    const connect = async (query: string) => {
+      const ws = new WebSocket(url(query));
+      const got: { type: string; seq?: number; tripId?: string }[] = [];
+      let closedWith: number | null = null;
+      ws.onmessage = (m) => got.push(JSON.parse(String(m.data)));
+      ws.onclose = (e) => {
+        closedWith = e.code;
+      };
+      await new Promise((resolve, reject) => {
+        ws.onopen = resolve;
+        ws.onerror = reject;
+      });
+      return { ws, got, closed: () => closedWith };
+    };
+    try {
+      // 토큰 없음·틀린 토큰·다른 여행 토큰은 연결되지 않음
+      expect(await opens(url('afterSeq=0'))).toBe(false);
+      expect(await opens(url('token=tok_wrong'))).toBe(false);
+      const stranger = await call(app, 'POST', '/trips', { title: '다른 여행', nickname: '손님' });
+      expect(await opens(url(`token=${stranger.body.token}`))).toBe(false);
+      // WebSocket이 아닌 요청은 400
+      expect((await call(app, 'GET', `/trips/${tripId}/ws?token=${token}`)).status).toBe(400);
+
+      // afterSeq=2 뒤부터 받고(놓친 것), 새 이벤트(review.cast)와 ping을 바로 받음
+      const a = await connect(`token=${token}&afterSeq=2`);
+      await until(() => a.got, (g) => g.some((e) => e.type === 'review.requested'), '놓친 이벤트');
+      const replayed = a.got.filter((e) => e.type !== 'ping');
+      expect(replayed.map((e) => e.seq)).toEqual(replayed.map((_, i) => i + 3));
+      const keepAll = waiting.review.items.map((i: { placeId: string }) => ({ placeId: i.placeId, keep: true }));
+      await call(app, 'POST', `/meetings/${id}/review`, { choices: keepAll }, token);
+      const cast = await until(() => a.got, (g) => g.some((e) => e.type === 'review.cast'), '새 이벤트');
+      expect(cast.find((e) => e.type === 'review.cast')!.seq).toBe(replayed.at(-1)!.seq! + 1);
+      await until(() => a.got, (g) => g.some((e) => e.type === 'ping'), 'ping');
+      expect(a.got.find((e) => e.type === 'ping')).toMatchObject({ tripId });
+
+      // 같은 구성원이 상한보다 많이 열면 가장 오래된 연결을 닫음
+      const more = [];
+      for (let i = 0; i < LIVE.perMember; i++) more.push(await connect(`token=${token}&afterSeq=0`));
+      await until(() => a.closed(), (code) => code === 4000, '오래된 연결 닫힘');
+      expect(more.every((x) => x.closed() === null)).toBe(true);
+      for (const x of [a, ...more]) x.ws.close();
+    } finally {
+      server.close();
+    }
+  }, STEP5_TIMEOUT_MS);
+
+  it('시험 화면: 1–5단계 실행이 사람 확인에서 멈추고, /dev/meeting/review로 4명 몫을 내면 이어서 끝까지 실행함 (다시 실행하면 이전 확인은 그만둠)', async () => {
+    const { app, db, token, people } = await reviewTrip({ llm: jangsanLlm(), devUi: true });
+    const ndjsonOf = async (path: string, body?: unknown) => {
+      const res = await app.request(`/api/v1${path}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+      const text = await res.text();
+      return { status: res.status, lines: text.trim().split('\n').map((l) => JSON.parse(l)) };
+    };
+    const first = (await ndjsonOf('/dev/meeting/run')).lines.find((l) => l.kind === 'result');
+    expect(first.status).toBe('reviewing');
+    expect(first.review.items.length).toBeGreaterThan(0);
+    // 다시 실행: 사람 확인을 기다리던 이전 회의는 실패로 두고 새로 실행
+    const second = (await ndjsonOf('/dev/meeting/run')).lines.find((l) => l.kind === 'result');
+    expect(second.status).toBe('reviewing');
+    const [old] = await db.select().from(meetings).where(eq(meetings.id, first.meetingId));
+    expect(old.status).toBe('failed');
+
+    // 방장만 뺌, 나머지 3명은 남김 → 1:3 → 모두 남김
+    const responses = people.map((p, i) => ({ memberId: p.id, choices: second.review.items.map((it: { placeId: string }) => ({ placeId: it.placeId, keep: i !== 0 })) }));
+    const { status, lines } = await ndjsonOf('/dev/meeting/review', { meetingId: second.meetingId, responses });
+    expect(status).toBe(200);
+    expect(lines.filter((l) => l.kind === 'event').map((l) => l.event.type)).toEqual(['review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated']);
+    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node)).toEqual(['review']);
+    const end = lines.find((l) => l.kind === 'result');
+    expect(end).toMatchObject({ status: 'done', reviewDecision: { closedBy: 'all', dropped: [] } });
+  }, STEP5_TIMEOUT_MS);
+});
+
+describe('LLM_REPLAY 다시 쓰기 검사 (코드, LLM 0회)', () => {
+  it('지난 고르기는 고른 곳이 지금 후보(숙소는 숙소 후보)에 모두 있을 때만 다시 씀', () => {
+    const pool = { candidates: ['a', 'b', 'c', 'd'].map((id) => ({ id })), lodgings: [{ id: 'h1' }] } as unknown as RetrieveResult;
+    const item = (id: string) => ({ id, reason: '좋아요' });
+    const saved: PickResult = { memberId: 'm1', source: 'llm', picks: ['a', 'b', 'c'].map(item), lodging: item('h1'), comment: '가요!', llmCalls: 1 };
+    expect(savedPickFor(saved, pool)).toBe(saved);
+    expect(savedPickFor({ ...saved, picks: ['a', 'b', 'x'].map(item) }, pool)).toBeNull();
+    expect(savedPickFor({ ...saved, lodging: item('h9') }, pool)).toBeNull();
+    expect(savedPickFor(undefined, pool)).toBeNull();
+  });
+
+  it('지난 이름 맞추기는 이름표·낱말이 같은 규칙에만, 지금 장소 목록에 있는 곳만 다시 씀 (ids가 없는 5단계 전 기록은 장소 이름으로 찾음)', async () => {
+    const match = savedNameMatcher([
+      { label: '엘시티 전망대 가기', keyword: '엘시티 전망대', places: ['부산엑스더스카이'], ids: ['xsky'] },
+      { label: '곰장어 먹기', keyword: '곰장어 구이', places: ['자갈치 곰장어'] },
+    ]);
+    const list = [
+      { id: 'xsky', title: '부산엑스더스카이' },
+      { id: 'gom', title: '자갈치 곰장어' },
+    ] as NamePlace[];
+    const rules: NameRule[] = [
+      { key: '0', label: '엘시티 전망대 가기', keyword: '엘시티 전망대', target: 'place' },
+      { key: '1', label: '곰장어 먹기', keyword: '곰장어 구이', target: 'food' },
+      { key: '2', label: '해운대 가기', keyword: '해운대', target: 'place' },
+    ];
+    expect([...(await match(rules, list))]).toEqual([
+      ['0', ['xsky']],
+      ['1', ['gom']],
+    ]);
+    expect([...(await match(rules, list.slice(1)))]).toEqual([['1', ['gom']]]);
   });
 });

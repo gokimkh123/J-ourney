@@ -1,11 +1,12 @@
 import { serve } from '@hono/node-server';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import pg from 'pg';
+import { WebSocketServer } from 'ws';
 import { createApp } from './app.js';
 import { config } from './config.js';
 import { connectDb } from './db/client.js';
 import { createLangChainLlm, type LlmClient, type ModelSpec, parseModelSpec, withFallbacks } from './llm/client.js';
-import { pruneMeetingCheckpoints } from './meeting/runs.js';
+import { failInterruptedMeetings, pruneMeetingCheckpoints } from './meeting/runs.js';
 import { createTourClient } from './tour/client.js';
 import { tryConsumeTourCall } from './tour/usage.js';
 
@@ -58,6 +59,9 @@ if (db && config.databaseUrl) {
     pruneMeetingCheckpoints(db, checkpointer!, config.meetingKeepDays).catch((err) => console.warn('회의 기록 정리 실패:', err instanceof Error ? err.message : err));
   await prune();
   setInterval(prune, DAY_MS).unref();
+  // 서버가 꺼질 때 실행 중이던 회의는 이어서 돌 수 없어 실패로 바꿈 (사람 확인을 기다리던 회의는 체크포인트로 이어서 진행)
+  const failed = await failInterruptedMeetings(db);
+  if (failed) console.warn(`서버가 꺼져 끊긴 회의 ${failed}개를 실패로 바꿈`);
 }
 
 const app = createApp({
@@ -68,6 +72,7 @@ const app = createApp({
   devUi: config.devUi,
   devUiTunnel: config.devUiTunnel,
   llm,
+  llmReplay: config.llmReplay,
   llmDailyLimit: config.llmDailyLimit,
   llmCardsPerMember: config.llmCardsPerMember,
   llmPerIpDaily: config.llmPerIpDaily,
@@ -75,7 +80,9 @@ const app = createApp({
   rateLimitPerMinute: config.rateLimitPerMinute,
 });
 
-serve({ fetch: app.fetch, port: config.port }, (info) => {
+// 실시간 연결(WebSocket): 같은 포트에서 /api/v1/trips/{tripId}/ws로 받음 (Hono Node 서버의 내장 기능 + ws)
+serve({ fetch: app.fetch, port: config.port, websocket: { server: new WebSocketServer({ noServer: true }) } }, (info) => {
   console.log(`J-ourney 서버 실행 중: http://localhost:${info.port}/api/v1/health`);
+  if (config.llmReplay) console.log('LLM_REPLAY 켜짐: LLM을 부르지 않고 미리 나온 결과(지난 회의의 AI 고르기, 같은 응답의 AI 카드)를 다시 씀');
   if (config.devUi) console.log(`백엔드 시험 화면: http://localhost:${info.port}/dev/ · 회의 엔진: http://localhost:${info.port}/dev/meeting`);
 });

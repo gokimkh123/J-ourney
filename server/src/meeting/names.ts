@@ -157,6 +157,30 @@ export function decodeNames(draft: z.infer<typeof NameDraft>, rules: readonly Na
   return out;
 }
 
+/** 지난 회의에서 맞춘 이름 (LLM_REPLAY로 다시 씀). 5단계 전 기록에는 ids가 없어 장소 이름으로 찾음 */
+export interface SavedNameMatch {
+  label: string;
+  keyword: string;
+  places: string[];
+  ids?: string[];
+}
+
+/** LLM_REPLAY: 지난 회의에서 LLM이 맞춘 결과를 같은 규칙(이름표·낱말)에 다시 씀 (LLM 0회). 지금 장소 목록에 있는 곳만 */
+export function savedNameMatcher(saved: readonly SavedNameMatch[]): NameMatcher {
+  return async (rules, places) => {
+    const ids = new Set(places.map((p) => p.id));
+    const byTitle = new Map(places.map((p) => [p.title, p.id]));
+    const out: NameMatches = new Map();
+    for (const r of rules) {
+      const hit = saved.find((x) => x.label === r.label && x.keyword === r.keyword);
+      if (!hit) continue;
+      const found = (hit.ids ?? hit.places.map((t) => byTitle.get(t) ?? '')).filter((id) => ids.has(id)).slice(0, NAME_MATCH.pickMax);
+      if (found.length) out.set(r.key, found);
+    }
+    return out;
+  };
+}
+
 /**
  * 이름 맞추기 함수를 만듦: 규칙이 있을 때만, reserve()가 허락할 때만 LLM을 1회 부름 (실패·상한이면 빈 결과 → 2단계가 '찾지 못함' 메모로 남김)
  * emit이 있으면 시험 화면용 llm.request·llm.response를 보냄 (agentId 없음, purpose 'names')

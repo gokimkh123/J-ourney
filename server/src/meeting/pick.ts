@@ -43,6 +43,8 @@ export interface PickResult {
   comment: string;
   /** 실제로 부른 LLM 횟수 (0–2) */
   llmCalls: number;
+  /** LLM_REPLAY로 지난 결과를 다시 썼으면 AI가 처음 고른 회의 id (LLM 0회) */
+  savedFrom?: string;
 }
 
 const PickDraft = z.object({
@@ -260,6 +262,8 @@ export const PickState = Annotation.Root({
   calls: Annotation<number>(),
   /** LLM을 더 부를 수 없음 (LLM 없음·상한·오류) */
   blocked: Annotation<boolean>(),
+  /** LLM_REPLAY: 지난 회의에서 AI가 고른 결과 (지금 후보에 모두 있을 때만). 있으면 LLM을 부르지 않고 이것을 씀 (부모의 saved와 이름을 달리 둠) */
+  savedPick: Annotation<PickResult | null>(),
   /** 부모 그래프로 넘기는 결과 (부모의 picks에 합쳐짐) */
   picks: Annotation<PickResult[]>({ reducer: (a, b) => a.concat(b), default: () => [] }),
 });
@@ -275,8 +279,8 @@ export function buildPickGraph(deps: PickDeps) {
   const choose = async (s: PickStateType): Promise<Partial<PickStateType>> => {
     const tries = (s.tries ?? 0) + 1;
     emit({ type: 'research.progress', data: { agentId: agentIdOf(s.who.memberId), stage: 'picking', tool: null, focus: null, foundCount: s.from.candidates.length } });
-    // 후보가 고를 수보다 적으면 답할 수 없으므로 LLM을 부르지 않음 (예: 여행지 전체가 누군가의 꼭 피할 것에 걸림)
-    if (s.from.candidates.length < PICK.count || !deps.llm || !(await deps.reserveLlm(s.meeting))) return { tries, blocked: true, draft: null };
+    // 후보가 고를 수보다 적으면 답할 수 없으므로 LLM을 부르지 않음 (예: 여행지 전체가 누군가의 꼭 피할 것에 걸림). 지난 결과를 다시 쓸 때도 부르지 않음
+    if (s.savedPick || s.from.candidates.length < PICK.count || !deps.llm || !(await deps.reserveLlm(s.meeting))) return { tries, blocked: true, draft: null };
     try {
       const req = { system: SYSTEM, input: pickInput(s.who, s.from), schema: PickDraft, schemaName: 'meeting_pick' };
       if (!deps.traceLlm || !deps.llm.streamJson) return { tries, draft: decodeDraft(await deps.llm.generateJson(req), s.from), calls: (s.calls ?? 0) + 1 };
@@ -310,7 +314,8 @@ export function buildPickGraph(deps: PickDeps) {
   const finish = async (s: PickStateType): Promise<Partial<PickStateType>> => {
     const ok = !s.blocked && !!s.draft && checkDraft(s.draft, s.from);
     if (s.draft && !ok && !s.blocked) console.info(`3단계 고르기: ${s.tries}번 모두 형식이 틀려 규칙으로 대신함`);
-    const result = ensureOwnLimits(ensureMust(ok ? acceptDraft(s.who, s.from, s.draft!, s.calls ?? 0) : { ...rulePick(s.who, s.from), llmCalls: s.calls ?? 0 }, s.who, s.from), s.who, s.from);
+    const made = s.savedPick ? { ...s.savedPick, llmCalls: 0 } : ok ? acceptDraft(s.who, s.from, s.draft!, s.calls ?? 0) : { ...rulePick(s.who, s.from), llmCalls: s.calls ?? 0 };
+    const result = ensureOwnLimits(ensureMust(made, s.who, s.from), s.who, s.from);
     const agentId = agentIdOf(s.who.memberId);
     const byId = new Map([...s.from.candidates, ...s.from.lodgings].map((c) => [c.id, c]));
     const focusOf = (id: string) => {
@@ -335,6 +340,15 @@ export function buildPickGraph(deps: PickDeps) {
     .addConditionalEdges('choose', retryOrFinish, ['choose', 'finish'])
     .addEdge('finish', END)
     .compile();
+}
+
+/** LLM_REPLAY: 지난 결과의 장소가 지금 후보(숙소는 숙소 후보)에 모두 있어야 다시 씀 (없으면 null → 규칙 고르기) */
+export function savedPickFor(saved: PickResult | undefined, pool: RetrieveResult): PickResult | null {
+  if (!saved) return null;
+  const ids = new Set(pool.candidates.map((c) => c.id));
+  const lodgings = new Set(pool.lodgings.map((c) => c.id));
+  const fits = saved.picks.length === PICK.count && saved.picks.every((p) => ids.has(p.id)) && (!saved.lodging || lodgings.has(saved.lodging.id));
+  return fits ? saved : null;
 }
 
 /** 4명의 고른 결과를 후보 보드로 모음 (명세서 board.updated: 반응은 4단계에서 채움) */

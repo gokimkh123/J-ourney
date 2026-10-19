@@ -119,6 +119,7 @@
     <p class="note">J-ourney 서버 · 이 PC에서만 열림 (DEV_UI)</p>
     <h1>회의 엔진 단계별 시험</h1>
     <p class="muted">1–15단계를 하나씩 실제 서버로 실행해 봅니다. 결과는 실제 DB·API 값이고, 아직 만들지 않은 단계는 잠겨 있습니다.</p>
+    <p class="pill" id="modeNote" hidden>LLM 0회 모드 (LLM_REPLAY): 같은 여행의 지난 회의에서 AI가 고른 결과를 다시 쓰고, 없으면 규칙으로 고름. 성향 카드도 같은 응답으로 AI가 만든 카드를 다시 씀</p>
   </header>
 
   <section class="card" aria-labelledby="t-steps">
@@ -141,7 +142,7 @@ const STEPS = [
   { n: 2, name: '후보 찾기', kind: 'code', live: true, desc: 'DB·인기도·혼잡도 → 40곳' },
   { n: 3, name: '고르기 ×4', kind: 'llm', live: true, desc: 'AI 4명이 각자 3곳 + 숙소' },
   { n: 4, name: '후보 보드', kind: 'code', live: true, desc: '4명 반응 👍 ⚠ ✕ · 회의 안건' },
-  { n: 5, name: '사람 확인', kind: 'human', desc: '빼기·넣기 (interrupt)' },
+  { n: 5, name: '사람 확인', kind: 'human', live: true, desc: '안건마다 남김·뺌 (interrupt)' },
   { n: 6, name: '일정 배치', kind: 'code', desc: 'A안·B안 시간 계산' },
   { n: 7, name: '평가 1라운드', kind: 'llm', desc: '4명 찬반·요청' },
   { n: 8, name: '집계', kind: 'code', desc: '만족도 계산' },
@@ -154,6 +155,10 @@ const STEPS = [
   { n: 15, name: '확정', kind: 'end', desc: '일정 확정' },
 ];
 const KIND = { code: '코드', llm: 'LLM', human: '사람', end: '끝' };
+/* 서버 실행 방식: LLM_REPLAY면 LLM을 부르지 않고 지난 결과를 다시 씀 (GET /dev/meeting/mode) */
+let MODE = { replay: false };
+const runText = (steps) => (MODE.replay ? `회의 실행 (${steps}, 저장된 결과 · LLM 0회)` : `회의 실행 (${steps}, 실제 LLM)`);
+const pickSource = (p) => (p.savedFrom ? '<span class="ok">저장된 AI 결과</span>' : p.source === 'llm' ? '<span class="ok">AI가 고름</span>' : MODE.replay ? '<span class="warn">지난 AI 결과 없음 · 규칙</span>' : '<span class="warn">규칙으로 대신함</span>');
 const KEY = 'journey-dev-meeting';
 let cur = 1;
 let saved = load();
@@ -197,7 +202,7 @@ function nextSaturday() {
 async function renderStep1() {
   const p = $('panel');
   p.innerHTML = `<h2>1. 준비 <span class="k code">코드</span></h2>
-    <p class="muted">시연 여행을 만들면 방장(민수) + 가상 구성원 3명(지은·현우·서연)이 생깁니다. 방장 성향 카드는 실제 API로 만들어 <b>LLM 1회</b>가 쓰입니다 (구성원당 2회 상한). 한 번 만든 여행은 이 브라우저에 저장해 다시 씁니다.</p>
+    <p class="muted">시연 여행을 만들면 방장(민수) + 가상 구성원 3명(지은·현우·서연)이 생깁니다. ${MODE.replay ? '방장 성향 카드는 실제 API로 만들며 <b>LLM 0회</b>입니다 (같은 응답으로 AI가 만든 카드가 있으면 그 카드, 없으면 규칙 카드).' : '방장 성향 카드는 실제 API로 만들어 <b>LLM 1회</b>가 쓰입니다 (구성원당 2회 상한).'} 한 번 만든 여행은 이 브라우저에 저장해 다시 씁니다.</p>
     <div class="row"><button class="btn primary" id="mk">새 시연 여행 만들기</button>${saved ? '<span class="pill">저장된 여행 있음</span>' : ''}<span id="mkMsg" class="note"></span></div>
     <div id="trip"></div>`;
   $('mk').onclick = async () => {
@@ -299,6 +304,7 @@ function showRetrieve() {
 /* LangGraph 실행 보기: 노드·연결은 서버 그래프(GET /dev/meeting/graph), 노드 안의 세부 단계와 숫자는 실제 실행 결과 */
 const STATE_KEYS = [
   ['tripId', 'START'], ['conditions', 'prepare'], ['destination', 'prepare'], ['members', 'prepare'], ['pool', 'retrieve'], ['picks', 'pick'], ['board', 'gather'],
+  ['reviewRequest', 'react'], ['reviewDecision', 'review'],
 ];
 const STAGE_TEXT = { planning: '준비', searching: '후보 받음', picking: '고르는 중', done: '고름' };
 const NODE_VIEW = {
@@ -306,7 +312,7 @@ const NODE_VIEW = {
     desc: 'AI 4명이 각자 성향으로 40곳 중 3곳 + 숙소를 고름 (사람마다 서브그래프 choose → 형식이 틀리면 1번 더 → finish, 4명 동시에)',
     subs: (d) => (d?.picks ?? [null, null, null, null]).map((p, i) => {
       const who = d?.members?.find((m) => m.memberId === p?.memberId);
-      return [who ? `${who.nickname} AI` : `AI ${i + 1}`, '', p ? `${p.source === 'llm' ? 'AI' : '규칙'} · ${p.picks.map((x) => nameOfPlace(d, x.id)).join(', ')}` : '', p ? p.memberId : ''];
+      return [who ? `${who.nickname} AI` : `AI ${i + 1}`, '', p ? `${p.savedFrom ? 'AI(저장)' : p.source === 'llm' ? 'AI' : '규칙'} · ${p.picks.map((x) => nameOfPlace(d, x.id)).join(', ')}` : '', p ? p.memberId : ''];
     }),
   },
   react: {
@@ -320,6 +326,14 @@ const NODE_VIEW = {
         ['반응 점수 (6단계로 넘김)', '', d?.scores ? `일정안에서 뺄 곳 ${d.scores.filter((x) => x.blocked).length}곳` : ''],
       ];
     },
+  },
+  review: {
+    desc: '고를 안건(장소 안건)이 있으면 interrupt()로 회의를 멈추고(상태는 체크포인트에 저장) 4명의 남김·뺌을 받아 다수결로 정한 뒤 이어서 실행 (코드, LLM 0회)',
+    subs: (d) => [
+      ['멈춤 · 사람 확인 요청 (review.requested)', '', d?.review ? `안건 ${d.review.items.length}개` : d?.reviewDecision ? '마감됨' : ''],
+      ['응답 받기 (review.cast) · 다수결, 2:2면 방장', '', d?.reviewDecision ? `남김 ${d.reviewDecision.kept.length} · 뺌 ${d.reviewDecision.dropped.length}` : ''],
+      ['이어서 실행 (Command resume) · 뺀 곳 지움', '', d?.reviewDecision ? `보드 ${d.board.candidates.length}곳` : ''],
+    ],
   },
   gather: {
     desc: '4명이 고른 곳을 후보 보드로 모음 (여러 명이 고른 곳은 함께 표시, 반응은 4단계에서)',
@@ -358,8 +372,9 @@ let graphShape = null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function nodeOrder() {
-  // START에서 연결을 따라가며 순서를 정함 (지금은 갈래가 없음, 3단계부터 갈래가 생기면 넓게 그림)
-  const next = Object.fromEntries(graphShape.edges.map((e) => [e.from, e.to]));
+  // START에서 연결을 따라가며 순서를 정함. 갈래(4단계 → 사람 확인 또는 END)는 END가 아닌 쪽을 따라 그림
+  const next = {};
+  for (const e of graphShape.edges) if (!(e.from in next) || next[e.from] === '__end__') next[e.from] = e.to;
   const order = [];
   for (let id = '__start__'; id && !order.includes(id); id = next[id]) order.push(id);
   return order;
@@ -375,7 +390,7 @@ function drawFlow(data) {
     const view = NODE_VIEW[id] ?? { desc: '', subs: () => [] };
     const subs = view.subs(data);
     return `${edge}<div class="lg-node" data-node="${esc(id)}">
-      <div class="lg-head"><b>${m.step ? m.step + '단계 · ' : ''}${esc(m.label)} <span style="color:#5F7183">(${esc(id)})</span></b><span class="lg-tag ${m.kind === 'llm' ? 'llm' : ''}">${m.kind === 'llm' ? 'LLM 노드' : '코드 노드 · LLM 0회'}</span></div>
+      <div class="lg-head"><b>${m.step ? m.step + '단계 · ' : ''}${esc(m.label)} <span style="color:#5F7183">(${esc(id)})</span></b><span class="lg-tag ${m.kind === 'llm' ? 'llm' : ''}">${m.kind === 'llm' ? 'LLM 노드' : m.kind === 'human' ? '사람 확인 노드 · LLM 0회 (멈춤)' : '코드 노드 · LLM 0회'}</span></div>
       <div style="color:#8FA0B0">${esc(view.desc)}</div>
       <div class="lg-bar"><span></span></div>
       <ul class="lg-sub">${subs.map(([t, src, v, key]) => `<li${key ? ` data-row="${esc(key)}"` : ''}><span class="ic">·</span><span>${esc(t)}${src ? `<span class="src ${src}">${src === 'db' ? 'DB' : 'API'}</span>` : ''}</span><span class="v">${esc(v)}</span></li>`).join('')}</ul>
@@ -481,9 +496,9 @@ let last3 = null;
 let agents3 = [];
 function renderStep3() {
   const p = $('panel');
-  p.innerHTML = `<h2>3. 고르기 ×4 <span class="k llm">LLM 4회 (형식이 틀리면 사람마다 1번 더)</span></h2>
+  p.innerHTML = `<h2>3. 고르기 ×4 <span class="k llm">${MODE.replay ? 'LLM 0회 (저장된 결과)' : 'LLM 4회 (형식이 틀리면 사람마다 1번 더)'}</span></h2>
     <p class="muted">준비 → 후보 찾기 → AI 4명이 동시에 각자 3곳과 숙소를 고름 → 후보 보드. 서버가 보내는 대로 위 그래프와 아래 카드가 바로 바뀝니다. 화면을 닫아도 회의는 끝까지 진행되고 기록됩니다. LLM을 못 쓰면(상한·실패) 그 사람 몫 점수 상위 3곳으로 대신하고 '규칙'으로 표시합니다.</p>
-    <div class="row"><button class="btn primary" id="run3">회의 실행 (실제 LLM)</button>
+    <div class="row"><button class="btn primary" id="run3">${runText('1–3단계')}</button>
       <label style="display:flex;flex-direction:row;align-items:center;gap:6px">보기 속도 <select id="speed3"><option value="1">실제 속도</option><option value="0.5">½ (느리게 재생)</option><option value="0.25">¼ (느리게 재생)</option><option value="0.1">1/10 (느리게 재생)</option></select></label>
       <span id="run3Msg" class="note"></span><span id="runsInfo" class="pill">실행 횟수 확인 중</span></div>
     <p class="note">각 AI 카드에 LLM이 실제로 쓰는 글자가 받는 대로 찍힙니다. '보내는 내용'을 열면 LLM에 보낸 지시문과 입력(후보 표 포함)이 그대로 보입니다. 느린 보기는 서버가 보낸 순서와 간격을 그대로 늘려 보여 주는 재생입니다 (실제 실행 시간은 실행 기록과 카드의 ms).</p>
@@ -605,9 +620,12 @@ async function runMeeting() {
       else if (line.kind === 'error') throw new Error(line.message);
       else if (line.kind === 'result') {
         last3 = line;
-        $('run3Msg').textContent = `실제 ${line.ms.toLocaleString('ko-KR')}ms · LLM ${line.llmCalls}회`;
+        $('run3Msg').textContent = `실제 ${line.ms.toLocaleString('ko-KR')}ms · LLM ${line.llmCalls}회${line.replay ? ' · 저장된 결과로 실행' : ''}${line.status === 'reviewing' ? ' · 5단계 사람 확인에서 멈춤' : ''}`;
         showPicks(line);
-        log(`끝 · LLM ${line.llmCalls}회`);
+        if (line.status === 'reviewing') {
+          q('[data-node="review"]')?.classList.add('run');
+          log(`멈춤 · 사람 확인 기다림 (안건 ${line.review.items.length}개, LLM ${line.llmCalls}회)`);
+        } else log(`끝 · LLM ${line.llmCalls}회`);
       }
     };
     // 받는 쪽: 줄마다 실제 도착 시각을 붙여 쌓음 / 보여 주는 쪽: 도착 시각 ÷ 보기 속도에 맞춰 꺼냄 (실제 속도면 받는 즉시)
@@ -658,12 +676,13 @@ function showPicks(r) {
     const a = agents3.find((x) => x.memberId === p.memberId);
     const c = a && card(a.agentId);
     if (!c) continue;
-    c.querySelector('.st').innerHTML = `${p.source === 'llm' ? '<span class="ok">AI가 고름</span>' : '<span class="warn">규칙으로 대신함</span>'} · LLM ${p.llmCalls}회`;
+    c.querySelector('.st').innerHTML = `${pickSource(p)} · LLM ${p.llmCalls}회`;
     if (p.comment) { const say = c.querySelector('.say'); say.hidden = false; say.textContent = `💬 ${p.comment}`; }
     c.querySelector('.picks').innerHTML = p.picks.map((x) => `<li><b>${esc(nameOfPlace(r, x.id))}</b> <span class="note">${esc(x.reason)}</span></li>`).join('') + (p.lodging ? `<li>🏨 <b>${esc(nameOfPlace(r, p.lodging.id))}</b> <span class="note">${esc(p.lodging.reason)}</span></li>` : '');
   }
   const nick = (agentId) => agents3.find((a) => a.agentId === agentId)?.nickname ?? agentId;
-  if (cur === 4) $('board3').innerHTML = reactBoard(r);
+  if (cur === 4 || cur === 5) $('board3').innerHTML = reactBoard(r);
+  if (cur === 5) showReview(r);
   else $('board3').innerHTML = `<h3>후보 보드 (${r.board.candidates.length}곳 · 반응은 4단계에서)</h3><div class="tw"><table><thead><tr><th>장소</th><th>고른 AI</th><th>수</th></tr></thead><tbody>${[...r.board.candidates].sort((a, b) => b.proposedBy.length - a.proposedBy.length).map((c) => `<tr><td>${esc(c.name)}</td><td>${c.proposedBy.map((id) => `<span class="pill">${esc(nick(id))}</span>`).join('')}</td><td class="n ${c.proposedBy.length > 1 ? 'best' : ''}">${c.proposedBy.length}</td></tr>`).join('')}</tbody></table></div>`;
   setKey('picks', `${r.picks.length}명`);
   setKey('board', `${r.board.candidates.length}곳`);
@@ -682,9 +701,9 @@ function rules4() {
 function renderStep4() {
   const p = $('panel');
   p.innerHTML = `<h2>4. 후보 보드 반응 <span class="k code">코드 · LLM 0회</span></h2>
-    <p class="muted">3단계 후보 보드의 장소마다 AI 4명의 반응을 규칙으로 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 정리합니다. 실행하면 1–4단계가 함께 돌고 LLM은 3단계의 4회뿐입니다.</p>
+    <p class="muted">3단계 후보 보드의 장소마다 AI 4명의 반응을 규칙으로 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 정리합니다. 실행하면 1–4단계가 함께 돌고 ${MODE.replay ? '저장된 결과를 다시 써 LLM은 0회입니다' : 'LLM은 3단계의 4회뿐입니다'}.</p>
     <div id="rules4">${rules4()}</div>
-    <div class="row"><button class="btn primary" id="run3">회의 실행 (1–4단계, 실제 LLM)</button>
+    <div class="row"><button class="btn primary" id="run3">${runText('1–4단계')}</button>
       <label style="display:flex;flex-direction:row;align-items:center;gap:6px">보기 속도 <select id="speed3"><option value="1">실제 속도</option><option value="0.5">½ (느리게 재생)</option><option value="0.25">¼ (느리게 재생)</option></select></label>
       <span id="run3Msg" class="note"></span><span id="runsInfo" class="pill">실행 횟수 확인 중</span></div>
     <div id="board3"></div>
@@ -714,15 +733,134 @@ function reactBoard(r) {
 }
 const nameOfMember = (memberId) => agents3.find((a) => a.memberId === memberId)?.nickname ?? memberId;
 
+/* 5단계: 1–4단계를 실행하면 고를 안건이 있을 때 회의가 멈춤 (LangGraph interrupt). 4명 몫 남김·뺌을 내고 마감하면 이어서 실행함 (LLM 0회)
+   아래 'WebSocket으로 받기'는 앱과 같은 실시간 연결(/api/v1/trips/{tripId}/ws)로 서버가 보내는 이벤트를 그대로 보여 줌 */
+let review5 = null;
+let ws5 = null;
+let wsLast = 0;
+let wsPings = 0;
+function renderStep5() {
+  const p = $('panel');
+  p.innerHTML = `<h2>5. 사람 확인 <span class="k human">사람 · LLM 0회</span></h2>
+    <p class="muted">4단계 안건 중 장소 안건(⚠·✕가 붙은 곳 · 여행지 밖 · 이름이 달라 AI가 맞춘 꼭 지킬 곳)이 있으면 회의가 멈춥니다. 4명 몫의 남김·뺌을 골라 보내면 안건마다 다수결로 정하고(2:2면 방장), 멈춘 곳에서 이어서 실행합니다. 방장 '진행'은 응답하지 않은 사람을 '남김'으로 셉니다. 안건이 없으면 멈추지 않고 끝납니다.</p>
+    <div class="row"><button class="btn primary" id="run3">${runText('1–5단계')}</button>
+      <label style="display:flex;flex-direction:row;align-items:center;gap:6px">보기 속도 <select id="speed3"><option value="1">실제 속도</option><option value="0.5">½ (느리게 재생)</option></select></label>
+      <span id="run3Msg" class="note"></span><span id="runsInfo" class="pill">실행 횟수 확인 중</span></div>
+    <div id="review5"><div class="locked-box">실행하면 사람 확인 안건이 여기에 나옵니다.</div></div>
+    <h3>WebSocket으로 받기 (앱과 같은 실시간 연결)</h3>
+    <div class="row"><button class="btn" id="ws5btn">연결</button><span id="ws5state" class="note">연결 안 함</span><span id="ws5ping" class="pill">ping 0</span></div>
+    <pre id="ws5log" class="typing" style="max-height:220px">서버 → 화면으로 오는 이벤트가 여기에 찍힙니다.</pre>
+    <div id="board3"></div>
+    <div id="agents3" class="members"></div>`;
+  loadRuns();
+  $('run3').onclick = runMeeting;
+  $('ws5btn').onclick = connectWs;
+  if (last3) showPicks(last3);
+}
+function wsLine(text) {
+  const box = $('ws5log');
+  if (!box) return;
+  if (box.dataset.started !== '1') { box.textContent = ''; box.dataset.started = '1'; }
+  box.textContent += `${new Date().toLocaleTimeString('ko-KR')}  ${text}\n`;
+  box.scrollTop = box.scrollHeight;
+}
+function connectWs() {
+  if (!saved) { $('ws5state').innerHTML = '<span class="bad">1단계에서 시연 여행부터 만들어 주세요</span>'; return; }
+  ws5?.close();
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v1/trips/${encodeURIComponent(saved.tripId)}/ws?token=${encodeURIComponent(saved.token)}&afterSeq=${wsLast}`;
+  const ws = new WebSocket(url);
+  ws5 = ws;
+  $('ws5state').textContent = '연결 중…';
+  ws.onopen = () => { if ($('ws5state')) $('ws5state').innerHTML = `<span class="ok">연결됨</span> · afterSeq=${wsLast} 뒤부터 받음`; wsLine(`연결됨 (afterSeq=${wsLast})`); };
+  ws.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.type === 'ping') { wsPings++; if ($('ws5ping')) $('ws5ping').textContent = `ping ${wsPings}`; return; }
+    wsLast = Math.max(wsLast, e.seq);
+    const extra = e.type === 'review.cast' ? ` · 응답 ${e.data.answered}/${e.data.total}` : e.type === 'review.requested' ? ` · 안건 ${e.data.items.length}개` : e.type === 'review.closed' ? ` · 남김 ${e.data.kept.length} · 뺌 ${e.data.dropped.length}` : '';
+    wsLine(`#${e.seq} ${e.type}${extra}`);
+  };
+  ws.onclose = (e) => { if (ws5 === ws && $('ws5state')) $('ws5state').textContent = `끊김 (코드 ${e.code})`; wsLine(`끊김 (코드 ${e.code})`); };
+}
+function showReview(r) {
+  const box = $('review5');
+  if (!box) return;
+  if (r.status !== 'reviewing' || !r.review) {
+    review5 = null;
+    box.innerHTML = r.reviewDecision ? decisionHtml(r) : '<p class="note">고를 안건이 없어 멈추지 않고 끝났습니다 (5단계 건너뜀).</p>';
+    return;
+  }
+  const people = r.members;
+  review5 = { meetingId: r.meetingId, items: r.review.items, memos: r.review.memos, members: people };
+  box.innerHTML = `<h3>사람 확인 · 회의가 멈춰 있음 (안건 ${r.review.items.length}개)</h3>
+    <p class="note">시연 여행이라 방장이 4명 몫을 대신 냅니다 (실제 앱은 각자 POST /meetings/{id}/review). 체크를 끄면 그 사람은 응답하지 않은 것으로 봅니다.</p>
+    <div class="tw"><table><thead><tr><th>안건</th>${people.map((m, i) => `<th><label style="display:flex;gap:4px;align-items:center"><input type="checkbox" data-resp="${esc(m.memberId)}" checked>${esc(m.nickname)}${i === 0 ? ' (방장)' : ''}</label></th>`).join('')}</tr></thead>
+    <tbody>${r.review.items.map((it) => `<tr><td><b>${esc(it.name)}</b><br><span class="note">${esc(it.text)}</span>${it.consequence ? `<br><span class="bad">${esc(it.consequence)}</span>` : ''}</td>${people.map((m) => `<td><select data-m="${esc(m.memberId)}" data-p="${esc(it.placeId)}"><option value="keep">남김</option><option value="drop">뺌</option></select></td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    ${r.review.memos.length ? `<h3>메모 (보기만 함)</h3><ul>${r.review.memos.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    <div class="row"><button class="btn primary" id="send5">체크한 사람 응답 보내기</button><button class="btn" id="close5">보내고 방장 '진행' (안 낸 사람은 남김)</button><span id="msg5" class="note"></span></div>`;
+  $('send5').onclick = () => submitReview(false);
+  $('close5').onclick = () => submitReview(true);
+}
+function decisionHtml(r) {
+  const d = r.reviewDecision;
+  const items = review5?.items ?? [];
+  const nameOf = (pid) => items.find((i) => i.placeId === pid)?.name ?? pid;
+  const nick = (id) => r.members?.find((m) => m.memberId === id)?.nickname ?? id;
+  return `<h3>사람 확인 결과 · ${d.closedBy === 'all' ? '4명 모두 응답해 자동 마감' : "방장 '진행'으로 마감"}</h3>
+    <div class="tw"><table><thead><tr><th>안건</th><th>남김</th><th>뺌</th><th>결과</th></tr></thead><tbody>${d.votes.map((v) => `<tr><td>${esc(nameOf(v.placeId))}</td><td class="n">${v.keep}</td><td class="n">${v.drop}</td><td>${v.kept ? '<span class="ok">남김</span>' : '<span class="bad">뺌</span>'}${v.tie ? ' <span class="note">(같아서 방장)</span>' : ''}</td></tr>`).join('')}</tbody></table></div>
+    <p class="note">응답하지 않아 남김으로 센 사람: ${d.defaulted.length ? d.defaulted.map((id) => esc(nick(id))).join(', ') : '없음'} · 이어서 실행한 뒤 후보 보드 ${r.board.candidates.length}곳 (위 표)</p>`;
+}
+async function submitReview(close) {
+  if (!review5) return;
+  const box = $('review5');
+  const responses = review5.members
+    .filter((m) => box.querySelector(`[data-resp="${m.memberId}"]`).checked)
+    .map((m) => ({ memberId: m.memberId, choices: review5.items.map((it) => ({ placeId: it.placeId, keep: box.querySelector(`select[data-m="${m.memberId}"][data-p="${it.placeId}"]`).value === 'keep' })) }));
+  $('send5').disabled = true; $('close5').disabled = true;
+  $('msg5').textContent = '보내는 중…';
+  try {
+    const res = await fetch('/api/v1/dev/meeting/review', { method: 'POST', headers: { Authorization: `Bearer ${saved.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ meetingId: review5.meetingId, responses, close }) });
+    if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error ? `${j.error.code}: ${j.error.message}` : `HTTP ${res.status}`); }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    const handle = (line) => {
+      if (line.kind === 'event') { onEvent(line.event); return; }
+      if (line.kind === 'node') { onNode(line.node, line.ms); return; }
+      if (line.kind === 'error') throw new Error(line.message);
+      if (line.kind !== 'result') return;
+      if (line.status === 'reviewing') { $('msg5').textContent = `응답 ${line.meeting.review.responded.length}/${line.meeting.review.total} · 남은 사람이 내거나 방장 '진행'을 누르면 마감`; return; }
+      last3 = { ...last3, ...line };
+      $('board3').innerHTML = reactBoard(last3);
+      $('review5').innerHTML = decisionHtml(last3);
+      setKey('reviewDecision', `남김 ${line.reviewDecision.kept.length} · 뺌 ${line.reviewDecision.dropped.length}`);
+      log(`이어서 실행 끝 · LLM ${line.llmCalls}회 (5단계 0회)`);
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) { handle(JSON.parse(buf.slice(0, nl))); buf = buf.slice(nl + 1); }
+    }
+  } catch (err) { $('msg5') && ($('msg5').innerHTML = `<span class="bad">${esc(err.message)}</span>`); }
+  if ($('send5')) { $('send5').disabled = false; $('close5').disabled = false; }
+}
+
 function render() {
   renderSteps();
   if (cur === 1) renderStep1();
   else if (cur === 2) renderStep2();
   else if (cur === 3) renderStep3();
   else if (cur === 4) renderStep4();
+  else if (cur === 5) renderStep5();
 }
 render();
 loadGraph();
+api('GET', '/dev/meeting/mode').then((m) => {
+  MODE = m;
+  $('modeNote').hidden = !MODE.replay;
+  if (MODE.replay) render();
+}).catch(() => { /* 모드를 못 읽으면 실제 LLM 문구 그대로 */ });
 </script>
 </body>
 </html>

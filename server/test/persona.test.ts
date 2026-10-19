@@ -4,6 +4,7 @@ import { categories, llmIpUsage, members, personas, places, trips } from '../src
 import { ApiError } from '../src/lib/errors.js';
 import { buildProfile, pickChips, readAnswers, scoreTraits } from '../src/persona/score.js';
 import { maskPersonal } from '../src/persona/write.js';
+import { createApp } from '../src/app.js';
 import { config } from '../src/config.js';
 import { createLangChainLlm, inputTokenUpperBound, LlmTokenLimitError } from '../src/llm/client.js';
 import type { MustKeepRule } from '../src/persona/types.js';
@@ -287,6 +288,22 @@ describe('성향 질문·페르소나 API', () => {
     const rows = await db.select().from(llmIpUsage);
     expect(rows.map((r) => r.count).sort()).toEqual([1, 2]);
     expect(rows.every((r) => r.ipHash.length === 32 && !r.ipHash.includes('203.0.113.7'))).toBe(true);
+  });
+
+  it('LLM_REPLAY: 같은 응답으로 AI가 만든 카드가 있으면 다른 구성원에게도 그 카드를 쓰고(좋아요 순서 무관), 없으면 규칙 카드 (LLM 0회)', async () => {
+    const llm = fakeLlm(() => draft());
+    const { app, db } = await createTestApp({ llm });
+    const replay = createApp({ db, rateLimitPerMinute: 1000, llm, llmReplay: true });
+    const submit = async (target: typeof app, answers: unknown) => {
+      const token = (await call(target, 'POST', '/trips', { title: '부산', nickname: '민수' })).body.token as string;
+      return (await call(target, 'POST', '/me/persona', { answers }, token)).body.persona;
+    };
+    const made = await submit(app, seoyeon(MUST_KEEP));
+    expect(made.source).toBe('llm');
+    const reused = await submit(replay, answersOf(SEOYEON, ['like_cafe', 'like_spa', 'like_sea'], ['dislike_crowd', 'dislike_walk'], MUST_KEEP));
+    expect(reused).toMatchObject({ source: 'llm', title: made.title, catchphrase: made.catchphrase, tmi: made.tmi, mustKeep: made.mustKeep });
+    expect((await submit(replay, seoyeon('다른 바람'))).source).toBe('rule');
+    expect(llm.calls).toBe(1);
   });
 
   it('개발 기간(IP당 0회)에는 터널 요청은 LLM 없이 규칙 카드, 이 PC 요청은 AI 카드', async () => {

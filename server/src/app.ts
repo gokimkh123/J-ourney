@@ -8,7 +8,11 @@ import { ApiError } from './lib/errors.js';
 import { writeRateLimit } from './lib/rate-limit.js';
 import { nowKst } from './lib/time.js';
 import type { LlmClient } from './llm/client.js';
+import { buildMeetingGraph } from './meeting/graph.js';
+import { EventHub } from './meeting/live.js';
+import { meetingService } from './meeting/service.js';
 import { meetingDevRoutes } from './routes/meeting-dev.js';
+import { meetingRoutes } from './routes/meetings.js';
 import { personaRoutes } from './routes/persona.js';
 import type { TourClient } from './tour/client.js';
 import { tripRoutes } from './routes/trips.js';
@@ -24,6 +28,8 @@ export interface AppOptions {
   devUiTunnel?: boolean;
   /** null이면 LLM 없이 규칙 카드만 만듦 */
   llm?: LlmClient | null;
+  /** true면 LLM을 부르지 않고 미리 나온 결과(지난 회의의 AI 고르기, 같은 응답의 AI 카드)를 다시 씀 (LLM_REPLAY) */
+  llmReplay?: boolean;
   llmDailyLimit?: number;
   llmCardsPerMember?: number;
   llmPerIpDaily?: number;
@@ -37,6 +43,10 @@ export interface AppOptions {
   checkpointer?: BaseCheckpointSaver;
   meetingRunsPerTrip?: number;
   meetingLlmCallsPerRun?: number;
+  /** 회의 이벤트를 실시간 연결(WebSocket)로 보내는 곳. 없으면 새로 만듦 */
+  hub?: EventHub;
+  /** 실시간 연결 ping 간격 (시험에서 줄일 때만, 기본 명세서 25초) */
+  livePingMs?: number;
 }
 
 const devUiFile = new URL('../dev-ui/index.html', import.meta.url);
@@ -54,6 +64,7 @@ export function createApp({
   devUi = false,
   devUiTunnel = false,
   llm = null,
+  llmReplay = config.llmReplay,
   llmDailyLimit = config.llmDailyLimit,
   llmCardsPerMember = config.llmCardsPerMember,
   llmPerIpDaily = config.llmPerIpDaily,
@@ -64,6 +75,8 @@ export function createApp({
   checkpointer = new MemorySaver(),
   meetingRunsPerTrip = config.meetingRunsPerTrip,
   meetingLlmCallsPerRun = config.meetingLlmCallsPerRun,
+  hub = new EventHub(),
+  livePingMs,
 }: AppOptions) {
   const api = new Hono();
   api.use('*', writeRateLimit(rateLimitPerMinute));
@@ -82,11 +95,14 @@ export function createApp({
 
   if (db) {
     api.route('/', tripRoutes(db));
-    api.route('/', personaRoutes({ db, llm, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret }));
-    if (devUi) {
-      const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
-      api.route('/', meetingDevRoutes({ db, crowdClient, llm: meetingLlm ?? llm, limits, checkpointer, allowTunnel: devUiTunnel }));
-    }
+    // LLM_REPLAY: LLM 호출기를 넘기지 않아 어떤 경로도 LLM을 부르지 않음 (미리 나온 결과가 없으면 규칙)
+    api.route('/', personaRoutes({ db, llm: llmReplay ? null : llm, replay: llmReplay, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret }));
+    // 회의 그래프와 실행기는 서버가 켜질 때 한 번만 만들고 공식 경로·시험 경로가 함께 씀
+    const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
+    const graph = buildMeetingGraph({ db, crowdClient, llm: llmReplay ? null : (meetingLlm ?? llm), limits, checkpointer, traceLlm: true });
+    const service = meetingService({ db, graph, limits, publisher: hub, replay: llmReplay });
+    api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs }));
+    if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: devUiTunnel, replay: llmReplay }));
   } else {
     api.all('*', () => {
       throw new ApiError('INTERNAL_ERROR', 'DB가 설정되지 않아 사용할 수 없음');

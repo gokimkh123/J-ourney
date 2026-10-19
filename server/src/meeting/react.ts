@@ -72,36 +72,53 @@ export function reactionOf(c: Candidate, m: MemberInput, opts: { lodging: boolea
 }
 
 /**
- * 회의 안건: ✕가 붙은 곳 먼저, 그다음 ⚠가 많은 곳(여행지 밖이면 ⚠ 하나로 셈, 같으면 고른 사람이 많은 곳), 최대 agendaMax개. 문장은 정해진 틀에 값만 넣음
- * outside: 보드 장소 id → 여행지 밖 시·군·구 이름 · notes: 장소가 없는 메모 (뒤에 붙임)
+ * 회의 안건: ✕가 붙은 곳 먼저, 그다음 ⚠가 많은 곳(여행지 밖·이름 맞춤이면 ⚠ 하나로 셈, 같으면 고른 사람이 많은 곳), 최대 agendaMax개. 문장은 정해진 틀에 값만 넣음
+ * outside: 보드 장소 id → 여행지 밖 시·군·구 이름 · named: 보드 장소 id → 이름이 달라 AI가 맞춘 꼭 지킬 곳 문구
+ * mustBy: 보드 장소 id → 그 곳이 꼭 지킬 곳인 에이전트 (고른 사람 자신의 ⚠·✕는 '꼭 지킬 곳이지만'으로 따로 적음) · notes: 장소가 없는 메모 (뒤에 붙임)
  */
 export function agendaOf(
   candidates: readonly BoardCandidate[],
   members: readonly MemberInput[],
-  extra: { outside?: ReadonlyMap<string, string>; notes?: readonly string[] } = {},
+  extra: {
+    outside?: ReadonlyMap<string, string>;
+    named?: ReadonlyMap<string, string>;
+    mustBy?: ReadonlyMap<string, ReadonlySet<string>>;
+    notes?: readonly string[];
+  } = {},
 ): Board['agenda'] {
   const nick = new Map(members.map((m) => [agentIdOf(m.memberId), m.nickname]));
   const mark: Record<ReactionKind, string> = { block: '✕', warn: '⚠', like: '👍' };
   const items = candidates
-    .map((c) => ({ c, blocks: c.reactions.filter((r) => r.kind === 'block'), warns: c.reactions.filter((r) => r.kind === 'warn'), outside: extra.outside?.get(c.placeId) ?? null }))
-    .filter((x) => x.blocks.length + x.warns.length > 0 || x.outside)
+    .map((c) => ({
+      c,
+      blocks: c.reactions.filter((r) => r.kind === 'block'),
+      warns: c.reactions.filter((r) => r.kind === 'warn'),
+      outside: extra.outside?.get(c.placeId) ?? null,
+      named: extra.named?.get(c.placeId) ?? null,
+    }))
+    .filter((x) => x.blocks.length + x.warns.length > 0 || x.outside || x.named)
     .sort(
       (a, b) =>
         b.blocks.length - a.blocks.length ||
-        b.warns.length + Number(!!b.outside) - (a.warns.length + Number(!!a.outside)) ||
+        b.warns.length + Number(!!b.outside) + Number(!!b.named) - (a.warns.length + Number(!!a.outside) + Number(!!a.named)) ||
         b.c.proposedBy.length - a.c.proposedBy.length ||
         a.c.placeId.localeCompare(b.c.placeId),
     )
     .slice(0, REACT.agendaMax)
-    .map(({ c, blocks, warns, outside }) => {
+    .map(({ c, blocks, warns, outside, named }) => {
       const by = c.proposedBy.map((id) => nick.get(id) ?? id).join('·');
-      const who = [...blocks, ...warns].map((r) => `${nick.get(r.agentId) ?? r.agentId} ${mark[r.kind]} ${r.reason}`).join(' · ');
-      return { placeId: c.placeId, text: `${c.name} — ${by} 고름${outside ? ` · 여행지 밖(${outside})` : ''}${who ? ` ↔ ${who}` : ''}` };
+      // 고른 사람 자신에게 걸린 곳은 그 사람의 꼭 지킬 곳일 때뿐임 (3단계가 자기 조건에 걸린 곳을 바꾸고 꼭 지킬 곳만 남김)
+      const own = (r: Reaction) => c.proposedBy.includes(r.agentId) && !!extra.mustBy?.get(c.placeId)?.has(r.agentId);
+      const reacted = [...blocks, ...warns];
+      const self = reacted.filter(own).map((r) => `${nick.get(r.agentId) ?? r.agentId}의 꼭 지킬 곳이지만 ${mark[r.kind]} ${r.reason}`).join(' · ');
+      const who = reacted.filter((r) => !own(r)).map((r) => `${nick.get(r.agentId) ?? r.agentId} ${mark[r.kind]} ${r.reason}`).join(' · ');
+      const text = `${c.name} — ${by} 고름${outside ? ` · 여행지 밖(${outside})` : ''}${named ? ` · ${named}` : ''}${self ? ` · ${self}` : ''}${who ? ` ↔ ${who}` : ''}`;
+      return { placeId: c.placeId, text };
     });
   return [...items, ...(extra.notes ?? []).map((text) => ({ placeId: null, text }))];
 }
 
-/** 4단계: 후보 보드의 장소마다 4명의 반응을 붙이고, ⚠·✕가 붙은 곳·여행지 밖에서 넣은 곳을 회의 안건으로 정리함 (코드, LLM 0회) */
+/** 4단계: 후보 보드의 장소마다 4명의 반응을 붙이고, ⚠·✕가 붙은 곳·여행지 밖에서 넣은 곳·이름이 달라 AI가 맞춘 꼭 지킬 곳을 회의 안건으로 정리함 (코드, LLM 0회) */
 export function reactBoard(board: Board, pool: RetrieveResult, members: readonly MemberInput[]): Board {
   const spots = new Map(pool.candidates.map((c) => [placeIdOf(c.id), c]));
   const lodgings = new Map(pool.lodgings.map((c) => [placeIdOf(c.id), c]));
@@ -119,6 +136,22 @@ export function reactBoard(board: Board, pool: RetrieveResult, members: readonly
   // 여행지 밖 이름에 편도 어림을 붙여 사람이 5단계에서 넣을지 정하게 함 (예: 영도구, 편도 약 25분)
   const outside = new Map([...pool.candidates, ...pool.lodgings].flatMap((c) => (c.outside ? [[placeIdOf(c.id), c.outsideMinutes !== undefined ? `${c.outside}, 편도 약 ${c.outsideMinutes}분` : c.outside] as const] : [])));
   const nick = new Map(members.map((m) => [m.memberId, m.nickname]));
+  const onBoard = new Set(candidates.map((c) => c.placeId));
+  // 이름이 달라 AI가 맞춘 꼭 지킬 곳: 보드에 오른 곳은 장소 안건(5단계에서 사람이 맞는지 확인), 오르지 않았으면 메모
+  const named = new Map<string, string>();
+  const namedNotes: string[] = [];
+  for (const r of pool.nameMatches ?? []) {
+    const text = `이름이 달라 AI가 맞춘 ${nick.get(r.memberId) ?? r.memberId}의 꼭 지킬 곳 ('${r.keyword}')`;
+    const ids = (r.ids ?? []).map(placeIdOf).filter((id) => onBoard.has(id));
+    for (const id of ids) named.set(id, named.has(id) ? `${named.get(id)} · ${text}` : text);
+    if (!ids.length) namedNotes.push(`${nick.get(r.memberId) ?? r.memberId}의 꼭 지킬 것 '${r.keyword}' → ${r.places.join('·')} (이름이 달라 AI가 맞춤)`);
+  }
+  const mustBy = new Map(
+    candidates.map((b) => {
+      const c = spots.get(b.placeId) ?? lodgings.get(b.placeId);
+      return [b.placeId, new Set(members.filter((m) => c?.marks[m.memberId]?.some((k) => k.kind === 'must')).map((m) => agentIdOf(m.memberId)))] as const;
+    }),
+  );
   const notes = (pool.outsideRules ?? [])
     .filter((r) => r.placeId === null)
     .map((r) =>
@@ -126,11 +159,10 @@ export function reactBoard(board: Board, pool: RetrieveResult, members: readonly
         ? `${nick.get(r.memberId) ?? r.memberId}의 꼭 지킬 것 '${r.label}' — 가장 가까운 곳도 여행지 밖(${r.district}) 편도 약 ${r.minutes}분이라 후보에 넣지 못함`
         : `${nick.get(r.memberId) ?? r.memberId}의 꼭 지킬 것 '${r.label}' — 여행지 밖(${r.district})이라 후보에 넣지 못함`,
     )
-    // 이름이 달라 AI가 맞춘 꼭 지킬 곳은 사람이 확인할 수 있게 메모로 보임 (5단계 사람 확인 대상)
-    .concat((pool.nameMatches ?? []).map((r) => `${nick.get(r.memberId) ?? r.memberId}의 꼭 지킬 것 '${r.keyword}' → ${r.places.join('·')} (이름이 달라 AI가 맞춤)`))
+    .concat(namedNotes)
     // 후보에 하나도 없는 꼭 지킬 것은 까닭과 함께 메모로 남김 (표시 없이 빠지지 않게)
     .concat((pool.missingRules ?? []).map((r) => `${nick.get(r.memberId) ?? r.memberId}의 꼭 지킬 것 '${r.label}' — ${r.reason}`));
-  return { candidates, agenda: agendaOf(candidates, members, { outside, notes }) };
+  return { candidates, agenda: agendaOf(candidates, members, { outside, named, mustBy, notes }) };
 }
 
 /** 반응 점수 (6단계 일정 배치에서 씀). blocked면 그 장소는 일정안에서 뺌 */
