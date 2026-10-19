@@ -10,8 +10,9 @@ import { parseBody } from '../lib/validate.js';
 import type { LlmClient } from '../llm/client.js';
 import { tunnelIp } from '../lib/rate-limit.js';
 import { ipKey, releaseIpLlm, releaseLlmCard, reserveIpLlm, reserveLlmCard, tryConsumeLlmCall } from '../llm/usage.js';
+import { ruleCategories } from '../meeting/categories.js';
 import { DISLIKE_OPTIONS, LIKE_OPTIONS, PUBLIC_QUESTIONS } from '../persona/questions.js';
-import { buildProfile, pickChips, readAnswers, scoreTraits } from '../persona/score.js';
+import { buildProfile, pickChips, readAnswers, sameAnswers, scoreTraits } from '../persona/score.js';
 import type { PersonaAnswers } from '../persona/types.js';
 import { type CardText, llmCard, ruleCard } from '../persona/write.js';
 import { memberColor } from './views.js';
@@ -53,7 +54,7 @@ async function makePersona(memberId: string, ip: string | null, answers: Persona
     let written = false;
     if (ipReserved && (await tryConsumeLlmCall(db, llmDailyLimit))) {
       try {
-        card = await llmCard(llm, traits, chips, answers);
+        card = await llmCard(llm, traits, chips, answers, await ruleCategories(db));
         written = true;
       } catch (err) {
         console.warn('LLM 카드 작성 실패, 규칙 카드로 대신함:', err instanceof Error ? err.message : err);
@@ -104,6 +105,9 @@ export function personaRoutes(deps: PersonaDeps) {
     const answers = readAnswers((await parseBody(c, answersBody)).answers);
     const [trip] = await db.select({ status: trips.status }).from(trips).where(eq(trips.id, me.tripId));
     if (trip.status !== 'preparing') throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작되어 페르소나를 바꿀 수 없음');
+    // 같은 응답으로 다시 제출하면 이전 카드를 그대로 돌려줌 (LLM을 다시 부르지 않음)
+    const [prev] = await db.select().from(personas).where(eq(personas.memberId, me.id));
+    if (prev && sameAnswers(prev.answers, answers)) return c.json({ persona: personaView(me, prev) }, 201);
     const made = await makePersona(me.id, tunnelIp(c), answers, deps);
     const [row] = await db
       .insert(personas)

@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import type { LlmClient } from '../llm/client.js';
+import type { RuleCategory } from '../meeting/categories.js';
 import { fallbackText } from './fallback.js';
 import { DISLIKE_OPTIONS, LIKE_OPTIONS } from './questions.js';
-import type { Chip, MustKeepRule, PersonaAnswers, TraitResult } from './types.js';
+import { type Chip, type MustKeepRule, type PersonaAnswers, RULE_TARGETS, type TraitResult } from './types.js';
 
-/** 카드 문장·15번 해석 결과의 길이·개수 상한 */
-export const LIMITS = { title: 12, catchphrase: 30, tmi: 30, label: 30, keyword: 20, wish: 40, rules: 3, wishes: 2 } as const;
+/** 카드 문장·15번 해석 결과의 길이·개수 상한 (codes: 규칙 하나에 고르는 분류 코드 수) */
+export const LIMITS = { title: 12, catchphrase: 30, tmi: 30, label: 30, keyword: 20, wish: 40, rules: 3, wishes: 2, codes: 5 } as const;
 /** 15번 숫자 조건의 허용 범위 (벗어나면 버림) */
 const AMOUNT_RANGE = { budget: [10000, 5000000], steps: [1000, 40000], move: [5, 180] } as const;
 const TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/;
@@ -16,24 +17,56 @@ const RULE_TYPES = ['include', 'avoid', 'time', 'budget', 'steps', 'move'] as co
  * LLM 출력 형식 (길이·범위는 아래에서 검사해 항목별로 버리거나 대신함)
  * 빈칸은 null 대신 빈 문자열·0으로 받음: Gemini는 '문자열 또는 null' 형식을 받지 못함
  */
+/** 재료·맛·식단(해산물, 매운 것, 고기, 커피 등): 맞출 코드가 없어 규칙으로 쓰지 않고 '바라는 점'으로 옮김 (LLM이 음식점 종류로 넓히지 않게 자리를 따로 줌) */
+const TASTE_TARGET = 'taste';
+const PlaceRule = z.object({
+  label: z.string(),
+  quote: z.string(),
+  // 대상은 문자열로 받아 acceptRule에서 검사함 (한 규칙의 잘못된 값이 카드 전체를 실패시키지 않게)
+  target: z.string().describe(`${[...RULE_TARGETS, TASTE_TARGET].join(' | ')} 중 하나`),
+  keyword: z.string(),
+  codes: z.array(z.string()),
+});
+const AmountRule = z.object({ label: z.string(), quote: z.string(), amount: z.number() });
 const CardDraft = z.object({
   title: z.string(),
   catchphrase: z.string(),
   tmi: z.string(),
-  mustKeep: z.array(
-    z.object({
-      type: z.enum(RULE_TYPES),
-      label: z.string(),
-      quote: z.string(),
-      keyword: z.string(),
-      start: z.string(),
-      end: z.string(),
-      amount: z.number(),
-    }),
-  ),
+  // 넣기·피하기·시간·예산을 칸으로 나눔: 한 칸에 종류(type)와 대상(target)을 함께 적게 하면 LLM이 둘을 섞음 (10/15 실측 315회 중 20건)
+  mustKeep: z.object({
+    include: z.array(PlaceRule).describe('꼭 넣을 것'),
+    avoid: z.array(PlaceRule).describe('피할 것'),
+    time: z.array(z.object({ label: z.string(), quote: z.string(), start: z.string(), end: z.string() })),
+    budget: z.array(AmountRule).describe('1인 여행 총경비 상한 (원)'),
+    steps: z.array(AmountRule).describe('하루 걸음 수 상한'),
+    move: z.array(AmountRule).describe('장소 사이 이동 시간 상한 (분)'),
+  }),
   wishes: z.array(z.object({ label: z.string(), quote: z.string() })),
 });
 type CardDraft = z.infer<typeof CardDraft>;
+/** 칸별 결과를 한 줄 규칙으로 펼친 것 (acceptRule이 검사함) */
+interface RuleDraft {
+  type: string;
+  label: string;
+  quote: string;
+  keyword: string;
+  target: string;
+  codes: string[];
+  start: string;
+  end: string;
+  amount: number;
+}
+const flatRules = (m: CardDraft['mustKeep']): RuleDraft[] => {
+  const blank = { keyword: '', target: '', codes: [], start: '', end: '', amount: 0 };
+  return [
+    ...m.include.map((r) => ({ ...blank, ...r, type: 'include' })),
+    ...m.avoid.map((r) => ({ ...blank, ...r, type: 'avoid' })),
+    ...m.time.map((r) => ({ ...blank, ...r, type: 'time' })),
+    ...m.budget.map((r) => ({ ...blank, ...r, type: 'budget' })),
+    ...m.steps.map((r) => ({ ...blank, ...r, type: 'steps' })),
+    ...m.move.map((r) => ({ ...blank, ...r, type: 'move' })),
+  ];
+};
 
 const SYSTEM = `너는 단체 여행 앱 J-ourney의 '여행 캐릭터 카드' 작가다.
 입력 JSON은 한 사람의 설문 결과다.
@@ -45,14 +78,20 @@ const SYSTEM = `너는 단체 여행 앱 J-ourney의 '여행 캐릭터 카드' �
 - title: 성향과 좋아하는 것을 담은 귀여운 유형명, ${LIMITS.title}자 이내 (예: 느긋한 힐러)
 - catchphrase: 이 캐릭터가 회의에서 할 법한 한마디, ${LIMITS.catchphrase}자 이내, 친근한 말투
 - tmi: 캐릭터 설정처럼 쓰는 재미있는 한 줄, ${LIMITS.tmi}자 이내. 실제 사람에 대한 사실처럼 단정하지 않는다. 건강·종교·정치처럼 민감한 내용은 쓰지 않는다.
-- mustKeep: mustKeepText에서 일정으로 지킬 수 있는 조건만 최대 ${LIMITS.rules}개 뽑는다. type은 다음 중 하나다.
-  include: 꼭 넣을 장소·음식·활동 (keyword에 검색어)
-  avoid: 피할 것 (keyword)
-  time: 하루 일정의 시작·종료 시각 (start·end에 24시간 HH:MM, 예: 밤 9시 전 숙소 → end "21:00")
-  budget: 1인 총경비 상한 (amount에 원 단위 정수)
-  steps: 하루 걸음 수 상한 (amount)
-  move: 장소 사이 이동 시간 상한 (amount에 분)
-  quote에는 그 조건의 근거가 되는 mustKeepText의 일부를 글자 그대로 옮긴다. label은 카드에 보일 ${LIMITS.label}자 이내 요약이다. 해당 없는 칸은 빈 문자열(""), amount는 0이다.
+- mustKeep: mustKeepText에서 일정으로 지킬 수 있는 조건만 모두 합쳐 최대 ${LIMITS.rules}개 뽑아 아래 칸에 나눠 담는다. 해당 없는 칸은 빈 배열이다.
+  include(꼭 넣을 것) / avoid(피할 것): 항목마다 target을 고르고 keyword에 그 말을 쓴다.
+    target "category": 사람이 가는 장소·음식점의 종류 (예: 온천, 카페, 시장, 바다, 호텔, 일식집) → codes에 맨 아래 분류표에서 맞는 코드를 최대 ${LIMITS.codes}개
+    target "food": 특정 음식·메뉴 이름 (예: 회, 돼지국밥, 밀면). 그 음식이 속한 음식점 종류 전체(한식·일식 등)로 넓히지 않는다
+    target "place": 특정 장소의 고유 이름. 정식 이름을 알면 정식 이름으로 쓴다 (예: 광안리 → 광안리해수욕장)
+    target "area": 시·군·구 이름 (예: 해운대, 기장, 영도)
+    target "${TASTE_TARGET}": 재료·맛·식단 (예: 해산물, 매운 것, 고기, 밀가루, 커피, 채식). 장소 종류가 아니므로 category로 바꾸지 않고 codes는 빈 배열이다
+    '~ 위주로', '~ 쪽으로'처럼 지역·종류를 중심으로 다니고 싶다는 말도 include다 (예: 기장 쪽 위주로 → include area 기장).
+    여행지 안에서 찾을 수 없는 것(다른 도시·나라, 막연한 분위기)도 wishes에 넣는다.
+    '비 오면', '시간 되면'처럼 조건이 붙은 말과 동행·몸 상태(아이, 반려견, 휠체어 등)에 맞는 곳을 바라는 말은 장소 종류로 바꾸지 않고 wishes에 넣는다.
+  time: 하루 일정의 시작·종료 시각 (start·end에 24시간 HH:MM, 예: 밤 9시 전 숙소 → end "21:00", 없는 쪽은 빈 문자열)
+  budget: 1인 여행 총경비 상한만 (amount에 원 단위 정수). 한 끼·1박처럼 단위 가격은 budget이 아니라 wishes에 넣는다.
+  steps: 하루 걸음 수 상한 (amount) / move: 장소 사이 이동 시간 상한 (amount에 분)
+  quote에는 그 조건의 근거가 되는 mustKeepText의 일부를 글자 그대로 옮긴다. label은 카드에 보일 ${LIMITS.label}자 이내 요약이다.
 - wishes: mustKeepText 가운데 mustKeep으로 바꾸지 못한 바람만 최대 ${LIMITS.wishes}개. label은 ${LIMITS.wish}자 이내 요약, quote는 mustKeepText의 일부를 글자 그대로 옮긴다. mustKeepText에 없는 내용(성향·좋아요·싫어요에서 짐작한 것)은 쓰지 않는다.
 mustKeepText가 null이면 mustKeep과 wishes는 빈 배열이다.`;
 
@@ -68,17 +107,41 @@ const PERSONAL = [
 export const maskPersonal = (text: string) => PERSONAL.reduce((t, { pattern, mask }) => t.replace(pattern, mask), text);
 const fits = (s: string, max: number) => s.length > 0 && s.length <= max;
 
-/** 15번 규칙 검사: 원문 인용이 실제 원문에 있어야 하고, 종류별 값이 범위 안이어야 함 */
-function acceptRule(r: CardDraft['mustKeep'][number], mustKeepText: string): MustKeepRule | null {
+/** 분류표를 중분류마다 한 줄로 묶음 (예: [웰니스관광] EX050100 온천/사우나/스파, EX050200 찜질방) */
+export function categoryTable(rows: readonly RuleCategory[]): string {
+  const lines: string[] = [];
+  let group: string | null = null;
+  for (const r of rows) {
+    const item = `${r.code} ${r.name.replace(/\s*\/\s*/g, '/').replace(/,\s*/g, ',').replace(/\.\s*/g, '·')}`;
+    if (r.group === group) lines[lines.length - 1] += `, ${item}`;
+    else lines.push(`[${r.group}] ${item}`);
+    group = r.group;
+  }
+  return lines.join('\n');
+}
+
+/** 15번 규칙 검사: 원문 인용이 실제 원문에 있어야 하고, 종류별 값이 범위 안이어야 함 (분류 코드는 분류표에 있는 것만) */
+function acceptRule(r: RuleDraft, mustKeepText: string, knownCodes: ReadonlySet<string>): MustKeepRule | null {
   const quote = clean(r.quote);
   const label = clean(r.label);
   if (!quote || !clean(mustKeepText).includes(quote) || !fits(label, LIMITS.label)) return null;
   const keyword = clean(r.keyword) || null;
-  const base = { type: r.type, label, quote, keyword: null, start: null, end: null, amount: null };
-  switch (r.type) {
+  const type = RULE_TYPES.find((t) => t === r.type);
+  if (!type) {
+    console.info(`LLM 꼭 지킬 것: 알 수 없는 type(${r.type.slice(0, 20)})이라 규칙을 버림`);
+    return null;
+  }
+  const base = { type, label, quote, keyword: null, target: null, codes: [], start: null, end: null, amount: null };
+  switch (type) {
     case 'include':
-    case 'avoid':
-      return keyword && fits(keyword, LIMITS.keyword) ? { ...base, keyword } : null;
+    case 'avoid': {
+      const target = RULE_TARGETS.find((t) => t === r.target);
+      if (!keyword || !fits(keyword, LIMITS.keyword) || !target) return null;
+      if (target !== 'category') return { ...base, keyword, target };
+      const codes = [...new Set(r.codes.map((c) => c.trim().toUpperCase()))].filter((c) => knownCodes.has(c)).slice(0, LIMITS.codes);
+      if (!codes.length) console.info('LLM 꼭 지킬 것: 분류표에 없는 코드만 있어 규칙을 버림');
+      return codes.length ? { ...base, keyword, target, codes } : null;
+    }
     case 'time': {
       const start = r.start && TIME.test(r.start) ? r.start : null;
       const end = r.end && TIME.test(r.end) ? r.end : null;
@@ -87,7 +150,7 @@ function acceptRule(r: CardDraft['mustKeep'][number], mustKeepText: string): Mus
       return { ...base, start, end };
     }
     default: {
-      const [min, max] = AMOUNT_RANGE[r.type];
+      const [min, max] = AMOUNT_RANGE[type];
       const amount = Math.round(r.amount);
       return amount >= min && amount <= max ? { ...base, amount } : null;
     }
@@ -109,14 +172,23 @@ export function ruleCard(chips: Chip[], answers: PersonaAnswers): CardText {
   return { ...fallbackText(chips), mustKeep: [], wishes: text, source: 'rule' };
 }
 
-/** LLM이 카드 문장을 쓰고 15번을 해석함. 항목별로 검사해 틀린 칸만 규칙 문장으로 대신함 */
-export async function llmCard(llm: LlmClient, traits: TraitResult[], chips: Chip[], answers: PersonaAnswers): Promise<CardText> {
+/**
+ * LLM이 카드 문장을 쓰고 15번을 해석함. 항목별로 검사해 틀린 칸만 규칙 문장으로 대신함
+ * categories: '꼭 지킬 것'의 종류를 고를 공식 분류표 (비어 있으면 종류 규칙은 만들지 못함)
+ */
+export async function llmCard(
+  llm: LlmClient,
+  traits: TraitResult[],
+  chips: Chip[],
+  answers: PersonaAnswers,
+  categories: readonly RuleCategory[] = [],
+): Promise<CardText> {
   const label = (options: readonly { id: string; text: string }[], ids: string[]) =>
     ids.map((id) => options.find((o) => o.id === id)!.text);
   // 닉네임은 보내지 않고, 15번의 연락처·식별번호는 가린 문장을 보냄 (인용 검사도 가린 문장 기준)
   const mustKeepText = answers.mustKeepText === null ? null : maskPersonal(answers.mustKeepText);
   const draft = await llm.generateJson({
-    system: SYSTEM,
+    system: `${SYSTEM}\n\n분류표 (한국관광공사 공식 분류, [중분류] 코드 소분류):\n${categoryTable(categories)}`,
     input: {
       traits: traits.map((t) => ({ name: t.name, label: t.label, score: t.score })),
       likes: label(LIKE_OPTIONS, answers.likes),
@@ -127,18 +199,22 @@ export async function llmCard(llm: LlmClient, traits: TraitResult[], chips: Chip
     schemaName: 'persona_card',
   });
   const fallback = fallbackText(chips);
+  const knownCodes = new Set(categories.map((c) => c.code));
   const pick = (field: string, value: string, max: number, otherwise: string) => {
     if (fits(clean(value), max)) return clean(value);
     console.info(`LLM ${field} 길이 ${clean(value).length}자로 상한 ${max}자를 넘어 규칙 문장으로 대신함`);
     return otherwise;
   };
   const mustKeep = mustKeepText
-    ? draft.mustKeep.map((r) => acceptRule(r, mustKeepText)).filter((r): r is MustKeepRule => r !== null).slice(0, LIMITS.rules)
+    ? flatRules(draft.mustKeep).map((r) => acceptRule(r, mustKeepText, knownCodes)).filter((r): r is MustKeepRule => r !== null).slice(0, LIMITS.rules)
     : [];
   // 기타 바람도 원문 인용이 실제 15번 원문에 있을 때만 받음 (성향에서 짐작한 문장은 버림)
   const source = clean(mustKeepText);
+  const tastes = flatRules(draft.mustKeep)
+    .filter((r) => r.target === TASTE_TARGET)
+    .map((r) => ({ label: r.type === 'avoid' ? `${clean(r.keyword) || clean(r.label)} 피하기` : clean(r.label), quote: r.quote }));
   const wishes = mustKeepText
-    ? draft.wishes
+    ? [...tastes, ...draft.wishes]
         .filter((w) => clean(w.quote) && source.includes(clean(w.quote)))
         .map((w) => clean(w.label))
         .filter((w) => fits(w, LIMITS.wish))

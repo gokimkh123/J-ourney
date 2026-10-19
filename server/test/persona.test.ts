@@ -1,9 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { llmIpUsage, trips } from '../src/db/schema.js';
+import { categories, llmIpUsage, members, personas, places, trips } from '../src/db/schema.js';
 import { ApiError } from '../src/lib/errors.js';
 import { buildProfile, pickChips, readAnswers, scoreTraits } from '../src/persona/score.js';
 import { maskPersonal } from '../src/persona/write.js';
+import { config } from '../src/config.js';
+import { createLangChainLlm, inputTokenUpperBound, LlmTokenLimitError } from '../src/llm/client.js';
 import type { MustKeepRule } from '../src/persona/types.js';
 import { MINSU, SEOYEON, answersOf, call, createTestApp, fakeLlm } from './helpers.js';
 
@@ -11,15 +13,29 @@ const MUST_KEEP = '해산물은 꼭 먹고, 밤 9시 전엔 숙소에 들어가�
 const seoyeon = (text?: string) => answersOf(SEOYEON, ['like_spa', 'like_sea', 'like_cafe'], ['dislike_walk', 'dislike_crowd'], text);
 
 /** LLM이 돌려줄 법한 카드 초안 (규칙 하나는 원문에 없는 인용이라 버려져야 함) */
+
+/** 가짜 LLM 응답: 한 줄 규칙 목록을 실제 응답 형식(넣기·피하기·시간·예산… 칸)으로 나눔 */
+const grouped = (rules: { type: string; label: string; quote: string; keyword: string; target: string; codes: string[]; start: string; end: string; amount: number }[]) => {
+  const place = (t: string) => rules.filter((r) => r.type === t).map(({ label, quote, keyword, target, codes }) => ({ label, quote, keyword, target, codes }));
+  const amount = (t: string) => rules.filter((r) => r.type === t).map(({ label, quote, amount }) => ({ label, quote, amount }));
+  return {
+    include: place('include'),
+    avoid: place('avoid'),
+    time: rules.filter((r) => r.type === 'time').map(({ label, quote, start, end }) => ({ label, quote, start, end })),
+    budget: amount('budget'),
+    steps: amount('steps'),
+    move: amount('move'),
+  };
+};
 const draft = (title = '온천 사랑 힐러') => ({
   title,
   catchphrase: '오후엔 온천에서 쉬어 가요~',
   tmi: '밤 9시면 눈꺼풀이 내려옴',
-  mustKeep: [
-    { type: 'include', label: '해산물 먹기', quote: '해산물은 꼭 먹고', keyword: '해산물', start: '', end: '', amount: 0 },
-    { type: 'time', label: '밤 9시 전 숙소', quote: '밤 9시 전엔 숙소에 들어가고 싶어요', keyword: '', start: '', end: '21:00', amount: 0 },
-    { type: 'budget', label: '1인 10만 원', quote: '10만 원 이하로 해 주세요', keyword: '', start: '', end: '', amount: 100000 },
-  ],
+  mustKeep: grouped([
+    { type: 'include', label: '해산물 먹기', quote: '해산물은 꼭 먹고', keyword: '해산물', target: 'food', codes: [], start: '', end: '', amount: 0 },
+    { type: 'time', label: '밤 9시 전 숙소', quote: '밤 9시 전엔 숙소에 들어가고 싶어요', keyword: '', target: '', codes: [], start: '', end: '21:00', amount: 0 },
+    { type: 'budget', label: '1인 10만 원', quote: '10만 원 이하로 해 주세요', keyword: '', target: '', codes: [], start: '', end: '', amount: 100000 },
+  ]),
   wishes: [
     { label: '숙소에서 푹 쉬기', quote: '숙소에 들어가고 싶어요' },
     { label: '한적한 곳 위주', quote: '조용한 곳이 좋아요' },
@@ -105,12 +121,61 @@ describe('성향 질문·페르소나 API', () => {
     let sent: string | null = null;
     const llm = fakeLlm((input) => {
       sent = input.mustKeepText;
-      return { ...draft(), mustKeep: [{ type: 'include', label: '해산물 먹기', quote: '해산물은 꼭 먹고', keyword: '해산물', start: '', end: '', amount: 0 }] };
+      return { ...draft(), mustKeep: grouped([{ type: 'include', label: '해산물 먹기', quote: '해산물은 꼭 먹고', keyword: '해산물', target: 'food', codes: [], start: '', end: '', amount: 0 }]) };
     });
     const { app, token } = await setup({ llm });
     const res = await call(app, 'POST', '/me/persona', { answers: seoyeon(`해산물은 꼭 먹고 싶어요. 연락처 ${phone.replaceAll('-', '')}`) }, token);
     expect(sent).toBe('해산물은 꼭 먹고 싶어요. 연락처 [전화번호]');
     expect(res.body.persona.mustKeep).toEqual([{ type: 'include', label: '해산물 먹기' }]);
+  });
+
+  it('LLM 카드: 종류 규칙은 분류표에 있는 코드만 받고, 없는 코드·모르는 target은 버림', async () => {
+    let system = '';
+    const llm = fakeLlm((_, __, sys) => {
+      system = sys;
+      return {
+        ...draft(),
+        mustKeep: grouped([
+          { type: 'include', label: '온천 가기', quote: '온천은 꼭 가고', keyword: '온천', target: 'category', codes: ['EX050100', 'ZZ999999'], start: '', end: '', amount: 0 },
+          { type: 'include', label: '카페 가기', quote: '카페도', keyword: '카페', target: 'category', codes: ['ZZ999999'], start: '', end: '', amount: 0 },
+          { type: 'avoid', label: '시장 빼기', quote: '시장은 빼고', keyword: '시장', target: 'market', codes: [], start: '', end: '', amount: 0 },
+        ]),
+      };
+    });
+    const { app, db, token, host } = await setup({ llm });
+    await db.insert(categories).values([
+      { code: 'EX050100', name1: '체험관광', name2: '웰니스관광', name3: '온천 / 사우나 / 스파' },
+      { code: 'AC010100', name1: '숙박', name2: '호텔', name3: '호텔' },
+      { code: 'EX040100', name1: '체험관광', name2: '산사체험', name3: '템플스테이' },
+      { code: 'C01120001', name1: '추천코스', name2: '가족코스', name3: '가족코스' },
+    ]);
+    // 분류표에는 후보가 될 장소가 쓰는 분류만 들어감 (템플스테이는 장소가 없어 빠짐)
+    await db.insert(places).values([
+      { contentId: 'c1', contentTypeId: 12, title: '시험온천', regionCode: '26', districtCode: '200', lcls1: 'EX', lcls3: 'EX050100', visible: true, listRaw: {} },
+      { contentId: 'c2', contentTypeId: 32, title: '시험호텔', regionCode: '26', districtCode: '200', lcls1: 'AC', lcls3: 'AC010100', visible: true, listRaw: {} },
+      { contentId: 'c3', contentTypeId: 25, title: '시험코스', regionCode: '26', districtCode: '200', lcls1: 'C0', lcls3: 'C01120001', visible: true, listRaw: {} },
+    ]);
+    const res = await call(app, 'POST', '/me/persona', { answers: seoyeon('온천은 꼭 가고 카페도, 시장은 빼고') }, token);
+    expect(res.body.persona.mustKeep).toEqual([{ type: 'include', label: '온천 가기' }]); // 응답 형식은 그대로 (type·label)
+    expect(system).toContain('[웰니스관광] EX050100 온천/사우나/스파');
+    expect(system).toContain('AC010100'); // 숙박도 숙소 후보가 되므로 보냄 (예: 게스트하우스는 싫어요)
+    expect(system).not.toContain('C01120001'); // 추천코스는 장소가 아니라 보내지 않음
+    expect(system).not.toContain('EX040100');
+    const [me] = await db.select().from(members).where(eq(members.tripId, host.body.trip.id));
+    const [row] = await db.select().from(personas).where(eq(personas.memberId, me.id));
+    expect(row.mustKeep[0]).toMatchObject({ keyword: '온천', target: 'category', codes: ['EX050100'] });
+  });
+
+  it('LLM 카드: 재료·맛(taste)은 규칙이 아니라 바라는 점으로 옮김', async () => {
+    const llm = fakeLlm(() => ({
+      ...draft(),
+      mustKeep: grouped([{ type: 'avoid', label: '해산물 빼기', quote: '해산물은 못 먹어요', keyword: '해산물', target: 'taste', codes: [], start: '', end: '', amount: 0 }]),
+      wishes: [],
+    }));
+    const { app, token } = await setup({ llm });
+    const res = await call(app, 'POST', '/me/persona', { answers: seoyeon('해산물은 못 먹어요') }, token);
+    expect(res.body.persona.mustKeep).toEqual([]);
+    expect(res.body.persona.wishes).toEqual(['해산물 피하기']);
   });
 
   it('LLM 카드: 원문에 없는 인용의 조건은 버리고, 여행 상세에 유형명이 보임', async () => {
@@ -128,6 +193,28 @@ describe('성향 질문·페르소나 API', () => {
     expect(res.body.persona.profile).toBeUndefined();
     const detail = await call(app, 'GET', `/trips/${host.body.trip.id}`, undefined, token);
     expect(detail.body.members[0]).toMatchObject({ personaReady: true, title: '온천 사랑 힐러' });
+  });
+
+  it('LLM 1회 토큰 상한: 가장 긴 성향 요청도 입력 최대치 + 출력 상한이 99,900 안이고, 넘을 요청은 부르지 않음', async () => {
+    let upper = 0;
+    const llm = fakeLlm((input, _, system, schema) => {
+      upper = inputTokenUpperBound(system, input, schema);
+      return draft();
+    });
+    const { app, db, token } = await setup({ llm });
+    // 분류표 205개 정도를 넣고, 15번은 최대 길이(200자)로 씀
+    await db.insert(categories).values(Array.from({ length: 205 }, (_, i) => ({ code: `EX${String(i).padStart(6, '0')}`, name1: '체험관광', name2: '웰니스관광', name3: '온천 / 사우나 / 스파 시험 분류' })));
+    await db.insert(places).values(Array.from({ length: 205 }, (_, i) => ({ contentId: `t${i}`, contentTypeId: 12, title: `시험${i}`, regionCode: '26', districtCode: '200', lcls1: 'EX', lcls3: `EX${String(i).padStart(6, '0')}`, visible: true, listRaw: {} })));
+    await call(app, 'POST', '/me/persona', { answers: seoyeon('가'.repeat(200)) }, token);
+    expect(config.llmCallTokenLimit).toBe(99_900);
+    expect(upper).toBeGreaterThan(0);
+    expect(upper + config.llmMaxOutputTokens).toBeLessThanOrEqual(config.llmCallTokenLimit);
+
+    // 상한을 넘을 요청은 네트워크로 보내기 전에 막힘 (가짜 키, 실제 호출 없음)
+    process.env.ANTHROPIC_API_KEY ??= 'test-not-a-real-key';
+    const real = await createLangChainLlm({ provider: 'anthropic', model: 'claude-haiku-5-5', timeoutMs: 1000, callTokenLimit: 1000, maxOutputTokens: 900 });
+    const { z } = await import('zod');
+    await expect(real.generateJson({ system: '가'.repeat(100), input: {}, schema: z.object({ a: z.string() }), schemaName: 't' })).rejects.toBeInstanceOf(LlmTokenLimitError);
   });
 
   it('LLM이 실패하거나 하루 상한이면 규칙 카드로 대신함', async () => {
@@ -149,7 +236,7 @@ describe('성향 질문·페르소나 API', () => {
     expect(res.body.persona).toMatchObject({ title: '느긋한 힐러', catchphrase: '오후엔 온천에서 쉬어 가요~', source: 'llm' });
   });
 
-  it('제출 전 404, 토큰 없음 401, 미응답 400, 다시 제출하면 덮어씀', async () => {
+  it('제출 전 404, 토큰 없음 401, 미응답 400, 같은 응답은 이전 카드 그대로, 다른 응답은 덮어씀', async () => {
     const llm = fakeLlm((_, n) => draft(n === 1 ? '첫 번째 힐러' : '두 번째 힐러'));
     const { app, token } = await setup({ llm });
     expect((await call(app, 'GET', '/me/persona', undefined, token)).status).toBe(404);
@@ -157,9 +244,15 @@ describe('성향 질문·페르소나 API', () => {
     const missing = await call(app, 'POST', '/me/persona', { answers: seoyeon().filter((a) => a.questionId !== 'q3') }, token);
     expect(missing.body.error).toMatchObject({ code: 'VALIDATION_ERROR' });
     expect(missing.body.error.message).toContain('q3');
-    await call(app, 'POST', '/me/persona', { answers: seoyeon() }, token);
-    await call(app, 'POST', '/me/persona', { answers: seoyeon() }, token);
+    const first = (await call(app, 'POST', '/me/persona', { answers: seoyeon() }, token)).body.persona;
+    // 같은 응답(보기 순서만 다름)으로 다시 내면 이전 카드를 그대로 돌려주고 LLM을 부르지 않음
+    const same = await call(app, 'POST', '/me/persona', { answers: answersOf(SEOYEON, ['like_cafe', 'like_sea', 'like_spa'], ['dislike_crowd', 'dislike_walk']) }, token);
+    expect(same.status).toBe(201);
+    expect(same.body.persona).toMatchObject({ title: '첫 번째 힐러', updatedAt: first.updatedAt });
+    expect(llm.calls).toBe(1);
+    await call(app, 'POST', '/me/persona', { answers: seoyeon('카페는 꼭 가고 싶어요') }, token);
     expect((await call(app, 'GET', '/me/persona', undefined, token)).body.persona.title).toBe('두 번째 힐러');
+    expect(llm.calls).toBe(2);
   });
 
   it('AI 카드는 구성원당 2회까지, 그다음은 규칙 카드 (LLM이 실패한 회차는 세지 않음)', async () => {
@@ -172,7 +265,8 @@ describe('성향 질문·페르소나 API', () => {
       return draft();
     });
     const { app, token } = await setup({ llm, llmCardsPerMember: 2 });
-    const submit = async () => (await call(app, 'POST', '/me/persona', { answers: seoyeon() }, token)).body.persona.source;
+    let n = 0;
+    const submit = async () => (await call(app, 'POST', '/me/persona', { answers: seoyeon(`조건 ${++n}`) }, token)).body.persona.source;
     expect([await submit(), await submit(), await submit(), await submit()]).toEqual(['rule', 'llm', 'llm', 'rule']);
     expect(llm.calls).toBe(3);
   });

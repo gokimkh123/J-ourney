@@ -21,11 +21,23 @@ export interface Chip {
 /** 15번에서 뽑은 '꼭 지킬 것' — 코드가 일정안을 검사할 때 씀 */
 export type RuleType = 'include' | 'avoid' | 'time' | 'budget' | 'steps' | 'move';
 
+/**
+ * include·avoid가 가리키는 것 (성향 LLM이 정함, 코드는 낱말을 해석하지 않음)
+ * category: 장소·음식의 종류 → 공식 분류 코드로 찾음 / food: 특정 음식 → 음식점 메뉴·이름
+ * place: 특정 장소 → 같은 이름 / area: 시·군·구 → 법정동 코드
+ */
+export const RULE_TARGETS = ['category', 'food', 'place', 'area'] as const;
+export type RuleTarget = (typeof RULE_TARGETS)[number];
+
 export interface MustKeepRule {
   type: RuleType;
   label: string;
   quote: string;
   keyword: string | null;
+  /** include·avoid만 값이 있음 (이 필드가 생기기 전에 만든 규칙은 없음) */
+  target?: RuleTarget | null;
+  /** target이 category일 때 한국관광공사 공식 분류 코드 (예: 온천 → EX050100) */
+  codes?: string[];
   start: string | null;
   end: string | null;
   amount: number | null;

@@ -7,7 +7,9 @@ import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken, newId, newInviteCode, newToken } from '../lib/ids.js';
 import { parseBody } from '../lib/validate.js';
+import { DestinationError, resolveDestination } from '../meeting/regions.js';
 import { DEMO_SEEDS, seedPersona } from '../persona/seeds.js';
+import { todayKst } from '../lib/time.js';
 import { memberView, tripView } from './views.js';
 
 /** 입력 길이 상한 (명세서 4.2) */
@@ -21,6 +23,29 @@ const createTripBody = z.object({
   demoMode: z.boolean().default(false),
 });
 const joinBody = z.object({ nickname });
+
+/** 회의 조건 입력 상한 (명세서 4.4) */
+const DESTINATION_MAX = 30;
+const TRANSPORT_MAX = 40;
+const BUDGET_MAX = 10_000_000;
+/** 한 번의 회의로 짜는 여행 일수 상한 */
+export const MAX_TRIP_DAYS = 3;
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '날짜는 YYYY-MM-DD 형식이어야 함');
+const realDay = (d: string) => new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
+const conditionsBody = z
+  .object({
+    destination: z.string().trim().min(1, '목적지를 입력해야 함').max(DESTINATION_MAX, `목적지는 ${DESTINATION_MAX}자 이하여야 함`),
+    startDate: ymd,
+    endDate: ymd,
+    budgetPerPerson: z.number().int().min(0).max(BUDGET_MAX).nullable().default(null),
+    transport: z.string().trim().max(TRANSPORT_MAX, `이동 수단은 ${TRANSPORT_MAX}자 이하여야 함`).nullable().default(null),
+    rules: z
+      .object({ aiMinSatisfaction: z.number().min(1).max(10).default(7), maxRounds: z.number().int().min(1).max(5).default(5) })
+      .default({ aiMinSatisfaction: 7, maxRounds: 5 }),
+  })
+  .refine((b) => realDay(b.startDate) && realDay(b.endDate), { message: '없는 날짜임' })
+  .refine((b) => b.endDate >= b.startDate, { message: '끝나는 날은 시작하는 날과 같거나 뒤여야 함' })
+  .refine((b) => (Date.parse(b.endDate) - Date.parse(b.startDate)) / 86400000 + 1 <= MAX_TRIP_DAYS, { message: `여행은 ${MAX_TRIP_DAYS}일 이하여야 함` });
 
 /** 1번 묶음: 여행 생성·초대·참여·상세 (명세서 4.2) */
 export function tripRoutes(db: Db) {
@@ -115,8 +140,28 @@ export function tripRoutes(db: Db) {
     const [trip] = await db.select().from(trips).where(eq(trips.id, c.req.param('tripId'))).limit(1);
     if (!trip) throw new ApiError('NOT_FOUND', '여행을 찾을 수 없음');
     if (trip.id !== c.get('member').tripId) throw new ApiError('FORBIDDEN', '참여한 여행만 조회할 수 있음');
-    // 회의 조건은 3번 묶음(PUT /trips/{tripId}/conditions)에서 채움
-    return c.json({ trip: tripView(trip), members: await listMembers(trip.id), conditions: null });
+    return c.json({ trip: tripView(trip), members: await listMembers(trip.id), conditions: trip.conditions ?? null });
+  });
+
+  // 회의 조건 저장 (방장, 회의 시작 전): 목적지 글자를 법정동 코드로 바꿔 함께 저장함
+  r.put('/trips/:tripId/conditions', auth, async (c) => {
+    const me = c.get('member');
+    const [trip] = await db.select().from(trips).where(eq(trips.id, c.req.param('tripId'))).limit(1);
+    if (!trip) throw new ApiError('NOT_FOUND', '여행을 찾을 수 없음');
+    if (trip.id !== me.tripId) throw new ApiError('FORBIDDEN', '참여한 여행만 바꿀 수 있음');
+    if (!me.isHost) throw new ApiError('FORBIDDEN', '회의 조건은 방장만 정할 수 있음');
+    if (trip.status !== 'preparing') throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작되어 조건을 바꿀 수 없음');
+    const body = await parseBody(c, conditionsBody);
+    if (body.startDate < todayKst()) throw new ApiError('VALIDATION_ERROR', '시작하는 날은 오늘이거나 그 뒤여야 함');
+    let destination;
+    try {
+      destination = await resolveDestination(db, body.destination);
+    } catch (err) {
+      if (err instanceof DestinationError) throw new ApiError('VALIDATION_ERROR', err.message);
+      throw err;
+    }
+    await db.update(trips).set({ conditions: body, regionCode: destination.regionCode, districtCodes: destination.districtCodes }).where(eq(trips.id, trip.id));
+    return c.json({ conditions: body, destination: { regionCode: destination.regionCode, label: destination.label } });
   });
 
   return r;

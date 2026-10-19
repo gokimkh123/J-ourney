@@ -24,6 +24,15 @@ describe('시험 화면 /dev/', () => {
     expect(on.headers.get('Cache-Control')).toBe('no-store');
     expect((await createApp({ db: null }).request('/dev/')).status).toBe(404);
   });
+
+  it('시연 화면 그림은 dev-ui/img 바로 아래 파일만 내보냄', async () => {
+    const app = createApp({ db: null, devUi: true });
+    const img = await app.request('/dev/img/busan.webp');
+    expect(img.status).toBe(200);
+    expect(img.headers.get('Content-Type')).toBe('image/webp');
+    for (const bad of ['/dev/img/..%2Fapp.html', '/dev/img/%2E%2E%2Fapp.html', '/dev/img/app.html', '/dev/img/none.png']) expect((await app.request(bad)).status).toBe(404);
+    expect((await createApp({ db: null }).request('/dev/img/busan.webp')).status).toBe(404);
+  });
 });
 
 describe('nowKst', () => {
