@@ -118,8 +118,8 @@
   .char.looking .ring { opacity: 1; animation: pulse 1.4s ease-in-out infinite; }
   .char .badge { position: absolute; right: 0; top: 4px; width: 22px; height: 22px; border-radius: 50%; background: #fff; display: grid; place-items: center; font-size: 13px; box-shadow: 0 2px 6px #0003; }
   .char .badge.think { animation: bob 1s ease-in-out infinite; }
-  .char .bubble { position: absolute; bottom: 82px; left: 50%; translate: -50% 0; width: max-content; max-width: 200px; background: #fff; color: #141B24; border-radius: 12px; padding: 6px 9px; font-size: 12px; line-height: 1.4; box-shadow: 0 4px 14px #0003; white-space: normal; border: 1.5px solid color-mix(in srgb, var(--c) 45%, #fff); }
-  .char .bubble::after { content: ''; position: absolute; top: 100%; left: 50%; translate: -50% 0; border: 6px solid transparent; border-top-color: #fff; }
+  .char .bubble { position: absolute; bottom: 82px; left: 50%; translate: calc(-50% + var(--dx, 0px)) 0; width: max-content; max-width: 200px; background: #fff; color: #141B24; border-radius: 12px; padding: 6px 9px; font-size: 12px; line-height: 1.4; box-shadow: 0 4px 14px #0003; white-space: normal; border: 1.5px solid color-mix(in srgb, var(--c) 45%, #fff); }
+  .char .bubble::after { content: ''; position: absolute; top: 100%; left: calc(50% - var(--dx, 0px)); translate: -50% 0; border: 6px solid transparent; border-top-color: #fff; }
   @keyframes waddle { 0%, 100% { transform: rotate(-6deg); } 25% { transform: translateY(-4px); } 50% { transform: rotate(6deg); } 75% { transform: translateY(-4px); } }
   @keyframes hop { 30% { transform: translateY(-16px) scale(1.04, .96); } 55% { transform: scale(1.06, .92); } 75% { transform: translateY(-5px); } }
   @keyframes popin { from { transform: scale(.2); opacity: 0; } }
@@ -131,6 +131,9 @@
   .pinw .pin span { rotate: 45deg; color: #fff; font-size: 11px; font-weight: 900; }
   .pinw .plabel { position: absolute; top: 28px; left: 50%; translate: -50% 0; background: #fffe; border: 1px solid var(--c); color: #1d2330; border-radius: 8px; padding: 0 5px; font-size: 10px; line-height: 15px; font-weight: 700; white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
   @keyframes drop { from { transform: translateY(-40px); opacity: 0; } }
+  .pinw.static { animation: pulse .5s ease-out; }
+  .pinw.blocked .pin { background: #9AA3AE; }
+  .agenda { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13px; }
   /* 마지막 코스: 들르는 순서 번호 */
   .stopn { width: 18px; height: 18px; border-radius: 50%; background: var(--c); color: #fff; border: 2px solid #fff; font-size: 10px; font-weight: 900; display: grid; place-items: center; box-shadow: 0 1px 4px #0004; }
   .route-dim { opacity: .18; }
@@ -354,7 +357,7 @@ $('toMeeting').onclick = async () => {
 /* ───────── 4. AI 회의 ───────── */
 
 /* 보기 속도: 서버 회의는 몇 초 만에 끝나지만, 화면은 캐릭터가 천천히 걸으며 다시 보여 줌 (시트의 버튼으로 2배) */
-const PACE = { walkPxPerSec: 36, walkMinMs: 1300, walkMaxMs: 6500, introWalkMs: 3800, look: 1200, typeMs: 34, hold: 1600, holdPerChar: 28, holdMax: 3200, stagger: 800, wander: [1500, 3000] };
+const PACE = { walkPxPerSec: 36, walkMinMs: 1300, walkMaxMs: 6500, introWalkMs: 3800, look: 1200, typeMs: 34, hold: 1600, holdPerChar: 28, holdMax: 3200, stagger: 800, wander: [1500, 3000], reactPerAgent: 3 };
 let speed = 1;
 const wait = (ms) => sleep(ms / speed);
 $('speed').onclick = () => { speed = speed === 1 ? 2 : 1; $('speed').textContent = speed === 1 ? '⏩ 2배로 보기' : '▶ 1배로 보기'; };
@@ -492,7 +495,7 @@ const chars = {}; // agentId → { agent, i, marker, el, box, trail, stops, rout
 const pins = {}; // placeId → { marker, by: Set }
 const OFFSET_PX = [[-22, 0], [-7, 8], [8, 8], [23, 0]]; // 같은 곳에 여러 AI가 서면 옆으로 나란히 섬
 const TOOL = { tourSearch: ['🔎', '장소 찾는 중'], tourRank: ['📈', '인기 순위 보는 중'], crowd: ['👥', '붐비는 날 확인 중'] };
-const STAGE = { planning: '준비', searching: '조사 중', picking: '고르는 중', done: '완료' };
+const STAGE = { planning: '준비', searching: '조사 중', picking: '고르는 중', react: '반응 중', done: '완료' };
 const THINK = ['음… 어디가 좋을까?', '후보 40곳을 꼼꼼히 보는 중…', '여기도 좋고 저기도 좋고…', '내 취향에 맞는 곳은…'];
 let runId = 0;
 function charHtml(a) {
@@ -561,6 +564,13 @@ function near(a, b) {
   const p = map.latLngToContainerPoint(chars[a].marker.getLatLng()), q = map.latLngToContainerPoint(chars[b].marker.getLatLng());
   return Math.abs(p.x - q.x) < 200 && Math.abs(p.y - q.y) < 130;
 }
+/** 말풍선이 지도 밖으로 나가면 옆으로 밀어 넣음 (꼬리는 캐릭터 위에 그대로) */
+function fitBubble(b) {
+  b.style.setProperty('--dx', '0px');
+  const r = b.getBoundingClientRect(), m = $('map').getBoundingClientRect();
+  const dx = r.right > m.right - 6 ? m.right - 6 - r.right : r.left < m.left + 6 ? m.left + 6 - r.left : 0;
+  b.style.setProperty('--dx', `${Math.round(dx)}px`);
+}
 async function speak(c, text, run, { type = true } = {}) {
   if (!c.marker || !text) return;
   while ([...speaking].some((o) => o !== c.agent.agentId && near(o, c.agent.agentId))) { await sleep(150); if (run !== runId) return; }
@@ -569,8 +579,8 @@ async function speak(c, text, run, { type = true } = {}) {
   c.marker.setZIndexOffset(3000);
   follow(c.marker.getLatLng());
   b.hidden = false;
-  if (type) for (let n = 1; n <= text.length && run === runId; n++) { b.textContent = text.slice(0, n); await wait(PACE.typeMs); }
-  else b.textContent = text;
+  if (type) for (let n = 1; n <= text.length && run === runId; n++) { b.textContent = text.slice(0, n); fitBubble(b); await wait(PACE.typeMs); }
+  else { b.textContent = text; fitBubble(b); }
   await wait(Math.min(PACE.holdMax, PACE.hold + text.length * PACE.holdPerChar));
   b.hidden = true;
   speaking.delete(c.agent.agentId);
@@ -579,8 +589,12 @@ async function speak(c, text, run, { type = true } = {}) {
 const isLodging = (placeId) => !!final.result?.retrieve.lodgings.some((l) => `plc_${l.id}` === placeId);
 function drawPin(p) {
   const n = p.by.size;
-  const mark = p.lodging ? '🏨' : n > 1 ? `★${n}` : '📍';
-  p.marker.setIcon(L.divIcon({ className: '', iconSize: [26, 26], iconAnchor: [13, 26], html: `<div class="pinw" style="--c:${n > 1 ? '#6D3FD8' : p.color}"><div class="pin"><span>${mark}</span></div><span class="plabel">${esc(p.label)}</span></div>` }));
+  const rx = p.rx ?? { like: 0, warn: 0, block: 0 };
+  const mark = rx.block ? '✕' : p.lodging ? '🏨' : n > 1 ? `★${n}` : '📍';
+  const badge = [['👍', rx.like], ['⚠', rx.warn], ['✕', rx.block]].filter(([, k]) => k).map(([e, k]) => `${e}${k}`).join(' ');
+  p.marker.setIcon(L.divIcon({ className: '', iconSize: [26, 26], iconAnchor: [13, 26],
+    html: `<div class="pinw ${p.drawn ? 'static' : ''} ${rx.block ? 'blocked' : ''}" style="--c:${n > 1 ? '#6D3FD8' : p.color}"><div class="pin"><span>${mark}</span></div><span class="plabel">${esc(p.label)}${badge ? ' · ' + badge : ''}</span></div>` }));
+  p.drawn = true;
 }
 function dropPin(placeId, ll, a, label) {
   if (!ll) return;
@@ -750,6 +764,41 @@ function onLine(line) {
   }
 }
 
+/* 4단계 반응: AI마다 반응한 곳으로 걸어가 👍 ⚠ ✕ 말풍선 (✕·⚠ 먼저, 한 명당 최대 reactPerAgent곳). 반응 종류·이유는 서버 규칙 그대로, 앞말만 화면에서 붙임 */
+const RX = { like: ['👍', '저도 좋아요!'], warn: ['⚠', '음…'], block: ['✕', '여긴 힘들어요 ·'] };
+const RX_ORDER = { block: 0, warn: 1, like: 2 };
+async function playReactions(board, run) {
+  const list = board.candidates.flatMap((c) => c.reactions.map((x) => ({ ...x, c })));
+  if (!list.length) return;
+  setTitle('AI들이 서로 고른 곳에 반응하는 중');
+  await Promise.all(agents.map(async (a) => {
+    const c = chars[a.agentId];
+    if (!c?.marker) return;
+    const mine = list.filter((x) => x.agentId === a.agentId).sort((p, q) => RX_ORDER[p.kind] - RX_ORDER[q.kind]).slice(0, PACE.reactPerAgent);
+    await wait(a.i * PACE.stagger);
+    for (const x of mine) {
+      const ll = project(x.c.lat, x.c.lng);
+      if (run !== runId) return;
+      if (!ll) continue;
+      setRow(a.agentId, `${RX[x.kind][0]} ${x.c.name}에 반응`, 'react');
+      await walkTo(c, aside(ll, c.i), run);
+      const p = pins[x.c.placeId];
+      if (p) { (p.rx ??= { like: 0, warn: 0, block: 0 })[x.kind]++; drawPin(p); }
+      if (x.kind === 'like') hop(c);
+      await speak(c, `${RX[x.kind][0]} ${RX[x.kind][1]} ${x.reason}`, run);
+    }
+    setRow(a.agentId, `✅ 반응 ${list.filter((x) => x.agentId === a.agentId).length}곳`, 'done');
+  }));
+  // 보여 주지 못한 반응도 핀 숫자에는 모두 반영
+  for (const x of list) {
+    const p = pins[x.c.placeId];
+    if (!p) continue;
+    p.rxAll ??= { like: 0, warn: 0, block: 0 };
+    p.rxAll[x.kind]++;
+  }
+  for (const p of Object.values(pins)) if (p.rxAll) { p.rx = p.rxAll; drawPin(p); }
+}
+
 /* 마지막 화면: AI마다 고른 곳을 고른 순서대로 잇는 코스를 그리고, 캐릭터는 자기 코스를 오가며 걸음 */
 function smoothLine(pts, seg = 14) {
   if (pts.length < 3) return { line: pts, at: pts.map((_, k) => k) };
@@ -827,6 +876,9 @@ async function finale() {
   const all = Object.values(chars).flatMap((c) => (c.stops ?? []).map((s) => s.ll));
   if (all.length) { map.flyToBounds(L.latLngBounds(all), { padding: [44, 44], duration: 1.1 / speed }); await wait(1300); }
   if (run !== runId) return;
+  await playReactions(r.board, run);
+  if (run !== runId) return;
+  setTitle(`후보 보드 반응 끝 · 회의 안건 ${r.board.agenda.length}개`);
   Object.values(chars).forEach((c, n) => {
     if (!c.stops?.length) return;
     c.path = smoothLine(c.stops.map((s) => s.ll));
@@ -837,9 +889,11 @@ async function finale() {
     c.marks = c.stops.map((s) => L.marker(s.ll, { interactive: false, zIndexOffset: 500,
       icon: L.divIcon({ className: '', iconSize: [18, 18], iconAnchor: [9 - STOP_AT[c.i % 4][0], 9 - STOP_AT[c.i % 4][1]], html: `<div class="stopn" style="--c:${c.agent.color}">${s.n}</div>` }) }).addTo(map));
   });
-  $('board').innerHTML = `<h3>후보 보드 · 여러 AI가 고른 곳이 위로</h3>` + [...board.candidates].sort((a, b) => b.proposedBy.length - a.proposedBy.length).map((x) =>
-    `<div class="board-item"><span>${x.proposedBy.length > 1 ? '⭐' : '📍'}</span><span>${esc(x.name)}</span><span class="who">${x.proposedBy.map((id) => { const a = agents.find((g) => g.agentId === id); return face(a?.color ?? '#999', a?.i ?? 0); }).join('')}</span></div>`).join('');
-  $('meetNote').textContent = `실제 실행 ${(r.ms / 1000).toFixed(1)}초 · LLM ${r.llmCalls}회 · 선은 AI마다 고른 곳을 고른 순서대로 이은 코스예요. AI 이름을 누르면 그 AI의 코스와 이유가 보여요. 이동 시간이 들어간 실제 일정 경로는 6단계(일정 배치)에서 그립니다.`;
+  const rxText = (x) => [['👍', 'like'], ['⚠', 'warn'], ['✕', 'block']].map(([e, k]) => [e, x.reactions.filter((y) => y.kind === k).length]).filter(([, k]) => k).map(([e, k]) => `${e}${k}`).join(' ');
+  $('board').innerHTML = (r.board.agenda.length ? `<h3>이번 회의 안건 ${r.board.agenda.length}개</h3><ol class="agenda">${r.board.agenda.map((x) => `<li>${esc(x.text)}</li>`).join('')}</ol>` : '<p class="note">⚠·✕가 붙은 곳이 없어 회의 안건 없음</p>') +
+    `<h3>후보 보드 · 여러 AI가 고른 곳이 위로</h3>` + [...r.board.candidates].sort((a, b) => b.proposedBy.length - a.proposedBy.length).map((x) =>
+    `<div class="board-item"><span>${x.reactions.some((y) => y.kind === 'block') ? '✕' : x.proposedBy.length > 1 ? '⭐' : '📍'}</span><span>${esc(x.name)} <span class="note">${rxText(x)}</span></span><span class="who">${x.proposedBy.map((id) => { const a = agents.find((g) => g.agentId === id); return face(a?.color ?? '#999', a?.i ?? 0); }).join('')}</span></div>`).join('');
+  $('meetNote').textContent = `실제 실행 ${(r.ms / 1000).toFixed(1)}초 · LLM ${r.llmCalls}회 (반응은 코드, LLM 0회) · 선은 AI마다 고른 곳을 고른 순서대로 이은 코스예요. AI 이름을 누르면 그 AI의 코스와 이유가 보여요. 이동 시간이 들어간 실제 일정 경로는 6단계(일정 배치)에서 그립니다.`;
   $('sub').textContent += ' · 1차 후보 완성';
   await wait(1800 + 450 * 3);
   for (const c of Object.values(chars)) wander(c, run);

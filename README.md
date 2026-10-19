@@ -1,4 +1,12 @@
+<div align="center">
+
 # J-ourney · 여행회의
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Event](https://img.shields.io/badge/Event-2026%20DevDay-blue.svg)
+![Demo](https://img.shields.io/badge/Demo-2026.11.04-brightgreen.svg)
+
+</div>
 
 > 구성원마다 성향을 담은 AI가 하나씩 생기고, AI 4명이 지도 위에서 자료를 조사·조율하여 여행 일정 합의안을 만드는 단체 여행 플래너임. 일정 확정은 사람 4명의 투표로만 이루어짐.
 

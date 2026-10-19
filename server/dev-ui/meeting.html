@@ -140,7 +140,7 @@ const STEPS = [
   { n: 1, name: '준비', kind: 'code', live: true, desc: '시연 여행(4명 성향) + 회의 조건' },
   { n: 2, name: '후보 찾기', kind: 'code', live: true, desc: 'DB·인기도·혼잡도 → 40곳' },
   { n: 3, name: '고르기 ×4', kind: 'llm', live: true, desc: 'AI 4명이 각자 3곳 + 숙소' },
-  { n: 4, name: '후보 보드', kind: 'code', desc: '4명 반응 👍 ⚠ ✕' },
+  { n: 4, name: '후보 보드', kind: 'code', live: true, desc: '4명 반응 👍 ⚠ ✕ · 회의 안건' },
   { n: 5, name: '사람 확인', kind: 'human', desc: '빼기·넣기 (interrupt)' },
   { n: 6, name: '일정 배치', kind: 'code', desc: 'A안·B안 시간 계산' },
   { n: 7, name: '평가 1라운드', kind: 'llm', desc: '4명 찬반·요청' },
@@ -289,8 +289,8 @@ function showRetrieve() {
     <div><h3>사람별 몫 (점수 상위 8곳)</h3><div class="members">${top}</div></div>
     <div><h3>후보 ${r.candidates.length}곳 (점수 합 순)</h3><div class="tw"><table>
       <thead><tr><th>이름</th><th>유형</th><th>공식 분류</th><th>인기</th><th>혼잡</th><th>영업</th>${people.map((m) => `<th>${esc(m.nickname)}</th>`).join('')}<th>합</th><th>몫</th></tr></thead>
-      <tbody>${r.candidates.map((c) => `<tr><td>${esc(c.name)}${c.restUnknown ? ' <span class="warn" title="휴무일 문장을 읽지 못함">휴무 확인</span>' : ''}</td><td>${typeName[c.type] ?? c.type}</td><td>${esc(c.category ?? '-')}</td><td class="n">${c.popularity ?? '-'}</td><td class="n">${c.crowd ?? '-'}</td><td>${esc(c.hours ?? '-')}</td>${people.map((m) => `<td class="n ${c.scores[m.memberId] === best(c) && best(c) > 0 ? 'best' : ''}">${c.scores[m.memberId]}</td>`).join('')}<td class="n">${c.total}</td><td>${c.forMembers.map((id) => `<span class="pill">${esc(nameOf[id])}</span>`).join('')}</td></tr>`).join('')}</tbody></table></div></div>
-    <div><h3>숙소 후보 (${r.nights}박 · 40곳과 따로)</h3>${r.nights ? `<div class="tw"><table><thead><tr><th>이름</th><th>공식 분류</th><th>인기</th>${people.map((m) => `<th>${esc(m.nickname)}</th>`).join('')}<th>합</th></tr></thead><tbody>${r.lodgings.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.category ?? '-')}</td><td class="n">${c.popularity ?? '-'}</td>${people.map((m) => `<td class="n">${c.scores[m.memberId]}</td>`).join('')}<td class="n">${c.total}</td></tr>`).join('') || '<tr><td colspan="9" class="note">조건에 맞는 숙소 없음</td></tr>'}</tbody></table></div>` : '<span class="note">당일치기라 숙소 후보를 뽑지 않음</span>'}</div>
+      <tbody>${r.candidates.map((c) => `<tr><td>${esc(c.name)}${c.restUnknown ? ' <span class="warn" title="휴무일 문장을 읽지 못함">휴무 확인</span>' : ''}${c.outside ? ` <span class="warn" title="꼭 지킬 것이 여행지에 없어 같은 시·도에서 넣음">여행지 밖(${esc(c.outside)})</span>` : ''}</td><td>${typeName[c.type] ?? c.type}</td><td>${esc(c.category ?? '-')}</td><td class="n">${c.popularity ?? '-'}</td><td class="n">${c.crowd ?? '-'}</td><td>${esc(c.hours ?? '-')}</td>${people.map((m) => `<td class="n ${c.scores[m.memberId] === best(c) && best(c) > 0 ? 'best' : ''}">${c.scores[m.memberId]}</td>`).join('')}<td class="n">${c.total}</td><td>${c.forMembers.map((id) => `<span class="pill">${esc(nameOf[id])}</span>`).join('')}</td></tr>`).join('')}</tbody></table></div></div>
+    <div><h3>숙소 후보 (${r.nights}박 · 40곳과 따로)</h3>${r.nights ? `<div class="tw"><table><thead><tr><th>이름</th><th>공식 분류</th><th>인기</th>${people.map((m) => `<th>${esc(m.nickname)}</th>`).join('')}<th>합</th></tr></thead><tbody>${r.lodgings.map((c) => `<tr><td>${esc(c.name)}${c.outside ? ` <span class="warn">여행지 밖(${esc(c.outside)})</span>` : ''}</td><td>${esc(c.category ?? '-')}</td><td class="n">${c.popularity ?? '-'}</td>${people.map((m) => `<td class="n">${c.scores[m.memberId]}</td>`).join('')}<td class="n">${c.total}</td></tr>`).join('') || '<tr><td colspan="9" class="note">조건에 맞는 숙소 없음</td></tr>'}</tbody></table></div>` : '<span class="note">당일치기라 숙소 후보를 뽑지 않음</span>'}</div>
     <div><h3>LLM에 넣을 한 줄 표 (3단계 고르기 입력 · ${r.table.length.toLocaleString('ko-KR')}자)</h3><pre>${esc(r.table)}</pre></div>${r.nights ? `
     <div><h3>숙소 후보 한 줄 표 (${r.lodgingTable.length.toLocaleString('ko-KR')}자)</h3><pre>${esc(r.lodgingTable)}</pre></div>` : ''}
     <p class="note">근거: ${esc(r.sources.join(', '))} · 기준일 ${esc(r.baseDate)} · 장소 정보 ⓒ한국관광공사</p>`;
@@ -308,6 +308,18 @@ const NODE_VIEW = {
       const who = d?.members?.find((m) => m.memberId === p?.memberId);
       return [who ? `${who.nickname} AI` : `AI ${i + 1}`, '', p ? `${p.source === 'llm' ? 'AI' : '규칙'} · ${p.picks.map((x) => nameOfPlace(d, x.id)).join(', ')}` : '', p ? p.memberId : ''];
     }),
+  },
+  react: {
+    desc: '장소마다 4명의 반응(👍 ⚠ ✕)을 규칙으로 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 정리 (코드, LLM 0회)',
+    subs: (d) => {
+      const all = d?.board ? d.board.candidates.flatMap((c) => c.reactions) : [];
+      const n = (k) => all.filter((x) => x.kind === k).length;
+      return [
+        ['반응 판정 (4명 × 보드)', '', d?.board ? `👍 ${n('like')} · ⚠ ${n('warn')} · ✕ ${n('block')}` : ''],
+        ['회의 안건 (⚠·✕·여행지 밖)', '', d?.board ? `${d.board.agenda.length}개` : ''],
+        ['반응 점수 (6단계로 넘김)', '', d?.scores ? `일정안에서 뺄 곳 ${d.scores.filter((x) => x.blocked).length}곳` : ''],
+      ];
+    },
   },
   gather: {
     desc: '4명이 고른 곳을 후보 보드로 모음 (여러 명이 고른 곳은 함께 표시, 반응은 4단계에서)',
@@ -400,6 +412,7 @@ async function loadGraph() {
   try {
     graphShape = await api('GET', '/dev/meeting/graph');
     drawFlow(last);
+    if ($('rules4')) $('rules4').innerHTML = rules4();
   } catch (err) {
     $('lg').innerHTML = `<span class="bad">그래프를 불러오지 못함: ${esc(err.message)}</span>`;
   }
@@ -496,6 +509,12 @@ function agentCards() {
     <div class="say" hidden></div><ol class="picks"></ol></div>`).join('');
 }
 function onLlm(type, d) {
+  // 2단계 이름 맞추기 (회의 1번에 1회, 사람 카드 없이 기록만)
+  if (d.purpose === 'names') {
+    if (type === 'llm.request') log(`이름 맞추기 → LLM 요청 (코드가 이름으로 못 찾은 꼭 지킬 것 ${d.input.rules.length}개)`);
+    else if (type === 'llm.response') log(`이름 맞추기 ← LLM 응답 (${d.ms}ms, 입력 ${d.usage.input ?? '-'} / 출력 ${d.usage.output ?? '-'}토큰)`);
+    return;
+  }
   const c = card(d.agentId);
   if (!c) return;
   const box = c.querySelector('.typing');
@@ -644,16 +663,63 @@ function showPicks(r) {
     c.querySelector('.picks').innerHTML = p.picks.map((x) => `<li><b>${esc(nameOfPlace(r, x.id))}</b> <span class="note">${esc(x.reason)}</span></li>`).join('') + (p.lodging ? `<li>🏨 <b>${esc(nameOfPlace(r, p.lodging.id))}</b> <span class="note">${esc(p.lodging.reason)}</span></li>` : '');
   }
   const nick = (agentId) => agents3.find((a) => a.agentId === agentId)?.nickname ?? agentId;
-  $('board3').innerHTML = `<h3>후보 보드 (${r.board.candidates.length}곳 · 반응은 4단계에서)</h3><div class="tw"><table><thead><tr><th>장소</th><th>고른 AI</th><th>수</th></tr></thead><tbody>${[...r.board.candidates].sort((a, b) => b.proposedBy.length - a.proposedBy.length).map((c) => `<tr><td>${esc(c.name)}</td><td>${c.proposedBy.map((id) => `<span class="pill">${esc(nick(id))}</span>`).join('')}</td><td class="n ${c.proposedBy.length > 1 ? 'best' : ''}">${c.proposedBy.length}</td></tr>`).join('')}</tbody></table></div>`;
+  if (cur === 4) $('board3').innerHTML = reactBoard(r);
+  else $('board3').innerHTML = `<h3>후보 보드 (${r.board.candidates.length}곳 · 반응은 4단계에서)</h3><div class="tw"><table><thead><tr><th>장소</th><th>고른 AI</th><th>수</th></tr></thead><tbody>${[...r.board.candidates].sort((a, b) => b.proposedBy.length - a.proposedBy.length).map((c) => `<tr><td>${esc(c.name)}</td><td>${c.proposedBy.map((id) => `<span class="pill">${esc(nick(id))}</span>`).join('')}</td><td class="n ${c.proposedBy.length > 1 ? 'best' : ''}">${c.proposedBy.length}</td></tr>`).join('')}</tbody></table></div>`;
   setKey('picks', `${r.picks.length}명`);
   setKey('board', `${r.board.candidates.length}곳`);
 }
+
+/* 4단계: 1–4단계를 함께 실행하고 (LLM은 3단계 4회뿐) 반응표·안건·반응 점수를 보여 줌. 규칙 값은 서버(/dev/meeting/graph)에서 받음 */
+function rules4() {
+  const k = graphShape?.rules?.react;
+  if (!k) return '<span class="note">규칙 값을 불러오는 중…</span>';
+  return `<div class="tw"><table><thead><tr><th>반응</th><th>조건 (문장은 해석하지 않고 2단계 표시·숫자만 봄)</th></tr></thead><tbody>
+    <tr><td>👍</td><td>꼭 지킬 것·좋아요와 맞음 (고른 AI는 '고름'으로 이미 보여 따로 붙이지 않음)</td></tr>
+    <tr><td>⚠</td><td>싫어요와 맞음 · 혼잡 예측이 그 사람 상한을 넘음 · 영업시간과 하루 시간대가 ${k.tightMinutes}분 미만 겹침 · 줄 서기 싫어요 + 인기 ${k.queuePopularity} 이상 음식점</td></tr>
+    <tr><td>✕</td><td>영업시간이 하루 시간대(시작~끝, 끝을 안 정한 사람은 ${esc(k.dayEnd)})와 전혀 안 겹침 (숙소는 보지 않음)</td></tr></tbody></table></div>
+    <p class="note">한 사람은 한 장소에 가장 무거운 반응 하나만 붙임 (✕ > ⚠ > 👍). 반응 점수(6단계로 넘김): 고름 +${k.score.proposed} · 👍 +${k.score.like} · ⚠ ${k.score.warn} · ✕가 붙은 곳은 일정안에서 뺌. 안건은 ✕ → ⚠ 많은 순으로 최대 ${k.agendaMax}개 (여행지 밖에서 넣은 꼭 지킬 것은 ⚠ 하나로 셈), 여행지 밖이라 넣지 못한 꼭 지킬 것(지역)은 메모로 뒤에 붙임. 가격은 장소별 자료가 없어 보지 않음.</p>`;
+}
+function renderStep4() {
+  const p = $('panel');
+  p.innerHTML = `<h2>4. 후보 보드 반응 <span class="k code">코드 · LLM 0회</span></h2>
+    <p class="muted">3단계 후보 보드의 장소마다 AI 4명의 반응을 규칙으로 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 정리합니다. 실행하면 1–4단계가 함께 돌고 LLM은 3단계의 4회뿐입니다.</p>
+    <div id="rules4">${rules4()}</div>
+    <div class="row"><button class="btn primary" id="run3">회의 실행 (1–4단계, 실제 LLM)</button>
+      <label style="display:flex;flex-direction:row;align-items:center;gap:6px">보기 속도 <select id="speed3"><option value="1">실제 속도</option><option value="0.5">½ (느리게 재생)</option><option value="0.25">¼ (느리게 재생)</option></select></label>
+      <span id="run3Msg" class="note"></span><span id="runsInfo" class="pill">실행 횟수 확인 중</span></div>
+    <div id="board3"></div>
+    <div id="agents3" class="members"></div>`;
+  loadRuns();
+  $('run3').onclick = runMeeting;
+  if (last3) showPicks(last3);
+}
+function reactBoard(r) {
+  const nick = (agentId) => agents3.find((a) => a.agentId === agentId)?.nickname ?? agentId;
+  const score = new Map((r.scores ?? []).map((x) => [x.placeId, x]));
+  const key = (c) => (score.get(c.placeId)?.blocked ? -Infinity : score.get(c.placeId)?.score ?? 0);
+  const MARK = { like: ['👍', 'ok'], warn: ['⚠', 'warn'], block: ['✕', 'bad'] };
+  const all = r.board.candidates.flatMap((c) => c.reactions);
+  const n = (k) => all.filter((x) => x.kind === k).length;
+  const cell = (c, a) => {
+    const rx = c.reactions.find((x) => x.agentId === a.agentId);
+    const mine = c.proposedBy.includes(a.agentId) ? '<span class="pill">고름</span> ' : '';
+    return `<td>${mine}${rx ? `<b class="${MARK[rx.kind][1]}">${MARK[rx.kind][0]}</b> <span class="note">${esc(rx.reason)}</span>` : mine ? '' : '<span class="note">—</span>'}</td>`;
+  };
+  return `<h3>후보 보드 반응 (${r.board.candidates.length}곳 · 👍 ${n('like')} · ⚠ ${n('warn')} · ✕ ${n('block')})</h3>
+    <div class="tw"><table><thead><tr><th>장소</th>${agents3.map((a) => `<th>${esc(a.nickname)} AI</th>`).join('')}<th>점수</th></tr></thead><tbody>
+    ${[...r.board.candidates].sort((a, b) => key(b) - key(a)).map((c) => `<tr><td>${esc(c.name)}</td>${agents3.map((a) => cell(c, a)).join('')}<td class="n ${score.get(c.placeId)?.blocked ? 'bad' : ''}">${score.get(c.placeId)?.blocked ? '제외' : score.get(c.placeId)?.score ?? '-'}</td></tr>`).join('')}
+    </tbody></table></div>
+    <h3>회의 안건 (${r.board.agenda.length}개)</h3>${r.board.agenda.length ? `<ol>${r.board.agenda.map((x) => `<li>${esc(x.text)}</li>`).join('')}</ol>` : '<p class="note">⚠·✕가 붙은 곳이 없어 안건 없음</p>'}
+    ${(r.retrieve?.nameMatches ?? []).length ? `<h3>이름 맞추기 (2단계, LLM)</h3><ul>${r.retrieve.nameMatches.map((x) => `<li>${esc(nameOfMember(x.memberId))}: '${esc(x.keyword)}' → ${x.places.map(esc).join(', ')}</li>`).join('')}</ul><p class="note">코드가 이름·메뉴 글자로 못 찾은 꼭 지킬 것을 LLM이 같은 곳으로 맞춤 (사람 확인 대상)</p>` : ''}`;
+}
+const nameOfMember = (memberId) => agents3.find((a) => a.memberId === memberId)?.nickname ?? memberId;
 
 function render() {
   renderSteps();
   if (cur === 1) renderStep1();
   else if (cur === 2) renderStep2();
   else if (cur === 3) renderStep3();
+  else if (cur === 4) renderStep4();
 }
 render();
 loadGraph();

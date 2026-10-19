@@ -52,11 +52,13 @@ export const LIKE_OPTIONS: readonly { id: string; text: string; emoji: string; c
   { id: 'like_sea', text: '바다', emoji: '🌊', codes: ['NA0207', 'NA0208', 'NA0209'] }, // 항구·포구, 해안절경, 해변·해수욕장
   { id: 'like_spa', text: '온천·스파', emoji: '♨️', codes: ['EX0501', 'EX0502'] }, // 온천·사우나·스파, 찜질방
   { id: 'like_history', text: '역사', emoji: '🏯', codes: ['HS'] },
-  { id: 'like_culture', text: '문화·전시', emoji: '🎨', codes: ['VE'] },
+  // 문화관광(VE) 중 랜드마크·문화거리/마을·전시시설만 (도서관·문화원·학교·경기장·교통시설·공연장(공연이 없으면 볼 것이 없음)·도시공원 등은 넣지 않음, 10/19 사용자 결정)
+  { id: 'like_culture', text: '문화·전시', emoji: '🎨', codes: ['VE01', 'VE04', 'VE07'] },
   { id: 'like_festival', text: '축제·공연', emoji: '🎪', codes: ['EV'] },
   { id: 'like_experience', text: '체험', emoji: '🧪', codes: ['EX'] },
   { id: 'like_leisure', text: '레저·스포츠', emoji: '🏄', codes: ['LS'] },
-  { id: 'like_shopping', text: '쇼핑', emoji: '🛍️', codes: ['SH'] },
+  // 쇼핑(SH) 중 대형마트(SH03)·사후면세점(SH0403, 체인 매장이 대부분)은 넣지 않음 (10/19 사용자 결정)
+  { id: 'like_shopping', text: '쇼핑', emoji: '🛍️', codes: ['SH01', 'SH02', 'SH0401', 'SH0402', 'SH05', 'SH06', 'SH07'] },
   { id: 'like_food', text: '맛집', emoji: '🍽️', codes: ['FD'] },
   { id: 'like_cafe', text: '카페', emoji: '☕', codes: ['FD05'] }, // 카페·찻집
   // 야경은 공식 분류가 없어 가장 가까운 타워·전망대만 둠 (밤 풍경 여부는 회의 LLM이 소개글로 판단)

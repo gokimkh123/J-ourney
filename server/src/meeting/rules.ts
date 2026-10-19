@@ -12,6 +12,8 @@ import { normName } from './match.js';
 export const NAME_MIN_CHARS = 2;
 
 export interface RulePlace {
+  /** 장소 id (2단계 이름 맞추기(LLM)로 맞춘 곳을 가리킬 때만 씀) */
+  id?: string;
   title: string;
   /** 공식 분류 코드 (lcls3, 예: EX050100) */
   code: string | null;

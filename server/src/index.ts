@@ -66,6 +66,7 @@ const app = createApp({
   checkpointer,
   meetingLlm,
   devUi: config.devUi,
+  devUiTunnel: config.devUiTunnel,
   llm,
   llmDailyLimit: config.llmDailyLimit,
   llmCardsPerMember: config.llmCardsPerMember,

@@ -16,6 +16,8 @@ export const config = {
   port: num('PORT', 3000),
   databaseUrl: process.env.DATABASE_URL ?? null,
   devUi: process.env.DEV_UI === 'true',
+  /** true이면 터널(팀원)로 들어온 요청도 시험 경로(회의 실행)를 씀. 실행마다 LLM·집중률을 부르므로 팀원 확인 기간에만 켬 (기본 꺼짐) */
+  devUiTunnel: process.env.DEV_UI_TUNNEL === 'true',
   /** LangChain 공급자 이름과 모델 (예: anthropic / claude-haiku-5-5) */
   llmProvider: process.env.LLM_PROVIDER ?? 'anthropic',
   llmModel: process.env.LLM_MODEL ?? null,

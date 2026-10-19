@@ -6,10 +6,12 @@ import { ApiError } from '../lib/errors.js';
 import type { LlmClient } from '../llm/client.js';
 import { memberColor } from '../routes/views.js';
 import type { TourClient } from '../tour/client.js';
+import { nameMatcher } from './names.js';
 import { type PickResult, boardOf, buildPickGraph } from './pick.js';
+import { REACT, reactBoard } from './react.js';
 import { type MemberInput, type RetrieveResult, retrieveCandidates } from './retrieve.js';
 import { type MeetingEventDraft, type MeetingLimits, agentIdOf, reserveMeetingLlm } from './runs.js';
-import type { ResolvedDestination, TripConditions } from './types.js';
+import type { Board, ResolvedDestination, TripConditions } from './types.js';
 
 /** 회의 공유 상태 (단계를 하나씩 붙이며 늘림) */
 export const MeetingState = Annotation.Root({
@@ -23,8 +25,8 @@ export const MeetingState = Annotation.Root({
   pool: Annotation<RetrieveResult | null>(),
   /** 3단계 결과: AI 4명이 고른 곳 (사람마다 동시에 끝나는 대로 합쳐짐) */
   picks: Annotation<PickResult[]>({ reducer: (a, b) => a.concat(b), default: () => [] }),
-  /** 3단계 끝의 후보 보드 (명세서 board.updated의 data) */
-  board: Annotation<ReturnType<typeof boardOf> | null>(),
+  /** 후보 보드 (명세서 board.updated의 data): 3단계 끝에 모으고, 4단계에서 반응·안건을 채워 덮어씀 */
+  board: Annotation<Board | null>(),
 });
 export type MeetingStateType = typeof MeetingState.State;
 
@@ -94,14 +96,21 @@ async function prepare(deps: MeetingDeps, state: MeetingStateType): Promise<Part
   };
 }
 
-/** 2단계 후보 찾기 (코드, LLM 0회) */
+/**
+ * 2단계 후보 찾기 (코드). 장소·음식 넣기 규칙을 이름으로 못 찾을 때만 이름 맞추기 LLM 1회 (회의 실행 상한·하루 상한 안에서, 실행 중일 때만)
+ * 2단계만 보는 시험 경로(upTo 'retrieve', 회의 id 없음)는 LLM을 부르지 않음
+ */
 async function retrieve(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const meetingId = state.meetingId;
+  const matchNames =
+    deps.llm && deps.limits && meetingId ? nameMatcher(deps.llm, () => reserveMeetingLlm(deps.db, meetingId, deps.limits!), deps.traceLlm ? emit : undefined) : null;
   const result = await retrieveCandidates(deps.db, {
     conditions: state.conditions!,
     destination: state.destination!,
     members: state.members,
     crowdClient: deps.crowdClient,
     today: deps.today,
+    matchNames,
   });
   if (state.meetingId) {
     // 사람마다 조사 과정을 실제 자료로 알림 (지도에서 캐릭터가 그 장소로 이동): 장소 찾기 → 인기 순위 → 혼잡도
@@ -126,26 +135,35 @@ async function gather(state: MeetingStateType): Promise<Partial<MeetingStateType
   return { board };
 }
 
+/** 4단계: 장소마다 4명의 반응(👍 ⚠ ✕)을 규칙으로 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 (코드, LLM 0회) */
+async function react(state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const board = reactBoard(state.board!, state.pool!, state.members);
+  emit({ type: 'board.updated', data: board });
+  return { board };
+}
+
 /** 회의 그래프의 노드 이름과 단계 (시험 화면의 그래프 칸에 씀) */
 export const MEETING_NODES = [
   { id: 'prepare', step: 1, label: '준비', kind: 'code' },
   { id: 'retrieve', step: 2, label: '후보 찾기', kind: 'code' },
   { id: 'pick', step: 3, label: '고르기 ×4', kind: 'llm' },
   { id: 'gather', step: 3, label: '후보 보드 모으기', kind: 'code' },
+  { id: 'react', step: 4, label: '반응·안건', kind: 'code' },
 ] as const;
 
-/** 실제 회의 그래프의 노드·연결 (그래프를 만들기만 하고 실행하지 않음) */
+/** 실제 회의 그래프의 노드·연결과 단계별 규칙 값 (그래프를 만들기만 하고 실행하지 않음, 시험 화면이 규칙 값을 따로 적지 않게 함) */
 export async function meetingGraphShape() {
   const graph = await buildMeetingGraph({ db: null as unknown as Db, crowdClient: null }).getGraphAsync();
   const meta = new Map<string, (typeof MEETING_NODES)[number]>(MEETING_NODES.map((n) => [n.id, n]));
   return {
     nodes: Object.keys(graph.nodes).map((id) => ({ id, step: meta.get(id)?.step ?? null, label: meta.get(id)?.label ?? id, kind: meta.get(id)?.kind ?? 'edge' })),
     edges: graph.edges.map((e) => ({ from: e.source, to: e.target, conditional: !!e.conditional })),
+    rules: { react: REACT },
   };
 }
 
 /**
- * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드
+ * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건
  * upTo 'retrieve'면 2단계에서 멈춤 (LLM 0회 시험용)
  */
 export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' } = {}) {
@@ -163,12 +181,14 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
   return base
     .addNode('pick', pickGraph)
     .addNode('gather', gather)
+    .addNode('react', react)
     .addConditionalEdges(
       'retrieve',
       (s) => s.members.map((m) => new Send('pick', { who: m, from: s.pool, meeting: s.meetingId, draft: null, tries: 0, calls: 0, blocked: false, picks: [] })),
       ['pick'],
     )
     .addEdge('pick', 'gather')
-    .addEdge('gather', END)
+    .addEdge('gather', 'react')
+    .addEdge('react', END)
     .compile({ checkpointer: deps.checkpointer });
 }

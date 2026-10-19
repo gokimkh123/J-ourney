@@ -40,6 +40,7 @@ export interface OpenHours {
 }
 
 const minutes = (h: string, m: string) => Number(h) * 60 + Number(m);
+const DAY = 1440;
 
 /** '3월~10월' · '11, 12, 1, 2월'을 달 목록으로 */
 function monthsOf(seg: string): Set<number> {
@@ -57,7 +58,7 @@ function monthsOf(seg: string): Set<number> {
 }
 
 /**
- * 그 달의 영업시간. '상시'는 하루 종일, 계절·달 구간이 있으면 그 달 구간, 없으면 첫 시간 구간
+ * 그 달의 영업시간. '상시'는 하루 종일, 계절·달 구간이 있으면 그 달 구간, 없으면 모든 시간 구간을 이은 범위
  * 성수기에만 시간을 적은 곳(예: '매년 6월~9월 09:00~18:00')은 그 밖의 달에 null (시간 제한 없이 봄)
  */
 export function hoursOn(raw: string | null | undefined, month: number): OpenHours | null {
@@ -74,8 +75,15 @@ export function hoursOn(raw: string | null | undefined, month: number): OpenHour
   if (season) {
     return monthsOf(`${season[1]}~${season[2]}`).has(month) ? { open: minutes(season[3], season[4]), close: minutes(season[5], season[6]) } : null;
   }
-  const m = text.match(range);
-  return m ? { open: minutes(m[1], m[2]), close: minutes(m[3], m[4]) } : null;
+  // 구간이 여러 개면(조식·중식·석식, 평일·주말) 가장 이른 시작 ~ 가장 늦은 끝으로 봄 (자정 넘김 구간은 다음 날까지 셈)
+  const spans = [...text.matchAll(new RegExp(range.source, 'g'))].map((m) => {
+    const open = minutes(m[1], m[2]);
+    const close = minutes(m[3], m[4]);
+    return { open, close: close <= open ? close + DAY : close };
+  });
+  if (!spans.length) return null;
+  const close = Math.max(...spans.map((x) => x.close));
+  return { open: Math.min(...spans.map((x) => x.open)), close: close > DAY ? close - DAY : close };
 }
 
 /** 화면·LLM에 보여 줄 짧은 영업시간 문구 */

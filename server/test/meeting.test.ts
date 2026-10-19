@@ -3,12 +3,15 @@ import { categories, crowdFetches, placeRelations, places, regions, relatedFetch
 import { ruleCategories } from '../src/meeting/categories.js';
 import { closedOn, hoursOn } from '../src/meeting/hours.js';
 import { resolveDestination } from '../src/meeting/regions.js';
-import { type MemberInput, retrieveCandidates } from '../src/meeting/retrieve.js';
+import { type NameMatcher, type NamePlace, type NameRule, decodeNames, nameInput, nameMatcher } from '../src/meeting/names.js';
+import { type MemberInput, RETRIEVE, retrieveCandidates } from '../src/meeting/retrieve.js';
 import { ruleMatcher, sameName } from '../src/meeting/rules.js';
 import type { PersonaProfile } from '../src/persona/types.js';
 import type { TourClient } from '../src/tour/client.js';
 import { meetings } from '../src/db/schema.js';
-import { PICK } from '../src/meeting/pick.js';
+import { PICK, ensureOwnLimits, ownConflictIds, pickTables } from '../src/meeting/pick.js';
+import { REACT, overlapMinutes, reactBoard, reactionOf, reactionScore } from '../src/meeting/react.js';
+import type { Candidate, RetrieveResult } from '../src/meeting/retrieve.js';
 import { MINSU, answersOf, call, createTestApp, fakeLlm } from './helpers.js';
 
 const REGIONS = [
@@ -159,6 +162,9 @@ describe('휴무일·영업시간 판독', () => {
     expect(hoursOn('매년 6월~9월 09:00~18:00', 11)).toBeNull();
     expect(hoursOn('상시 개방', 5)).toEqual({ open: 0, close: 1440 });
     expect(hoursOn('- 09:00~21:00<br>- 마지막 주문 20:30', 5)).toEqual({ open: 540, close: 1260 });
+    // 구간이 여러 개면 가장 이른 시작 ~ 가장 늦은 끝 (10/15 전국 확인: 조식 구간만 읽어 늦게 시작하는 사람에게 ✕가 잘못 붙던 문제)
+    expect(hoursOn('조식 06:30~10:00중식 12:00~14:30석식 18:00~21:00', 10)).toEqual({ open: 390, close: 1260 });
+    expect(hoursOn('11:00~15:00, 17:00~02:00', 10)).toEqual({ open: 660, close: 120 });
   });
 });
 
@@ -353,6 +359,62 @@ describe('후보 찾기 (2단계, 코드)', () => {
     expect(r.candidates.map((c) => c.name)).toContain('태종대온천찜질방'); // 서연의 꼭 지킬 것은 남음
   });
 
+  it('장소·음식 넣기 규칙을 이름으로 못 찾으면 이름 맞추기(LLM 1회)로 같은 곳을 꼭 지킬 곳으로 넣고, 그래도 없으면 까닭을 남김', async () => {
+    const { db } = await createTestApp();
+    await seedDb(db);
+    await db.insert(places).values({
+      contentId: 'xsky', contentTypeId: 12, title: '부산엑스더스카이', regionCode: '26', districtCode: '350', lcls1: 'VE', lcls3: 'VE010200',
+      lat: 35.16, lng: 129.17, visible: true, listRaw: {}, introRaw: { restdate: '연중무휴' }, detailSyncedAt: new Date(),
+    });
+    const fan: MemberInput = { ...MEMBERS[1], memberId: 'm7', mustKeep: [rule('include', '엘시티 전망대', '엘시티 전망대 가기', 'place'), rule('include', '없는곳', '없는곳 가기', 'place')] };
+    const asked: NameRule[][] = [];
+    const matchNames: NameMatcher = async (rules, list) => {
+      asked.push([...rules]);
+      expect(list.some((p) => p.title === '부산엑스더스카이')).toBe(true);
+      return new Map([[rules.find((r) => r.keyword === '엘시티 전망대')!.key, ['xsky', '목록에없는id']]]);
+    };
+    const r = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [fan], crowdClient: null, today: '2026-11-01', matchNames });
+    expect(asked).toHaveLength(1); // 맞추지 못한 규칙을 한 번에 보냄
+    expect(asked[0].map((x) => x.keyword)).toEqual(['엘시티 전망대', '없는곳']);
+    expect(r.candidates.find((c) => c.name === '부산엑스더스카이')?.marks.m7).toContainEqual({ kind: 'must', label: '엘시티 전망대 가기' });
+    expect(r.nameMatches).toEqual([{ memberId: 'm7', label: '엘시티 전망대 가기', keyword: '엘시티 전망대', places: ['부산엑스더스카이'] }]); // 목록에 없는 id는 버림
+    expect(r.missingRules).toEqual([{ memberId: 'm7', label: '없는곳 가기', reason: '여행지 자료에서 찾지 못함' }]);
+    // 4단계 안건에 메모로 보임
+    const board = reactBoard({ candidates: [], agenda: [] }, r, [fan]);
+    expect(board.agenda.map((a) => a.text)).toContain(`${fan.nickname}의 꼭 지킬 것 '없는곳 가기' — 여행지 자료에서 찾지 못함`);
+    expect(board.agenda.map((a) => a.text)).toContain(`${fan.nickname}의 꼭 지킬 것 '엘시티 전망대' → 부산엑스더스카이 (이름이 달라 AI가 맞춤)`);
+    // 이름 맞추기가 없으면(LLM 없음·상한) 맞추지 않고 둘 다 메모로 남김
+    const plain = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [fan], crowdClient: null, today: '2026-11-01' });
+    expect(plain.nameMatches).toEqual([]);
+    expect(plain.missingRules.map((x) => x.label)).toEqual(['엘시티 전망대 가기', '없는곳 가기']);
+    // 코드가 이름으로 찾은 규칙은 묻지 않음 (LLM 0회)
+    const found: MemberInput = { ...MEMBERS[1], memberId: 'm8', mustKeep: [rule('include', '태종대온천찜질방', '찜질방 가기', 'place')] };
+    let calls = 0;
+    const counting: NameMatcher = async () => {
+      calls++;
+      return new Map();
+    };
+    await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [found], crowdClient: null, today: '2026-11-01', matchNames: counting });
+    expect(calls).toBe(0);
+  });
+
+  it('여행지 밖 장소가 편도 상한보다 멀면 넣지 않고 가장 가까운 곳의 시간만 안건 메모로 남김', async () => {
+    const { db } = await createTestApp();
+    await seedDb(db);
+    // 같은 시·도의 다른 구에 있지만 여행지에서 약 100km 떨어진 곳
+    await db.insert(places).values({
+      contentId: 'far1', contentTypeId: 12, title: '먼바위', regionCode: '26', districtCode: '710', lcls1: 'NA', lcls3: 'NA030300',
+      lat: 36.0, lng: 129.5, visible: true, listRaw: {}, introRaw: { restdate: '연중무휴' }, detailSyncedAt: new Date(),
+    });
+    const suyeong = { regionCode: '26', regionName: '부산광역시', districtCodes: ['500'], label: '부산광역시 수영구' };
+    const fan: MemberInput = { ...MEMBERS[1], memberId: 'm7', mustKeep: [rule('include', '먼바위', '먼바위 가기', 'place')] };
+    const r = await retrieveCandidates(db, { conditions: CONDITIONS, destination: suyeong, members: [fan], crowdClient: null, today: '2026-11-01' });
+    expect(r.candidates.some((c) => c.outside)).toBe(false);
+    expect(r.outsideRules).toHaveLength(1);
+    expect(r.outsideRules[0].placeId).toBeNull();
+    expect(r.outsideRules[0].minutes).toBeGreaterThan(RETRIEVE.outsideMaxMinutes);
+  });
+
   it('여행 날짜가 30일 밖이면 집중률을 부르지 않고 null로 둠', async () => {
     const { db } = await createTestApp();
     await seedDb(db);
@@ -361,6 +423,41 @@ describe('후보 찾기 (2단계, 코드)', () => {
     expect(crowd.calls).toEqual([]);
     expect(r.crowd.note).toBe('out_of_window');
     expect(r.candidates.every((c) => c.crowd === null)).toBe(true);
+  });
+
+  it('구 단위 여행에서 꼭 지킬 것이 여행지에 없고 같은 시·도의 다른 구에만 있으면 1곳을 여행지 밖으로 넣음 (지역 규칙은 기록만)', async () => {
+    const { db } = await createTestApp();
+    await seedDb(db);
+    const suyeong = { regionCode: '26', regionName: '부산광역시', districtCodes: ['500'], label: '부산광역시 수영구' };
+    const fan: MemberInput = {
+      ...MEMBERS[1],
+      memberId: 'm7',
+      mustKeep: [
+        rule('include', '태종대온천찜질방', '태종대온천찜질방 가기', 'place'), // 영도구에만 있음 → 넣음
+        rule('include', '해수욕장', '바다 보기', 'category', ['NA020900']), // 수영구에 광안리가 있음 → 밖에서 찾지 않음
+        rule('include', '해운대', '해운대 가기', 'area'), // 지역 규칙 → 기록만
+        rule('include', '없는곳', '없는곳 가기', 'place'), // 어디에도 없음
+      ],
+    };
+    const r = await retrieveCandidates(db, { conditions: CONDITIONS, destination: suyeong, members: [fan], crowdClient: null, today: '2026-11-01' });
+    const outside = r.candidates.filter((c) => c.outside);
+    expect(outside.map((c) => [c.name, c.outside, c.forMembers])).toEqual([['태종대온천찜질방', '영도구', ['m7']]]);
+    expect(outside[0].reasons.m7).toContain('꼭 지킬 것: 태종대온천찜질방 가기');
+    expect(r.candidates.map((c) => c.name)).not.toContain('송정해수욕장'); // 다른 구 장소는 꼭 지킬 것으로만 들어옴
+    expect(r.outsideRules).toEqual([
+      { memberId: 'm7', label: '태종대온천찜질방 가기', district: '영도구', placeId: 'p3', minutes: 49 },
+      { memberId: 'm7', label: '해운대 가기', district: '해운대구', placeId: null },
+    ]);
+    expect(outside[0].outsideMinutes).toBe(49); // 여행지 가운데에서 편도 어림 (상한 안)
+    // 여행지 밖 장소도 같은 거르기를 거침 (다른 사람의 꼭 피할 것에 걸리면 넣지 않음)
+    const spaHater: MemberInput = { ...MEMBERS[0], memberId: 'm6', mustKeep: [rule('avoid', '온천', '온천 빼기', 'category', ['EX050100'])] };
+    const blocked = await retrieveCandidates(db, { conditions: CONDITIONS, destination: suyeong, members: [fan, spaHater], crowdClient: null, today: '2026-11-01' });
+    expect(blocked.candidates.some((c) => c.outside)).toBe(false);
+    expect(blocked.outsideRules.map((x) => x.placeId)).toEqual([null]);
+    // 시·도 전체 여행이면 여행지 밖이 없음
+    const whole = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [fan], crowdClient: null, today: '2026-11-01' });
+    expect(whole.outsideRules).toEqual([]);
+    expect(whole.candidates.some((c) => c.outside)).toBe(false);
   });
 });
 
@@ -410,9 +507,17 @@ describe('회의 조건 API와 시험 경로', () => {
 
     // 그래프 칸: 실제 그래프 구조 (실행·외부 호출 없음), 터널 요청은 막음
     const graph = await call(app, 'GET', '/dev/meeting/graph');
-    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', '__end__']);
+    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', 'react', '__end__']);
     expect(graph.body.edges).toContainEqual({ from: 'prepare', to: 'retrieve', conditional: false });
+    expect(graph.body.edges).toContainEqual({ from: 'gather', to: 'react', conditional: false });
     expect((await call(app, 'GET', '/dev/meeting/graph', undefined, undefined, { 'cf-connecting-ip': '203.0.113.7' })).status).toBe(403);
+  });
+
+  it('DEV_UI_TUNNEL을 켜면 터널 요청도 시험 경로를 씀 (팀원 확인용)', async () => {
+    const { app } = await createTestApp({ devUi: true, devUiTunnel: true });
+    const graph = await call(app, 'GET', '/dev/meeting/graph', undefined, undefined, { 'cf-connecting-ip': '203.0.113.7' });
+    expect(graph.status).toBe(200);
+    expect(graph.body.nodes.length).toBeGreaterThan(0);
   });
 });
 
@@ -421,6 +526,8 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
   const pickLlm = (bad: (title: string, n: number) => boolean = () => false, ignoreMust: (title: string, n: number) => boolean = () => false) => {
     const seen = new Map<string, number>();
     return fakeLlm((input) => {
+      // 2단계 이름 맞추기 요청: 시연 여행 지은의 '흰여울문화마을'은 시험 자료에 없어 1번 불리고, 맞는 곳이 없다고 답함
+      if (input.rules) return { matches: [] };
       const title: string = input.me.title;
       const n = (seen.get(title) ?? 0) + 1;
       seen.set(title, n);
@@ -454,8 +561,8 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const { status, lines } = await run(app, token);
     expect(status).toBe(200);
     const result = lines.find((l) => l.kind === 'result');
-    expect(result.llmCalls).toBe(4);
-    expect(llm.calls).toBe(4);
+    expect(result.llmCalls).toBe(4 + 1); // 고르기 4 + 이름 맞추기 1 (흰여울문화마을이 시험 자료에 없음)
+    expect(llm.calls).toBe(4 + 1);
     expect(result.picks).toHaveLength(4);
     const ids = new Set(result.retrieve.candidates.map((c: { id: string }) => c.id));
     for (const p of result.picks) {
@@ -471,6 +578,19 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(events[0]).toMatchObject({ type: 'meeting.started', data: { kind: 'meeting' } });
     expect(events[0].data.agents).toHaveLength(4);
     expect(events.at(-1).type).toBe('board.updated');
+    // 4단계: 3단계 끝의 보드(반응 없음) 다음에 반응·안건을 채운 보드를 한 번 더 보냄 (코드, LLM 횟수 그대로)
+    const boards = events.filter((e) => e.type === 'board.updated');
+    expect(boards).toHaveLength(2);
+    expect(boards[0].data.candidates.every((c: { reactions: unknown[] }) => c.reactions.length === 0)).toBe(true);
+    const agentIds = new Set(events[0].data.agents.map((a: { agentId: string }) => a.agentId));
+    for (const c of boards[1].data.candidates) for (const r of c.reactions) {
+      expect(agentIds.has(r.agentId)).toBe(true);
+      expect(['like', 'warn', 'block']).toContain(r.kind);
+      expect(r.reason.length).toBeGreaterThan(0);
+    }
+    expect(Array.isArray(boards[1].data.agenda)).toBe(true);
+    expect(result.board).toEqual(boards[1].data);
+    expect(result.scores).toHaveLength(result.board.candidates.length);
     const stages = events.filter((e) => e.type === 'research.progress').map((e) => e.data.stage);
     for (const stage of ['planning', 'done']) expect(stages.filter((x) => x === stage)).toHaveLength(4);
     expect(stages.filter((x) => x === 'searching').length).toBeGreaterThanOrEqual(8); // 사람마다 장소 찾기·인기 순위(+혼잡도)
@@ -480,13 +600,20 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(done.data.focus).toMatchObject({ label: expect.any(String) });
 
     // 시험 화면용 LLM 과정(요청·받는 글자·응답)은 화면으로만 보내고 DB에는 기록하지 않음
-    const traces = lines.filter((l) => l.kind === 'llm');
+    // 2단계 이름 맞추기 1회는 agentId 없이 purpose 'names'로 보냄 (고르기 4회와 구분)
+    const names = lines.filter((l) => l.kind === 'llm' && l.data.purpose === 'names');
+    expect(names.map((l) => l.type)).toEqual(['llm.request', 'llm.response']);
+    expect(names[0].data.input.rules).toEqual(['1|장소|흰여울문화마을']);
+    const traces = lines.filter((l) => l.kind === 'llm' && l.data.purpose !== 'names');
     expect(traces.filter((l) => l.type === 'llm.request')).toHaveLength(4);
     expect(traces.filter((l) => l.type === 'llm.response')).toHaveLength(4);
     const first = traces.find((l) => l.type === 'llm.request').data.agentId;
     const typed = traces.filter((l) => l.type === 'llm.delta' && l.data.agentId === first).map((l) => l.data.text).join('');
     expect(JSON.parse(typed).picks).toHaveLength(PICK.count);
-    expect(traces.find((l) => l.type === 'llm.request').data.input.candidates.split('\n')[0]).toBe('번호|이름|분류|인기|혼잡|요약'); // 고르기에 필요한 칸만, id 대신 짧은 번호
+    const input = traces.find((l) => l.type === 'llm.request').data.input;
+    expect(input.candidates.split('\n')[0]).toBe('번호|이름|분류|인기|혼잡|영업|내 조건|소개'); // id 대신 짧은 번호, 숫자의 뜻·내 조건은 코드가 적음
+    expect(input.me.limits[0]).toMatch(/^하루 일정 \d{2}:\d{2}~\d{2}:\d{2}$/);
+    expect(['이름난 곳', '덜 알려진 곳', '상관없음']).toContain(input.me.prefers.popular);
 
     // 다시 접속한 화면은 afterSeq 뒤부터 받음
     const again = await call(app, 'GET', '/dev/meeting/events?afterSeq=2', undefined, token);
@@ -494,7 +621,25 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(again.body.events).toHaveLength(events.length - 2);
     expect(again.body.events.some((e: { type: string }) => e.type.startsWith('llm.'))).toBe(false);
     const [row] = await db.select().from(meetings);
-    expect(row).toMatchObject({ status: 'done', llmCalls: 4, runNo: 1 });
+    expect(row).toMatchObject({ status: 'done', llmCalls: 4 + 1, runNo: 1 });
+  });
+
+  it('자기 조건에 걸린 곳을 고르면 그 AI만 1번 더 부르고, 그래도 고르면 코드가 걸리지 않는 곳으로 바꿈', async () => {
+    // 나쁜 AI: 내 조건에 ⚠·✕가 붙은 곳을 먼저 고름
+    const llm = fakeLlm((input) => {
+      const rows = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|'));
+      const bad = rows.filter((r) => /^[⚠✕]/.test(r[6])).map((r) => r[0]);
+      const ids = [...new Set([...input.me.mustKeepIds, ...bad, ...rows.map((r) => r[0])])].slice(0, PICK.count);
+      const lodging = (input.lodgings as string) ? (input.lodgings as string).split('\n')[1].split('|')[0] : '';
+      return { picks: ids.map((id) => ({ id, reason: '좋아요' })), lodging: { id: lodging, reason: lodging ? '편해요' : '' }, comment: '가요!' };
+    });
+    const { app, token } = await readyTrip({ llm });
+    const result = (await run(app, token)).lines.find((l) => l.kind === 'result');
+    expect(result.picks.filter((p: { llmCalls: number }) => p.llmCalls === 2).length).toBeGreaterThan(0); // 걸린 곳을 고른 AI만 1번 더 (서연: 오래 걷기 싫어요 ↔ 장산)
+    expect(result.llmCalls).toBe(1 + 4 + result.picks.filter((p: { llmCalls: number }) => p.llmCalls === 2).length);
+    // 최종 보드에는 고른 사람 자신의 ⚠·✕가 없음
+    const self = result.board.candidates.flatMap((c: { proposedBy: string[]; reactions: { agentId: string; kind: string }[] }) => c.reactions.filter((r) => c.proposedBy.includes(r.agentId) && r.kind !== 'like'));
+    expect(self).toEqual([]);
   });
 
   it('형식이 틀리면 1번 더 부르고, 그래도 틀리면 그 사람만 규칙 고르기 (몫 점수 상위)', async () => {
@@ -507,7 +652,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(byTitle['반짝반짝 탐험가']).toMatchObject({ source: 'rule', llmCalls: PICK.tries });
     const host = result.picks.find((p: { source: string; llmCalls: number }) => p.llmCalls === 2 && p.source === 'llm');
     expect(host).toBeDefined();
-    expect(result.llmCalls).toBe(PICK.tries + 2 + 1 + 1);
+    expect(result.llmCalls).toBe(1 + PICK.tries + 2 + 1 + 1); // 이름 맞추기 1 + 고르기
     const rulePick = byTitle['반짝반짝 탐험가'];
     const mine = result.retrieve.candidates.filter((c: { forMembers: string[] }) => c.forMembers.includes(rulePick.memberId));
     expect(rulePick.picks.every((x: { id: string }) => mine.some((c: { id: string }) => c.id === x.id))).toBe(true);
@@ -523,6 +668,17 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const spa = result.retrieve.candidates.find((c: { name: string }) => c.name === '태종대온천찜질방');
     expect(p.picks.map((x: { id: string }) => x.id)).toContain(spa.id);
     expect(p.picks).toHaveLength(PICK.count);
+  });
+
+  it('후보가 고를 수보다 적으면 LLM을 부르지 않고 규칙 고르기 (있는 곳만)', async () => {
+    const llm = pickLlm();
+    const { app, token, tripId } = await readyTrip({ llm });
+    await call(app, 'PUT', `/trips/${tripId}/conditions`, { destination: '부산 영도구', startDate: '2099-11-07', endDate: '2099-11-07' }, token);
+    const result = (await run(app, token)).lines.find((l) => l.kind === 'result');
+    expect(result.retrieve.candidates.length).toBeLessThan(PICK.count);
+    expect(llm.calls).toBe(1); // 고르기는 0회, 이름 맞추기 1회뿐 (흰여울문화마을이 시험 자료에 없음)
+    expect(result.llmCalls).toBe(1);
+    expect(result.picks.every((p: { source: string; picks: unknown[] }) => p.source === 'rule' && p.picks.length === result.retrieve.candidates.length)).toBe(true);
   });
 
   it('하루 LLM 상한이면 부르지 않고 4명 모두 규칙 고르기, 실행 횟수는 여행당 상한까지', async () => {
@@ -551,3 +707,161 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
   });
 });
 
+describe('4단계 후보 보드 반응 (코드, LLM 0회)', () => {
+  const cand = (over: Partial<Candidate>): Candidate => ({
+    id: 'c', name: '장소', type: 12, category: null, popularity: null, crowd: null, hours: null, open: null, restUnknown: false,
+    summary: '', menu: null, lat: null, lng: null, scores: {}, total: 0, reasons: {}, marks: {}, forMembers: [], ...over,
+  });
+  const [minsu, jieun, hyunwoo, seoyeon] = MEMBERS;
+  const at = (h: number, m = 0) => h * 60 + m;
+  const react = (c: Candidate, who: MemberInput, opts: Partial<{ lodging: boolean; proposed: boolean }> = {}) => reactionOf(c, who, { lodging: false, proposed: false, ...opts });
+
+  it('좋아요·꼭 지킬 것은 👍, 싫어요·혼잡 상한은 ⚠, 한 사람에게는 가장 무거운 반응 하나 (고른 사람의 👍는 붙이지 않음)', () => {
+    const c = cand({ marks: { m1: [{ kind: 'like', label: '바다' }], m4: [{ kind: 'must', label: '온천 가기' }, { kind: 'crowd', label: '85' }], m2: [{ kind: 'dislike', label: '오래 걷기' }] } });
+    expect(react(c, minsu)).toEqual({ kind: 'like', reason: '좋아요: 바다' });
+    expect(react(c, minsu, { proposed: true })).toBeNull();
+    expect(react(c, seoyeon)).toEqual({ kind: 'warn', reason: '혼잡 예측 85 (상한 80)' });
+    expect(react(c, jieun)).toEqual({ kind: 'warn', reason: '싫어요: 오래 걷기' });
+    expect(react(c, hyunwoo)).toBeNull();
+  });
+
+  it('영업시간이 하루 시간대와 안 겹치면 ✕, 조금만 겹치면 ⚠ (끝 시각을 안 정한 사람은 23:00까지, 자정 넘김 영업도 셈)', () => {
+    expect(REACT.dayEnd).toBe('23:00');
+    expect(react(cand({ open: { open: at(23, 30), close: at(2) } }), minsu)).toEqual({ kind: 'block', reason: '23:30부터 영업 (하루 일정은 23:00까지)' });
+    expect(react(cand({ open: { open: at(5), close: at(9) } }), minsu)).toEqual({ kind: 'block', reason: '09:00에 영업 끝 (하루 일정은 09:30부터)' });
+    expect(react(cand({ open: { open: at(22, 30), close: at(5) } }), minsu)).toEqual({ kind: 'warn', reason: '영업시간과 30분만 겹침 (22:30~05:00)' });
+    const early = { ...minsu, profile: { ...minsu.profile, endTime: '21:00' } };
+    expect(react(cand({ open: { open: at(18), close: at(2) } }), early)).toBeNull(); // 18:00–21:00 세 시간 겹침
+    expect(react(cand({ open: { open: at(21, 30), close: at(2) } }), early)?.kind).toBe('block');
+    expect(react(cand({ open: { open: 0, close: 1440 } }), minsu)).toBeNull(); // 상시
+    expect(react(cand({ open: { open: at(23, 30), close: at(2) } }), minsu, { lodging: true })).toBeNull(); // 숙소는 영업시간을 보지 않음
+    expect(react(cand({ open: null }), minsu)).toBeNull(); // 시간을 못 읽으면 반응 없음
+    expect(overlapMinutes({ open: at(18), close: at(2) }, at(9, 30), at(23))).toBe(300);
+    expect(react(cand({ open: { open: at(20), close: at(20, 20) } }), minsu)).toBeNull(); // 원래 20분짜리(분수 쇼)는 하루 시간대 안에 다 들어가면 ⚠ 아님
+  });
+
+  it('줄 서기 싫어요인 사람에게 인기도가 높은 음식점은 ⚠ (음식점만, 기준값 이상만)', () => {
+    const queue = { ...hyunwoo, profile: { ...hyunwoo.profile, avoidQueue: true } };
+    expect(react(cand({ type: 39, popularity: 90 }), queue)).toEqual({ kind: 'warn', reason: '인기가 많아서 줄 설 수도 있어요 (인기 90)' });
+    expect(react(cand({ type: 39, popularity: REACT.queuePopularity - 1 }), queue)).toBeNull();
+    expect(react(cand({ type: 12, popularity: 95 }), queue)).toBeNull();
+    expect(react(cand({ type: 39, popularity: 95 }), hyunwoo)).toBeNull();
+  });
+
+  it('보드 전체: 반응을 붙이고 ✕ → ⚠ 많은 순으로 안건을 최대 5개, 반응 점수는 고름 +2 · 👍 +1 · ⚠ −1 · ✕ 제외', () => {
+    const late = { open: at(23, 30), close: at(2) };
+    const spots = [
+      cand({ id: 's1', name: '광안리', marks: { m4: [{ kind: 'crowd', label: '85' }], m2: [{ kind: 'like', label: '바다' }] } }),
+      cand({ id: 's2', name: '심야 바', open: late }),
+      cand({ id: 's3', name: '장산', marks: { m4: [{ kind: 'dislike', label: '오래 걷기' }] } }),
+      ...['s4', 's5', 's6', 's7'].map((id) => cand({ id, name: id, marks: { m2: [{ kind: 'dislike', label: '오래 걷기' }] } })),
+    ];
+    const pool = { candidates: spots, lodgings: [cand({ id: 'h1', name: '호텔', type: 32, open: late })] } as unknown as RetrieveResult;
+    const row = (id: string, by: string[]) => ({ placeId: `plc_${id}`, name: id, lat: null, lng: null, proposedBy: by.map((m) => `agt_${m}`), reactions: [] });
+    const board = reactBoard({ candidates: [row('s1', ['m1']), row('s2', ['m2']), row('s3', ['m1', 'm3']), ...['s4', 's5', 's6', 's7'].map((id) => row(id, ['m3'])), row('h1', ['m1'])], agenda: [] }, pool, MEMBERS);
+    const s1 = board.candidates[0];
+    expect(s1.reactions).toEqual([{ agentId: 'agt_m2', kind: 'like', reason: '좋아요: 바다' }, { agentId: 'agt_m4', kind: 'warn', reason: '혼잡 예측 85 (상한 80)' }]);
+    expect(reactionScore(s1)).toEqual({ score: 2 + 1 - 1, blocked: false });
+    expect(reactionScore(board.candidates[1])).toMatchObject({ blocked: true }); // 4명 모두 23:00까지라 ✕
+    expect(board.candidates.at(-1)!.reactions).toEqual([]); // 숙소는 영업시간을 보지 않음
+    expect(board.agenda).toHaveLength(REACT.agendaMax);
+    expect(board.agenda[0].placeId).toBe('plc_s2');
+    expect(board.agenda[0].text).toBe('s2 — 지은 고름 ↔ 민수 ✕ 23:30부터 영업 (하루 일정은 23:00까지) · 지은 ✕ 23:30부터 영업 (하루 일정은 23:00까지) · 현우 ✕ 23:30부터 영업 (하루 일정은 23:00까지) · 서연 ✕ 23:30부터 영업 (하루 일정은 23:00까지)');
+    expect(board.agenda[1].text).toBe('s3 — 민수·현우 고름 ↔ 서연 ⚠ 싫어요: 오래 걷기'); // ⚠ 수가 같으면 고른 사람이 많은 곳 먼저 (이름은 보드의 이름)
+  });
+
+  it('여행지 밖에서 넣은 곳은 안건으로 올리고, 넣지 못한 꼭 지킬 것(지역)은 메모로 붙임', () => {
+    const far = cand({ id: 'f1', name: '태종대온천찜질방', outside: '영도구', marks: { m4: [{ kind: 'must', label: '온천 가기' }] } });
+    const pool = {
+      candidates: [far],
+      lodgings: [],
+      outsideRules: [
+        { memberId: 'm4', label: '온천 가기', district: '영도구', placeId: 'f1' },
+        { memberId: 'm2', label: '해운대 가기', district: '해운대구', placeId: null },
+      ],
+    } as unknown as RetrieveResult;
+    const board = reactBoard({ candidates: [{ placeId: 'plc_f1', name: '태종대온천찜질방', lat: null, lng: null, proposedBy: ['agt_m4'], reactions: [] }], agenda: [] }, pool, MEMBERS);
+    expect(board.agenda).toEqual([
+      { placeId: 'plc_f1', text: '태종대온천찜질방 — 서연 고름 · 여행지 밖(영도구)' },
+      { placeId: null, text: "지은의 꼭 지킬 것 '해운대 가기' — 여행지 밖(해운대구)이라 후보에 넣지 못함" },
+    ]);
+  });
+});
+
+describe('3단계 입력 표·자기 조건 (코드)', () => {
+  const cand = (over: Partial<Candidate>): Candidate => ({
+    id: 'c', name: '장소', type: 12, category: null, popularity: null, crowd: null, hours: null, open: null, restUnknown: false,
+    summary: '', menu: null, lat: null, lng: null, scores: {}, total: 0, reasons: {}, marks: {}, forMembers: [], ...over,
+  });
+  const seoyeon = MEMBERS[3]; // 붐비는 곳·오래 걷기 싫어요, 혼잡 상한 80
+  const crowded = cand({ id: 'a', name: '수성동계곡', crowd: 96, popularity: 1, summary: '인왕산 자락 계곡', marks: { m4: [{ kind: 'crowd', label: '96' }] }, scores: { m4: 5 }, forMembers: ['m4'] });
+  const sea = cand({ id: 'b', name: '광안리', crowd: 20, popularity: 80, marks: { m4: [{ kind: 'like', label: '바다' }] }, scores: { m4: 4 }, forMembers: ['m4'] });
+  const food = cand({ id: 'c', name: '신창국밥', type: 39, menu: '돼지국밥', summary: '맑은 육수', scores: { m4: 1 } });
+  const quiet = cand({ id: 'd', name: '송정해수욕장', crowd: 40, popularity: 50, scores: { m4: 3 }, forMembers: ['m4'] });
+  const pool = { nights: 0, candidates: [crowded, sea, food, quiet], lodgings: [] } as unknown as RetrieveResult;
+
+  it('표에 숫자의 뜻과 그 사람 기준에 걸리는지(내 조건)를 코드가 적어 줌', () => {
+    const rows = pickTables(pool, seoyeon).candidates.split('\n');
+    expect(rows[0]).toBe('번호|이름|분류|인기|혼잡|영업|내 조건|소개');
+    expect(rows[1]).toBe('1|수성동계곡|-|1(덜 알려짐)|96(매우 붐빔)|-|⚠ 혼잡 예측 96 (상한 80)|인왕산 자락 계곡');
+    expect(rows[2]).toBe('2|광안리|-|80(이름난 곳)|20(한산)|-|👍 좋아요: 바다|-');
+    expect(rows[3]).toContain('|메뉴: 돼지국밥 · 맑은 육수');
+  });
+
+  it('여행지 밖에서 넣은 곳은 소개 칸 앞에 여행지 밖(시·군·구)을 적음', () => {
+    const far = cand({ id: 'e', name: '태종대온천찜질방', outside: '영도구', summary: '온천과 찜질방' });
+    const rows = pickTables({ ...pool, candidates: [far] } as unknown as RetrieveResult, seoyeon).candidates.split('\n');
+    expect(rows[1]).toBe('1|태종대온천찜질방|-|-|-|-|-|여행지 밖(영도구) · 온천과 찜질방');
+  });
+
+  it('자기 조건에 걸린 곳은 걸리지 않는 점수 상위(자기 몫 먼저)로 바꾸고, 꼭 지킬 것은 걸려도 그대로 둠', () => {
+    expect([...ownConflictIds(seoyeon, pool)]).toEqual(['a']);
+    const picked = { memberId: 'm4', source: 'llm' as const, picks: [{ id: 'a', reason: '한적해요' }, { id: 'b', reason: '바다' }, { id: 'c', reason: '국밥' }], lodging: null, comment: '', llmCalls: 2 };
+    expect(ensureOwnLimits(picked, seoyeon, pool).picks.map((p) => p.id)).toEqual(['d', 'b', 'c']);
+    const mustPool = { ...pool, candidates: [{ ...crowded, reasons: { m4: ['꼭 지킬 것: 계곡 가기'] } }, sea, food, quiet] } as unknown as RetrieveResult;
+    expect(ownConflictIds(seoyeon, mustPool).size).toBe(0);
+    expect(ensureOwnLimits(picked, seoyeon, mustPool).picks.map((p) => p.id)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('이름 맞추기 (2단계, LLM 1회)', () => {
+  const rules: NameRule[] = [
+    { key: 'a', label: '엘시티 전망대 가기', keyword: '엘시티 전망대', target: 'place' },
+    { key: 'b', label: '곰장어 먹기', keyword: '곰장어 구이', target: 'food' },
+  ];
+  const list: NamePlace[] = [
+    { id: 'x', title: '부산엑스더스카이', category: '타워/전망대', district: '해운대구', isFood: false, menu: null, summary: '해운대 엘시티 100층 전망대', popularity: 90 },
+    { id: 'y', title: '자갈치꼼장어', category: '관광식당', district: '중구', isFood: true, menu: '꼼장어구이, 장어탕', summary: null, popularity: null },
+    { id: 'z', title: '해운대 전망 카페', category: '카페', district: '해운대구', isFood: true, menu: '커피', summary: null, popularity: null },
+  ];
+
+  it('후보는 글자 겹침·인기 순으로 줄여 짧은 번호로 보내고, 답의 번호를 id로 되돌림 (없는 번호·없는 규칙은 버림)', () => {
+    const { codes, input } = nameInput(rules, list);
+    expect(input.rules).toEqual(['1|장소|엘시티 전망대', '2|음식|곰장어 구이']);
+    expect(input.places).toContain('부산엑스더스카이'); // 이름이 전혀 달라도 인기 상위라 들어감
+    expect(input.places).toContain('메뉴: 꼼장어구이'); // 음식은 메뉴 글자 겹침
+    const codeOf = (id: string) => [...codes].find(([, v]) => v === id)![0];
+    const back = decodeNames(
+      { matches: [{ rule: 1, why: '소개에 엘시티 전망대', sure: true, places: [codeOf('x'), 'P99'] }, { rule: 9, why: '-', sure: true, places: [codeOf('y')] }, { rule: 2, why: '모름', sure: false, places: [codeOf('y')] }] },
+      rules,
+      codes,
+    );
+    expect(back.get('a')).toEqual(['x']);
+    expect(back.has('b')).toBe(false); // sure가 false면 골랐어도 받지 않음
+    expect(input.places).toContain('엘시티'); // 소개 조각: 규칙 글자가 나오는 곳 둘레
+  });
+
+  it('맞출 규칙이 있을 때 LLM을 1번만 부르고, 상한이면 부르지 않으며, 실패하면 빈 결과', async () => {
+    const llm = fakeLlm(() => ({ matches: [{ rule: 1, why: '같은 곳', sure: true, places: ['P1'] }] }));
+    const out = await nameMatcher(llm, async () => true)(rules, list);
+    expect(llm.calls).toBe(1);
+    expect([...out.keys()]).toEqual(['a']);
+    const blocked = fakeLlm(() => ({ matches: [] }));
+    expect((await nameMatcher(blocked, async () => false)(rules, list)).size).toBe(0);
+    expect(blocked.calls).toBe(0);
+    const broken = fakeLlm(() => {
+      throw new Error('boom');
+    });
+    expect((await nameMatcher(broken, async () => true)(rules, list)).size).toBe(0);
+  });
+});

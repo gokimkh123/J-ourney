@@ -14,7 +14,8 @@ export interface StreamedJson<T> {
   /** 실제로 답한 모델 (예비 모델로 넘어갔으면 그 모델) */
   model: string;
   text: string;
-  usage: { input: number | null; output: number | null };
+  /** input은 캐시 읽기·쓰기를 포함한 전체 입력 토큰. cacheRead·cacheWrite는 그중 캐시에서 읽은·캐시에 쓴 토큰 (Claude만) */
+  usage: { input: number | null; output: number | null; cacheRead?: number; cacheWrite?: number };
   ms: number;
 }
 
@@ -80,8 +81,10 @@ export async function createLangChainLlm({ provider, model, timeoutMs, callToken
       throw new LlmTokenLimitError(`LLM 1회 토큰 상한 초과 예상 (입력 최대 ${upper} + 출력 ${maxOutputTokens} > ${callTokenLimit})`);
     }
   };
+  // Claude: 지시문에 캐시 표시를 붙임. 같은 지시문이 5분 안에 다시 오면 그 부분 입력 단가가 1/10 (처음 한 번은 1.25배)
+  // 10/17 실측: 분류표 3,103토큰을 두 번째 호출부터 캐시에서 읽음. 다른 공급자에는 글 그대로 보냄
   const messages = (system: string, input: unknown) => [
-    { role: 'system', content: system },
+    { role: 'system', content: provider === 'anthropic' ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] : system },
     { role: 'user', content: JSON.stringify(input) },
   ];
   return {
@@ -91,15 +94,18 @@ export async function createLangChainLlm({ provider, model, timeoutMs, callToken
       const started = performance.now();
       const structured = chat.withStructuredOutput(schema, { name: schemaName, method: 'jsonSchema' });
       let text = '';
-      const usage: { input: number | null; output: number | null } = { input: null, output: null };
+      const usage: StreamedJson<unknown>['usage'] = { input: null, output: null };
       // 구조화 출력은 결과를 한 번에 돌려주므로, 안쪽 모델의 글자 조각(on_chat_model_stream)을 모아 보여 주고 끝에 직접 검사함
       for await (const ev of structured.streamEvents(messages(system, input), { version: 'v2', signal: AbortSignal.timeout(timeoutMs) })) {
         if (ev.event !== 'on_chat_model_stream') continue;
-        const chunk = ev.data.chunk as { content?: unknown; usage_metadata?: { input_tokens?: number; output_tokens?: number } };
+        const chunk = ev.data.chunk as { content?: unknown; usage_metadata?: { input_tokens?: number; output_tokens?: number; input_token_details?: { cache_read?: number; cache_creation?: number } } };
         const piece = typeof chunk.content === 'string' ? chunk.content : Array.isArray(chunk.content) ? chunk.content.map((p: { text?: string }) => p?.text ?? '').join('') : '';
         if (chunk.usage_metadata) {
           usage.input = Math.max(usage.input ?? 0, chunk.usage_metadata.input_tokens ?? 0) || usage.input;
           usage.output = Math.max(usage.output ?? 0, chunk.usage_metadata.output_tokens ?? 0) || usage.output;
+          const cache = chunk.usage_metadata.input_token_details;
+          if (cache?.cache_read) usage.cacheRead = Math.max(usage.cacheRead ?? 0, cache.cache_read);
+          if (cache?.cache_creation) usage.cacheWrite = Math.max(usage.cacheWrite ?? 0, cache.cache_creation);
         }
         if (piece) {
           text += piece;

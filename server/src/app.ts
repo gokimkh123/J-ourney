@@ -20,6 +20,8 @@ export interface AppOptions {
   db: Db | null;
   /** true이면 /dev/에서 백엔드 시험 화면을 제공함 (개발용, DEV_UI=true) */
   devUi?: boolean;
+  /** true이면 터널로 들어온 요청도 시험 경로를 씀 (DEV_UI_TUNNEL=true, 기본 꺼짐) */
+  devUiTunnel?: boolean;
   /** null이면 LLM 없이 규칙 카드만 만듦 */
   llm?: LlmClient | null;
   llmDailyLimit?: number;
@@ -50,6 +52,7 @@ const MAX_BODY_BYTES = 32 * 1024;
 export function createApp({
   db,
   devUi = false,
+  devUiTunnel = false,
   llm = null,
   llmDailyLimit = config.llmDailyLimit,
   llmCardsPerMember = config.llmCardsPerMember,
@@ -82,7 +85,7 @@ export function createApp({
     api.route('/', personaRoutes({ db, llm, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret }));
     if (devUi) {
       const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
-      api.route('/', meetingDevRoutes({ db, crowdClient, llm: meetingLlm ?? llm, limits, checkpointer }));
+      api.route('/', meetingDevRoutes({ db, crowdClient, llm: meetingLlm ?? llm, limits, checkpointer, allowTunnel: devUiTunnel }));
     }
   } else {
     api.all('*', () => {

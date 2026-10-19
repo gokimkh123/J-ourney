@@ -8,6 +8,7 @@ import { ApiError } from '../lib/errors.js';
 import { tunnelIp } from '../lib/rate-limit.js';
 import type { LlmClient } from '../llm/client.js';
 import { type MeetingStateType, buildMeetingGraph, loadMeetingInput, meetingGraphShape } from '../meeting/graph.js';
+import { reactionScore } from '../meeting/react.js';
 import { type MeetingEventDraft, type MeetingLimits, eventRecorder, eventsAfter, finishMeeting, isLlmTrace, startMeeting } from '../meeting/runs.js';
 import type { TourClient } from '../tour/client.js';
 
@@ -17,19 +18,21 @@ export interface MeetingDevDeps {
   llm: LlmClient | null;
   limits: MeetingLimits;
   checkpointer: BaseCheckpointSaver;
+  /** true이면 터널(외부) 요청도 받음 (DEV_UI_TUNNEL, 팀원 확인 기간에만) */
+  allowTunnel?: boolean;
 }
 
 /**
  * 회의 엔진 시험 경로 (시험 화면 /dev/meeting 전용, DEV_UI=true일 때만 열림)
- * 실제 외부 API(집중률)·LLM을 부르므로 터널(외부)로 들어온 요청은 막고 이 PC에서만 씀
+ * 실제 외부 API(집중률)·LLM을 부르므로 터널(외부)로 들어온 요청은 막고 이 PC에서만 씀 (allowTunnel이면 터널 요청도 받음)
  */
-export function meetingDevRoutes({ db, crowdClient, llm, limits, checkpointer }: MeetingDevDeps) {
+export function meetingDevRoutes({ db, crowdClient, llm, limits, checkpointer, allowTunnel = false }: MeetingDevDeps) {
   const r = new Hono<AuthEnv>();
   // 그래프는 서버가 켜질 때 한 번만 만듦 (요청마다 다시 만들지 않음)
   const upToRetrieve = buildMeetingGraph({ db, crowdClient }, { upTo: 'retrieve' });
   const meetingGraph = buildMeetingGraph({ db, crowdClient, llm, limits, checkpointer, traceLlm: true });
   r.use('/dev/*', async (c, next) => {
-    if (tunnelIp(c)) throw new ApiError('FORBIDDEN', '시험용 경로는 이 PC에서만 쓸 수 있음');
+    if (!allowTunnel && tunnelIp(c)) throw new ApiError('FORBIDDEN', '시험용 경로는 이 PC에서만 쓸 수 있음');
     await next();
   });
 
@@ -71,7 +74,7 @@ export function meetingDevRoutes({ db, crowdClient, llm, limits, checkpointer }:
   });
 
   /**
-   * 1–3단계 실행 (준비 → 후보 찾기 → 고르기 ×4 → 후보 보드). 결과를 한 줄씩 바로 보냄 (application/x-ndjson)
+   * 1–4단계 실행 (준비 → 후보 찾기 → 고르기 ×4 → 후보 보드 → 반응·안건). 결과를 한 줄씩 바로 보냄 (application/x-ndjson)
    * 줄 종류: event(명세서 봉투, DB에 기록) · llm(LLM 요청·받는 글자·응답, 기록하지 않음) · node(노드가 끝남) · result · error
    * 화면이 닫혀도 회의는 끝까지 진행하고 기록함 (LLM을 이미 부른 결과를 버리지 않음)
    */
@@ -115,7 +118,7 @@ export function meetingDevRoutes({ db, crowdClient, llm, limits, checkpointer }:
           }
           await finishMeeting(db, meeting.id, 'done');
           const [row] = await db.select({ llmCalls: meetings.llmCalls }).from(meetings).where(eq(meetings.id, meeting.id));
-          send({ kind: 'result', ms: Date.now() - started, llmCalls: row.llmCalls, members: state!.members.map((m) => ({ memberId: m.memberId, nickname: m.nickname, title: m.title, color: m.color })), picks: state!.picks, board: state!.board, retrieve: state!.pool });
+          send({ kind: 'result', ms: Date.now() - started, llmCalls: row.llmCalls, members: state!.members.map((m) => ({ memberId: m.memberId, nickname: m.nickname, title: m.title, color: m.color })), picks: state!.picks, board: state!.board, scores: state!.board!.candidates.map((c) => ({ placeId: c.placeId, ...reactionScore(c) })), retrieve: state!.pool });
         } catch (err) {
           await finishMeeting(db, meeting.id, 'failed');
           console.error('회의 실행 실패:', err);
