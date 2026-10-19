@@ -14,7 +14,7 @@ done
 
 # 2. 키 형태 문자열 차단 (추가한 줄만 검사)
 added=$(git diff --cached -U0 --diff-filter=ACM | grep '^+' | grep -v '^+++')
-if printf '%s\n' "$added" | grep -qE 'sk-ant-[A-Za-z0-9_-]{10,}|KakaoAK +[0-9a-fA-F]{32}|(serviceKey=|SERVICE_KEY *[:=] *["'"'"']?)[0-9a-fA-F]{64}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(API_KEY|SECRET|TOKEN|PASSWORD|CLIENT_ID)[A-Z_]* *[:=] *["'"'"']?[A-Za-z0-9_+/=-]{16,}'; then
+if printf '%s\n' "$added" | grep -qE 'sk-ant-[A-Za-z0-9_-]{10,}|KakaoAK +[0-9a-fA-F]{32}|(serviceKey=|SERVICE_KEY *[:=] *["'"'"']?)[0-9a-fA-F]{64}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(API_KEY|SECRET|TOKEN|PASSWORD|CLIENT_ID)[A-Z_]* *[:=] *["'"'"']?[A-Za-z0-9_.+/=-]{16,}'; then
   echo "차단: 추가한 내용에 API 키·비밀값으로 보이는 문자열이 있음 (git diff --cached로 확인)"; fail=1
 fi
 

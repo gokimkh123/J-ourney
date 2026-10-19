@@ -5,6 +5,13 @@ title = "J-ourney gitleaks 설정"
 useDefault = true
 
 [[rules]]
+id = "llm-provider-api-key"
+description = "LLM 공급자 API 키 (Gemini 새 형식 등 기본 규칙에 없는 키를 변수 이름으로 찾음)"
+regex = '''(?i)(?:GOOGLE|GEMINI|GROQ|MISTRAL|OPENAI|OPENROUTER)_API_KEY\s*[:=]\s*["']?([A-Za-z0-9._\-]{30,})'''
+secretGroup = 1
+keywords = ["google_api_key", "gemini_api_key", "groq_api_key", "mistral_api_key", "openai_api_key", "openrouter_api_key"]
+
+[[rules]]
 id = "kakao-rest-api-key"
 description = "카카오 REST API 키"
 regex = '''(?i)(?:KakaoAK\s+|KAKAO_REST_API_KEY\s*[:=]\s*["']?)([0-9a-f]{32})'''

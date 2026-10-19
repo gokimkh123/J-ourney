@@ -7,13 +7,15 @@ COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN npm run build
 
-# 실행 단계: 운영 의존성과 빌드 결과만 포함 (키 파일은 복사하지 않음)
+# 실행 단계: 운영 의존성·빌드 결과·DB 마이그레이션·시험 화면만 포함 (키 파일은 복사하지 않음)
 FROM node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+COPY drizzle ./drizzle
+COPY dev-ui ./dev-ui
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD wget -qO- http://localhost:3000/api/v1/health || exit 1

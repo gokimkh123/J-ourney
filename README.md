@@ -1,10 +1,18 @@
+<div align="center">
+
 # J-ourney · 여행회의
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Event](https://img.shields.io/badge/Event-2026%20DevDay-blue.svg)
+![Demo](https://img.shields.io/badge/Demo-2026.11.04-brightgreen.svg)
+
+</div>
 
 > 구성원마다 성향을 담은 AI가 하나씩 생기고, AI 4명이 지도 위에서 자료를 조사·조율하여 여행 일정 합의안을 만드는 단체 여행 플래너임. 일정 확정은 사람 4명의 투표로만 이루어짐.
 
 ## 1. 소개
 
-- 여행 MBTI 응답으로 구성원별 페르소나(AI)를 생성함
+- 성향 설문(15문항) 응답으로 구성원별 캐릭터 카드(AI)를 만듦
 - AI 4명이 공공 관광 데이터(한국관광공사 TourAPI·관광 빅데이터)로 동시에 조사하고, 공용 후보 보드에서 의견을 나눔
 - 코드가 예산·이동 시간·걸음 수를 계산하고, AI가 평가와 수정 요청을 반복하여 합의안을 만듦
 - 사람 4명이 찬성 또는 수정 요청으로 확정하며, 모든 추천 항목에 선정 근거와 카카오맵 링크를 제공함

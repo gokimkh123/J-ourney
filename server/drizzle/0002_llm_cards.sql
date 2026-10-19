@@ -1,0 +1,1 @@
+ALTER TABLE "members" ADD COLUMN "llm_cards" integer DEFAULT 0 NOT NULL;

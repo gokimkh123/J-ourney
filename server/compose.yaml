@@ -1,0 +1,53 @@
+# 개발 서버 실행 구성 (학교 VM 준비 전까지 김건한 PC에서 사용)
+# 실행: server 폴더에서 docker compose up -d --build
+# 비밀값은 같은 폴더의 .env(git 제외)에서만 읽으며, 이 파일에는 변수 이름만 둠
+name: j-ourney
+
+services:
+  server:
+    build: .
+    init: true
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://journey:${POSTGRES_PASSWORD:?server/.env에 POSTGRES_PASSWORD가 필요함}@db:5432/journey
+      DEV_UI: "true" # 백엔드 시험 화면 /dev/ 제공 (운영 VM에서는 켜지 않음)
+    ports:
+      - "127.0.0.1:3000:3000" # 이 PC에서만 접속, 외부 공유는 tunnel로만 함
+    depends_on:
+      db:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  db:
+    image: postgres:18-alpine
+    environment: # API 키는 넘기지 않음
+      POSTGRES_USER: journey
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?server/.env에 POSTGRES_PASSWORD가 필요함}
+      POSTGRES_DB: journey
+    volumes:
+      - pgdata:/var/lib/postgresql # PostgreSQL 18부터 데이터 위치가 바뀜
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U journey -d journey"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Cloudflare Quick Tunnel: 계정 없이 임시 https 주소 발급, 다시 시작할 때마다 주소가 바뀜
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.0
+    command: tunnel --no-autoupdate --url http://server:3000
+    depends_on:
+      server:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
