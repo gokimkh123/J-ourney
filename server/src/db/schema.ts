@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { boolean, check, doublePrecision, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, unique } from 'drizzle-orm/pg-core';
 import type { Chip, MustKeepRule, PersonaAnswers, PersonaProfile, TraitResult } from '../persona/types.js';
-import type { TripConditions } from '../meeting/types.js';
+import type { ReviewChoice, StoredReview, TripConditions } from '../meeting/types.js';
 
 /** 참가 인원 상한 (방장 포함). 4명 초과 참가는 추후 유료 기능으로 둠 */
 export const MAX_MEMBERS = 4;
@@ -80,6 +80,21 @@ export const llmIpUsage = pgTable(
   },
   (t) => [primaryKey({ columns: [t.day, t.ipHash] })],
 );
+
+/**
+ * LLM 녹화: 실제로 부른 LLM의 답을 요청 지문(sha256)으로 저장함 (LLM_REPLAY에서 같은 요청은 부르지 않고 이 답을 씀)
+ * 요청 원문은 저장하지 않음 (크기, 성향 원문은 personas에 이미 있음). 시험을 다시 돌리는 용도라 지워도 회의·카드 동작에는 지장 없음
+ */
+export const llmRecords = pgTable('llm_records', {
+  key: text('key').primaryKey(),
+  /** 용도 (schemaName: persona_card · meeting_pick · place_names · meeting_react) */
+  purpose: text('purpose').notNull(),
+  /** 부른 LLM 설정 이름 (공급자:모델 → 예비 모델) */
+  model: text('model').notNull(),
+  attempt: smallint('attempt').notNull(),
+  response: jsonb('response').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 /**
  * 장소 — TourAPI(국문 관광정보) 장소 정보 (목록 값과 상세: 소개글·영업시간)
@@ -216,6 +231,7 @@ export const categories = pgTable('categories', {
 /**
  * 회의 실행 (명세서 mtg_): 여행마다 실행 횟수 상한·진행 중 잠금·이 실행의 LLM 호출 수를 둠
  * 단계별 상태는 LangGraph 체크포인트(langgraph 스키마)에 thread_id = 회의 id로 저장됨
+ * status: running 진행 중 · reviewing 5단계 사람 확인 기다림 (그래프가 멈춰 있음) · done 끝 · failed 실패
  */
 export const meetings = pgTable(
   'meetings',
@@ -225,12 +241,31 @@ export const meetings = pgTable(
       .notNull()
       .references(() => trips.id, { onDelete: 'cascade' }),
     runNo: integer('run_no').notNull(),
-    status: text('status', { enum: ['running', 'done', 'failed'] }).notNull(),
+    status: text('status', { enum: ['running', 'reviewing', 'done', 'failed'] }).notNull(),
     llmCalls: integer('llm_calls').notNull().default(0),
+    /** 5단계 사람 확인 요청과 마감 결과 */
+    review: jsonb('review').$type<StoredReview>(),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
   },
   (t) => [unique('meetings_trip_run').on(t.tripId, t.runNo)],
+);
+
+/** 5단계 사람 확인 응답: 구성원마다 1행, 다시 내면 덮어씀. submittedBy는 낸 사람 (시연 모드에서 방장이 대신 내면 방장) */
+export const meetingReviews = pgTable(
+  'meeting_reviews',
+  {
+    meetingId: text('meeting_id')
+      .notNull()
+      .references(() => meetings.id, { onDelete: 'cascade' }),
+    memberId: text('member_id')
+      .notNull()
+      .references(() => members.id, { onDelete: 'cascade' }),
+    choices: jsonb('choices').$type<ReviewChoice[]>().notNull(),
+    submittedBy: text('submitted_by').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.meetingId, t.memberId] })],
 );
 
 /** 회의 이벤트 기록 (명세서 WebSocket 봉투 {type, tripId, seq, at, data}): seq는 여행마다 1부터, 다시 접속하면 afterSeq 뒤부터 보냄 */

@@ -1,23 +1,37 @@
-import { Annotation, type BaseCheckpointSaver, END, START, Send, StateGraph, getWriter } from '@langchain/langgraph';
+import { Annotation, type BaseCheckpointSaver, END, START, Send, StateGraph, getWriter, interrupt } from '@langchain/langgraph';
 import { asc, eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { members, personas, regions, trips } from '../db/schema.js';
 import { ApiError } from '../lib/errors.js';
 import type { LlmClient } from '../llm/client.js';
+import type { LlmRecorder } from '../llm/record.js';
 import { memberColor } from '../routes/views.js';
 import type { TourClient } from '../tour/client.js';
-import { nameMatcher } from './names.js';
-import { type PickResult, boardOf, buildPickGraph } from './pick.js';
-import { REACT, reactBoard } from './react.js';
+import { type SavedNameMatch, nameMatcher, savedNameMatcher } from './names.js';
+import { type PickResult, boardOf, buildPickGraph, savedPickFor } from './pick.js';
+import { type AiReaction, REACT, reactBoard } from './react.js';
+import { acceptReactions, reactRequest } from './react-ai.js';
 import { type MemberInput, type RetrieveResult, retrieveCandidates } from './retrieve.js';
+import { applyReview, reviewRequestOf } from './review.js';
 import { type MeetingEventDraft, type MeetingLimits, agentIdOf, reserveMeetingLlm } from './runs.js';
-import type { Board, ResolvedDestination, TripConditions } from './types.js';
+import type { Board, ResolvedDestination, ReviewDecision, ReviewRequest, TripConditions } from './types.js';
+
+/**
+ * LLM_REPLAY에서 다시 쓰는 지난 결과: 같은 여행의 지난 회의(조건이 같고, 그 뒤로 성향을 바꾸지 않은 사람)에서 AI가 고른 곳과 이름 맞추기
+ * 실행기가 회의를 시작할 때 체크포인트에서 모아 넘김 (LLM_REPLAY가 꺼져 있으면 null)
+ */
+export interface SavedResults {
+  picks: PickResult[];
+  nameMatches: SavedNameMatch[];
+}
 
 /** 회의 공유 상태 (단계를 하나씩 붙이며 늘림) */
 export const MeetingState = Annotation.Root({
   tripId: Annotation<string>(),
   /** 회의 실행 id (mtg_). 1–2단계만 시험할 때는 없음 */
   meetingId: Annotation<string | null>(),
+  /** LLM_REPLAY: 다시 쓸 지난 결과 (있으면 LLM을 부르지 않음, 없는 몫은 규칙) */
+  saved: Annotation<SavedResults | null>(),
   conditions: Annotation<TripConditions | null>(),
   destination: Annotation<ResolvedDestination | null>(),
   members: Annotation<MemberInput[]>(),
@@ -25,8 +39,12 @@ export const MeetingState = Annotation.Root({
   pool: Annotation<RetrieveResult | null>(),
   /** 3단계 결과: AI 4명이 고른 곳 (사람마다 동시에 끝나는 대로 합쳐짐) */
   picks: Annotation<PickResult[]>({ reducer: (a, b) => a.concat(b), default: () => [] }),
-  /** 후보 보드 (명세서 board.updated의 data): 3단계 끝에 모으고, 4단계에서 반응·안건을 채워 덮어씀 */
+  /** 후보 보드 (명세서 board.updated의 data): 3단계 끝에 모으고, 4단계에서 반응·안건을 채워 덮어씀, 5단계에서 뺀 곳을 지움 */
   board: Annotation<Board | null>(),
+  /** 5단계 사람 확인 요청 (4단계 안건 중 장소 안건). 비어 있으면 멈추지 않음 */
+  reviewRequest: Annotation<ReviewRequest | null>(),
+  /** 5단계 결과: 사람 4명이 남김·뺌을 정한 결과 (다수결, 같으면 방장) */
+  reviewDecision: Annotation<ReviewDecision | null>(),
 });
 export type MeetingStateType = typeof MeetingState.State;
 
@@ -37,6 +55,8 @@ export interface MeetingDeps {
   today?: string;
   /** 3단계부터 씀 (null이면 규칙 고르기) */
   llm?: LlmClient | null;
+  /** LLM 녹화·재생: 녹화된 같은 요청의 답은 부르지 않고 씀 (LLM 횟수에 세지 않음), 부른 답은 녹화 */
+  recorder?: LlmRecorder | null;
   limits?: MeetingLimits;
   /** true면 LLM 요청·받는 글자·응답을 시험 화면용 이벤트로 보냄 */
   traceLlm?: boolean;
@@ -98,12 +118,19 @@ async function prepare(deps: MeetingDeps, state: MeetingStateType): Promise<Part
 
 /**
  * 2단계 후보 찾기 (코드). 장소·음식 넣기 규칙을 이름으로 못 찾을 때만 이름 맞추기 LLM 1회 (회의 실행 상한·하루 상한 안에서, 실행 중일 때만)
- * 2단계만 보는 시험 경로(upTo 'retrieve', 회의 id 없음)는 LLM을 부르지 않음
+ * 2단계만 보는 시험 경로(upTo 'retrieve', 회의 id 없음)는 LLM을 부르지 않음. LLM_REPLAY면 지난 회의에서 맞춘 이름을 다시 씀
  */
 async function retrieve(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
   const meetingId = state.meetingId;
+  // 녹화된 같은 요청 → 지난 회의에서 맞춘 이름(LLM_REPLAY) → LLM 순서 (회의 실행 중일 때만)
   const matchNames =
-    deps.llm && deps.limits && meetingId ? nameMatcher(deps.llm, () => reserveMeetingLlm(deps.db, meetingId, deps.limits!), deps.traceLlm ? emit : undefined) : null;
+    deps.limits && meetingId
+      ? nameMatcher(deps.llm ?? null, () => reserveMeetingLlm(deps.db, meetingId, deps.limits!), {
+          emit: deps.traceLlm ? emit : undefined,
+          recorder: deps.recorder,
+          saved: state.saved ? savedNameMatcher(state.saved.nameMatches) : undefined,
+        })
+      : null;
   const result = await retrieveCandidates(deps.db, {
     conditions: state.conditions!,
     destination: state.destination!,
@@ -135,11 +162,59 @@ async function gather(state: MeetingStateType): Promise<Partial<MeetingStateType
   return { board };
 }
 
-/** 4단계: 장소마다 4명의 반응(👍 ⚠ ✕)을 규칙으로 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 (코드, LLM 0회) */
-async function react(state: MeetingStateType): Promise<Partial<MeetingStateType>> {
-  const board = reactBoard(state.board!, state.pool!, state.members);
+/**
+ * 4단계 AI 반응: 사람마다 LLM 1회(4명 동시에, 생각 켬) — 그 사람이 쓴 말·바람을 그대로 들고 다른 AI가 고른 곳의 소개글을 읽어 👍⚠ (근거를 코드가 확인, ✕는 코드 규칙만)
+ * 순서: 녹화된 같은 요청의 답(LLM 횟수에 세지 않음) → 회의 LLM 상한 안에서 부름(부른 답은 녹화). 못 쓰면 그 사람은 코드 반응만
+ */
+async function aiReactions(deps: MeetingDeps, state: MeetingStateType): Promise<Map<string, AiReaction[]>> {
+  const meetingId = state.meetingId;
+  if (!meetingId || !deps.limits) return new Map();
+  const pairs = await Promise.all(
+    state.members.map(async (m): Promise<[string, AiReaction[]]> => {
+      const agentId = agentIdOf(m.memberId);
+      const { req, rows, wishes } = reactRequest(m, state.pool!, state.board!);
+      // 반응할 곳이 없거나 소개글로 볼 바람 글이 없는 사람은 부르지 않음 (10/19 예비 시험: 204명 중 12명이 바람 글 없음)
+      if (!rows.length || !wishes.length) return [agentId, []];
+      const replayed = await deps.recorder?.replay(req);
+      if (replayed) return [agentId, acceptReactions(replayed, rows, wishes)];
+      const llm = deps.llm;
+      if (!llm || !(await reserveMeetingLlm(deps.db, meetingId, deps.limits!))) return [agentId, []];
+      try {
+        let value;
+        if (deps.traceLlm && llm.streamJson) {
+          emit({ type: 'llm.request', data: { agentId, purpose: 'react', try: 1, model: llm.name, system: req.system, input: req.input } });
+          const out = await llm.streamJson(req, () => {});
+          emit({ type: 'llm.response', data: { agentId, purpose: 'react', try: 1, model: out.model, ms: out.ms, usage: out.usage, text: out.text } });
+          value = out.value;
+        } else value = await llm.generateJson(req);
+        await deps.recorder?.record(req, value);
+        return [agentId, acceptReactions(value, rows, wishes)];
+      } catch (err) {
+        console.warn('4단계 AI 반응 LLM 실패, 코드 반응만 씀:', err instanceof Error ? err.message.slice(0, 200) : err);
+        return [agentId, []];
+      }
+    }),
+  );
+  return new Map(pairs);
+}
+
+/** 4단계: 장소마다 4명의 반응(👍 ⚠ ✕) = 코드 규칙 + AI 반응(더 무거운 쪽), ⚠·✕가 붙은 곳을 회의 안건으로. 5단계에서 사람에게 물을 안건도 여기서 정함 */
+async function react(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const board = reactBoard(state.board!, state.pool!, state.members, await aiReactions(deps, state));
   emit({ type: 'board.updated', data: board });
-  return { board };
+  return { board, reviewRequest: reviewRequestOf(board, state.pool!, state.members) };
+}
+
+/**
+ * 5단계 사람 확인 (코드, LLM 0회): interrupt()로 회의를 멈추고(상태는 체크포인트에 저장) 사람 응답이 마감되면 Command({ resume })로 이어서 실행함
+ * 이어서 실행하면 이 노드가 처음부터 다시 돌고 interrupt()가 마감 결과를 돌려주므로, interrupt() 앞에는 기록·전송 같은 부수 효과를 두지 않음
+ */
+async function review(state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const decision = interrupt<ReviewRequest, ReviewDecision>(state.reviewRequest!);
+  const board = applyReview(state.board!, decision);
+  emit({ type: 'review.closed', data: { meetingId: state.meetingId, ...decision } });
+  emit({ type: 'board.updated', data: board });
+  return { board, reviewDecision: decision };
 }
 
 /** 회의 그래프의 노드 이름과 단계 (시험 화면의 그래프 칸에 씀) */
@@ -148,7 +223,8 @@ export const MEETING_NODES = [
   { id: 'retrieve', step: 2, label: '후보 찾기', kind: 'code' },
   { id: 'pick', step: 3, label: '고르기 ×4', kind: 'llm' },
   { id: 'gather', step: 3, label: '후보 보드 모으기', kind: 'code' },
-  { id: 'react', step: 4, label: '반응·안건', kind: 'code' },
+  { id: 'react', step: 4, label: '반응·안건', kind: 'llm' },
+  { id: 'review', step: 5, label: '사람 확인', kind: 'human' },
 ] as const;
 
 /** 실제 회의 그래프의 노드·연결과 단계별 규칙 값 (그래프를 만들기만 하고 실행하지 않음, 시험 화면이 규칙 값을 따로 적지 않게 함) */
@@ -163,8 +239,8 @@ export async function meetingGraphShape() {
 }
 
 /**
- * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건
- * upTo 'retrieve'면 2단계에서 멈춤 (LLM 0회 시험용)
+ * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건 → (고를 안건이 있으면) 사람 확인
+ * upTo 'retrieve'면 2단계에서 멈춤 (LLM 0회 시험용). 사람 확인은 멈췄다 이어서 실행하므로 체크포인트 저장(checkpointer)이 있어야 함
  */
 export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' } = {}) {
   const base = new StateGraph(MeetingState)
@@ -175,20 +251,37 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
   if (opts.upTo === 'retrieve') return base.addEdge('retrieve', END).compile({ checkpointer: deps.checkpointer });
   const pickGraph = buildPickGraph({
     llm: deps.llm ?? null,
+    recorder: deps.recorder,
     traceLlm: deps.traceLlm,
     reserveLlm: (meetingId) => (meetingId && deps.limits ? reserveMeetingLlm(deps.db, meetingId, deps.limits) : Promise.resolve(false)),
   });
   return base
     .addNode('pick', pickGraph)
     .addNode('gather', gather)
-    .addNode('react', react)
+    .addNode('react', (s) => react(deps, s))
+    .addNode('review', review)
     .addConditionalEdges(
       'retrieve',
-      (s) => s.members.map((m) => new Send('pick', { who: m, from: s.pool, meeting: s.meetingId, draft: null, tries: 0, calls: 0, blocked: false, picks: [] })),
+      (s) =>
+        s.members.map(
+          (m) =>
+            new Send('pick', {
+              who: m,
+              from: s.pool,
+              meeting: s.meetingId,
+              draft: null,
+              tries: 0,
+              calls: 0,
+              blocked: false,
+              savedPick: s.saved ? savedPickFor(s.saved.picks.find((p) => p.memberId === m.memberId), s.pool!) : null,
+              picks: [],
+            }),
+        ),
       ['pick'],
     )
     .addEdge('pick', 'gather')
     .addEdge('gather', 'react')
-    .addEdge('react', END)
+    .addConditionalEdges('react', (s) => (s.reviewRequest?.items.length ? 'review' : END), ['review', END])
+    .addEdge('review', END)
     .compile({ checkpointer: deps.checkpointer });
 }

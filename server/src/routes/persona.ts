@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
@@ -14,12 +14,15 @@ import { ruleCategories } from '../meeting/categories.js';
 import { DISLIKE_OPTIONS, LIKE_OPTIONS, PUBLIC_QUESTIONS } from '../persona/questions.js';
 import { buildProfile, pickChips, readAnswers, sameAnswers, scoreTraits } from '../persona/score.js';
 import type { PersonaAnswers } from '../persona/types.js';
-import { type CardText, llmCard, ruleCard } from '../persona/write.js';
+import type { LlmRecorder } from '../llm/record.js';
+import { type CardText, cardFromDraft, cardRequest, ruleCard } from '../persona/write.js';
 import { memberColor } from './views.js';
 
 export interface PersonaDeps {
   db: Db;
   llm: LlmClient | null;
+  /** LLM 녹화·재생 (LLM_REPLAY): 녹화된 같은 요청의 답 → 같은 응답으로 AI가 만든 카드 순서로 다시 씀 */
+  recorder?: LlmRecorder | null;
   llmDailyLimit: number;
   llmCardsPerMember: number;
   llmPerIpDaily: number;
@@ -39,11 +42,36 @@ const answersBody = z.object({
     .max(30),
 });
 
-/** 설문 응답 → 성향·칩(규칙) → 카드 문장(LLM, 실패 시 규칙) → 회의용 숨은 값(규칙) */
+/**
+ * LLM_REPLAY: 같은 응답으로 AI가 만든 카드 중 가장 최근 것 (카드는 응답만으로 만들고 닉네임은 넣지 않으므로 같은 응답이면 같은 카드)
+ * 1–12번 값이 같은 카드만 DB에서 읽고, 좋아요·싫어요·15번까지 같은지는 코드가 확인함
+ */
+async function savedCard(db: Db, answers: PersonaAnswers): Promise<CardText | null> {
+  const rows = await db
+    .select({ answers: personas.answers, title: personas.title, catchphrase: personas.catchphrase, tmi: personas.tmi, mustKeep: personas.mustKeep, wishes: personas.wishes })
+    .from(personas)
+    .where(and(eq(personas.source, 'llm'), sql`${personas.answers}->'scale' = ${JSON.stringify(answers.scale)}::jsonb`))
+    .orderBy(desc(personas.updatedAt));
+  const hit = rows.find((r) => sameAnswers(r.answers, answers));
+  return hit ? { title: hit.title, catchphrase: hit.catchphrase, tmi: hit.tmi, mustKeep: hit.mustKeep, wishes: hit.wishes, source: 'llm' } : null;
+}
+
+/**
+ * 설문 응답 → 성향·칩(규칙) → 카드 문장 → 회의용 숨은 값(규칙)
+ * 카드 문장 순서: 녹화된 같은 요청의 답(LLM_REPLAY, LLM 횟수에 세지 않음) → 같은 응답으로 AI가 만든 카드(LLM_REPLAY) → LLM(부른 답은 녹화) → 규칙 카드
+ */
 async function makePersona(memberId: string, ip: string | null, answers: PersonaAnswers, deps: PersonaDeps) {
-  const { db, llm, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret } = deps;
+  const { db, llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret } = deps;
   const traits = scoreTraits(answers.scale);
   const chips = pickChips(traits);
+  const done = (card: CardText) => ({ answers, traits, chips, ...card, profile: buildProfile(traits, answers, card.mustKeep) });
+  const replaying = !!recorder && recorder.mode !== 'off';
+  const categories = llm || replaying ? await ruleCategories(db) : [];
+  const req = cardRequest(traits, answers, categories);
+  const replayed = replaying ? await recorder.replay(req) : null;
+  if (replayed) return done(cardFromDraft(replayed, answers, chips, categories));
+  const saved = replaying ? await savedCard(db, answers) : null;
+  if (saved) return done(saved);
   let card: CardText = ruleCard(chips, answers);
   // 개발 기간(llmPerIpDaily 0)에는 터널로 들어온 요청(팀원 앱)에 LLM을 쓰지 않음
   const tunnelBlocked = ip !== null && llmPerIpDaily === 0;
@@ -54,7 +82,9 @@ async function makePersona(memberId: string, ip: string | null, answers: Persona
     let written = false;
     if (ipReserved && (await tryConsumeLlmCall(db, llmDailyLimit))) {
       try {
-        card = await llmCard(llm, traits, chips, answers, await ruleCategories(db));
+        const draft = await llm.generateJson(req);
+        await recorder?.record(req, draft);
+        card = cardFromDraft(draft, answers, chips, categories);
         written = true;
       } catch (err) {
         console.warn('LLM 카드 작성 실패, 규칙 카드로 대신함:', err instanceof Error ? err.message : err);
@@ -66,7 +96,7 @@ async function makePersona(memberId: string, ip: string | null, answers: Persona
       if (ipReserved && key !== null) await releaseIpLlm(db, key);
     }
   }
-  return { answers, traits, chips, ...card, profile: buildProfile(traits, answers, card.mustKeep) };
+  return done(card);
 }
 
 type PersonaRow = typeof personas.$inferSelect;
