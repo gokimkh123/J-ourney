@@ -27,6 +27,11 @@ export const RETRIEVE = {
   /** 사람마다 자기 몫으로 몇 곳을 넣을지 (꼭 지킬 것 하나당 최대 mustKeepPerRule곳, 나머지는 좋아요 보기를 돌아가며), 전체 후보 수, 음식점 최소 수 */
   perMember: 8,
   mustKeepPerRule: 2,
+  /**
+   * 종류(category) 꼭 지킬 것은 자기 몫과 따로 그 사람 점수 순 다음 후보를 이만큼 더 넣어 3단계 AI가 소개글로 뜻에 맞는 곳을 고르게 함
+   * (10/23 사용자 결정: 덜 알려진 곳 선호는 그대로 두고, 공식 분류가 넓어 '시장 구경'에 조명 도매 상가만 오르는 일을 줄임)
+   */
+  mustKeepKindExtra: 2,
   poolSize: 40,
   minFood: 6,
   /** 사람 몫이 아닌 칸을 채울 때 음식점은 이만큼까지만 (관광지와 균형) */
@@ -423,8 +428,10 @@ export async function retrieveCandidates(
     return true;
   };
   const sameSpotDropped: string[] = [];
+  const mineOf = new Map<string, Candidate[]>();
   for (const m of members) {
     const mine = [...scored].sort((a, b) => b.scores[m.memberId] - a.scores[m.memberId] || b.total - a.total || a.id.localeCompare(b.id));
+    mineOf.set(m.memberId, mine);
     // 몫을 채우는 순서: 꼭 지킬 것마다 최대 2곳 → 좋아요 보기를 돌아가며 1곳씩 → 나머지는 점수 순 (좋아요 하나로 몫이 다 차지 않게)
     const order: Candidate[] = [];
     const seen = new Set<string>();
@@ -456,6 +463,16 @@ export async function retrieveCandidates(
         taken++;
       } else if (add(c, m.memberId)) taken++;
       else sameSpotDropped.push(c.name);
+    }
+  }
+  // 종류 꼭 지킬 것의 다음 후보 (몫 8곳과 따로, 그 사람 점수 순 그대로라 덜 알려진 곳 선호가 유지됨)
+  for (const m of members) {
+    for (const k of (includes.get(m.memberId) ?? []).filter((x) => x.rule.target === 'category')) {
+      const more = mineOf.get(m.memberId)!.filter((c) => k.matches(viewById.get(c.id)!));
+      for (const c of more.slice(RETRIEVE.mustKeepPerRule, RETRIEVE.mustKeepPerRule + RETRIEVE.mustKeepKindExtra)) {
+        if (chosen.size >= RETRIEVE.poolSize) break;
+        if (!add(c, m.memberId)) sameSpotDropped.push(c.name);
+      }
     }
   }
   const foodCount = () => [...chosen.values()].filter((c) => c.type === RETRIEVE.foodType).length;

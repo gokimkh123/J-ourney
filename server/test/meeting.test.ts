@@ -317,6 +317,38 @@ describe('후보 찾기 (2단계, 코드)', () => {
     expect(share.map((c) => c.name)).toContain('부산불꽃축제');
   });
 
+  it('종류 꼭 지킬 것은 몫 8곳과 따로 그 사람 점수 순 다음 후보 2곳을 더 넣음 (좋아요로 몫이 찬 사람도 3단계 AI가 소개글로 고를 곳이 생김)', async () => {
+    const { db } = await createTestApp();
+    await seedDb(db);
+    const spot = (contentId: string, title: string, contentTypeId: number, lcls1: string, lcls3: string, i: number) => ({
+      contentId,
+      contentTypeId,
+      title,
+      regionCode: '26',
+      districtCode: '500',
+      lcls1,
+      lcls3,
+      lat: 35.1 + i * 0.01,
+      lng: 129.05,
+      visible: true,
+      listRaw: {},
+      introRaw: { restdate: '연중무휴', restdateshopping: '연중무휴' },
+      detailSyncedAt: new Date(),
+    });
+    // 시장 6곳 + 해변 10곳: 바다 좋아요가 몫을 채우면 꼭 지킬 것(시장)은 2곳만 몫에 들어감
+    await db.insert(places).values([
+      ...Array.from({ length: 6 }, (_, i) => spot(`mk${i}`, `시험시장${i}`, 38, 'SH', 'SH060200', i)),
+      ...Array.from({ length: 10 }, (_, i) => spot(`sb${i}`, `시험해변${i}`, 12, 'NA', 'NA020900', i)),
+    ]);
+    const marketGoer: MemberInput = { ...MEMBERS[1], memberId: 'm7', likes: ['like_sea'], mustKeep: [rule('include', '시장', '시장 구경하기', 'category', ['SH060200'])] };
+    const r = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [marketGoer], crowdClient: null, today: '2026-11-01' });
+    const mine = r.candidates.filter((c) => c.forMembers.includes('m7'));
+    const must = mine.filter((c) => c.reasons.m7.some((w) => w.startsWith('꼭 지킬 것')));
+    expect(must).toHaveLength(RETRIEVE.mustKeepPerRule + RETRIEVE.mustKeepKindExtra);
+    expect(mine).toHaveLength(RETRIEVE.perMember + RETRIEVE.mustKeepKindExtra);
+    expect(mine.filter((c) => c.reasons.m7.some((w) => w.startsWith('좋아요')))).toHaveLength(RETRIEVE.perMember - RETRIEVE.mustKeepPerRule); // 몫의 좋아요 칸은 줄지 않음
+  });
+
   it('쇼핑(유형 38)도 후보: 시장은 쇼핑 좋아요에 맞고, 분류표는 후보 장소가 쓰는 분류만 보냄', async () => {
     const { db } = await createTestApp();
     await seedDb(db);
