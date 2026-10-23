@@ -1,7 +1,7 @@
 import type { BaseCheckpointSaver } from '@langchain/langgraph';
 import { and, asc, desc, eq, gt, inArray, lt, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { meetingEvents, meetings } from '../db/schema.js';
+import { meetingEvents, meetings, trips } from '../db/schema.js';
 import { ApiError } from '../lib/errors.js';
 import { newId } from '../lib/ids.js';
 import { nowKst } from '../lib/time.js';
@@ -95,7 +95,10 @@ export async function finishMeeting(db: Db, meetingId: string, status: 'done' | 
  * 사람 확인을 기다리는 회의(reviewing)는 상태가 체크포인트에 있어 그대로 둠
  */
 export async function failInterruptedMeetings(db: Db): Promise<number> {
-  const rows = await db.update(meetings).set({ status: 'failed', finishedAt: new Date() }).where(eq(meetings.status, 'running')).returning({ id: meetings.id });
+  const rows = await db.update(meetings).set({ status: 'failed', finishedAt: new Date() }).where(eq(meetings.status, 'running')).returning({ id: meetings.id, tripId: meetings.tripId });
+  // 실행 중 실패와 같게, 공식 경로로 시작한 여행은 조건·성향을 고쳐 다시 시작할 수 있게 되돌림
+  const tripIds = [...new Set(rows.map((r) => r.tripId))];
+  if (tripIds.length) await db.update(trips).set({ status: 'preparing' }).where(and(inArray(trips.id, tripIds), eq(trips.status, 'meeting')));
   return rows.length;
 }
 

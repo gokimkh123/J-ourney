@@ -2,7 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { meetings } from '../db/schema.js';
+import { MAX_MEMBERS, meetings, trips } from '../db/schema.js';
 import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { tunnelIp } from '../lib/rate-limit.js';
@@ -31,7 +31,7 @@ const devReviewBody = z.object({
   /** 구성원마다 안건별 남김·뺌 (응답하지 않은 사람은 빼고 보냄) */
   responses: z
     .array(z.object({ memberId: z.string().min(1).max(40), choices: z.array(z.object({ placeId: z.string().min(1).max(40), keep: z.boolean() })).max(REACT.agendaMax) }))
-    .max(4),
+    .max(MAX_MEMBERS),
   /** true면 방장 '진행'으로 마감 (응답하지 않은 사람은 남김) */
   close: z.boolean().default(false),
 });
@@ -154,7 +154,8 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
   r.post('/dev/meeting/run', requireMember(db), async (c) => {
     const tripId = c.get('member').tripId;
     await loadMeetingInput(db, tripId); // 조건·성향이 준비되지 않았으면 그만두지 않고 오류
-    await db.update(meetings).set({ status: 'failed', finishedAt: new Date() }).where(and(eq(meetings.tripId, tripId), eq(meetings.status, 'reviewing')));
+    const abandoned = await db.update(meetings).set({ status: 'failed', finishedAt: new Date() }).where(and(eq(meetings.tripId, tripId), eq(meetings.status, 'reviewing'))).returning({ id: meetings.id });
+    if (abandoned.length) await db.update(trips).set({ status: 'preparing' }).where(and(eq(trips.id, tripId), eq(trips.status, 'meeting')));
     const stream = ndjson();
     const started = Date.now();
     const observer: MeetingObserver = {
@@ -166,7 +167,7 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
       observer,
       onStart: (m) => stream.send({ kind: 'meeting', meetingId: m.id, runNo: m.runNo, limit: limits.runsPerTrip }),
     });
-    void done.then(finish(stream, meeting.id, started));
+    void done.then(finish(stream, meeting.id, started)).catch((err) => console.error('시험 경로 결과 전송 실패:', err));
     return stream.response();
   });
 
@@ -189,7 +190,11 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
       unsubscribe();
       throw err;
     }
-    if (done) void done.then(finish(stream, body.meetingId, started)).finally(unsubscribe);
+    if (done)
+      void done
+        .then(finish(stream, body.meetingId, started))
+        .finally(unsubscribe)
+        .catch((err) => console.error('시험 경로 결과 전송 실패:', err));
     else {
       unsubscribe();
       stream.send({ kind: 'result', meetingId: body.meetingId, status: 'reviewing', meeting: await service.view(body.meetingId, me) });

@@ -23,6 +23,8 @@ export interface LlmRecorder {
 /**
  * 요청 지문 = 모델 이름 + 용도(schemaName) + 지시문 + 입력 + 몇 번째 시도 (하나라도 다르면 다른 요청)
  * 시도 번호를 넣는 까닭: 형식이 틀려 같은 요청을 1번 더 부를 때 첫 답을 다시 받지 않게 함
+ * 주의: 생각 세기(thinking)는 지문에 넣지 않음 → 생각 세기를 바꿔 비교할 때는 schemaName도 바꿀 것 (10/19 비교 시험도 이름을 달리함)
+ * 주의: model은 예비 모델까지 이은 이름(기본 → 예비)이라 LLM_FALLBACKS를 바꾸면 기존 녹화와 맞지 않음, LLM을 하나도 열지 못하면 'none'
  */
 export function llmRecorder(db: Db, model: string, mode: ReplayMode): LlmRecorder {
   const keyOf = (req: JsonRequest<z.ZodType>, attempt: number) =>

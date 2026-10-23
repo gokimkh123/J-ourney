@@ -240,7 +240,7 @@ export function ensureMust(result: PickResult, member: MemberInput, pool: Retrie
 }
 
 /** 입력 칸 이름 (사람에게 보이는 이유·한마디에 나오면 규칙 문장으로 바꿈) */
-export const FIELD_NAMES = /\b(me|id|mustKeep|mustKeepIds|prefers|wishes|limits|likes|dislikes|nights|lodgings|candidates|places|quote|kind)\b/i;
+export const FIELD_NAMES = /\b(me|id|mustKeep|mustKeepIds|prefers|wishes|wish|limits|likes|dislikes|nights|lodgings|candidates|places|quote|kind|checks|evidence|relation)\b/i;
 
 /** 통과한 답을 결과로 바꿈: 길이를 넘거나 칸 이름이 나온 이유·한마디는 규칙 문장, 숙소가 틀리거나 비면 규칙 숙소 */
 export function acceptDraft(member: MemberInput, pool: RetrieveResult, draft: PickDraft, llmCalls: number): PickResult {

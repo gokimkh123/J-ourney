@@ -123,7 +123,10 @@ export function agendaOf(
         b.warns.length + Number(!!b.outside) + Number(!!b.named) - (a.warns.length + Number(!!a.outside) + Number(!!a.named)) ||
         b.c.proposedBy.length - a.c.proposedBy.length ||
         a.c.placeId.localeCompare(b.c.placeId),
-    )
+    );
+  // 상한으로 잘린 '이름이 달라 AI가 맞춘 꼭 지킬 곳'은 메모로 남김 (AI가 맞춘 곳이 사람 확인 없이 빠지지 않게)
+  const cutNamed = items.slice(REACT.agendaMax).flatMap(({ c, named }) => (named ? [`${c.name} — ${named} (안건 상한 ${REACT.agendaMax}개를 넘어 메모로 남김)`] : []));
+  const shown = items
     .slice(0, REACT.agendaMax)
     .map(({ c, blocks, warns, outside, named }) => {
       const by = c.proposedBy.map((id) => nick.get(id) ?? id).join('·');
@@ -135,7 +138,7 @@ export function agendaOf(
       const text = `${c.name} — ${by} 고름${outside ? ` · 여행지 밖(${outside})` : ''}${named ? ` · ${named}` : ''}${self ? ` · ${self}` : ''}${who ? ` ↔ ${who}` : ''}`;
       return { placeId: c.placeId, text };
     });
-  return [...items, ...(extra.notes ?? []).map((text) => ({ placeId: null, text }))];
+  return [...shown, ...[...cutNamed, ...(extra.notes ?? [])].map((text) => ({ placeId: null, text }))];
 }
 
 /**

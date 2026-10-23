@@ -82,9 +82,14 @@ export function meetingService({ db, graph, limits, publisher, replay = false }:
       await finishMeeting(db, meeting.id, 'done');
       return { status: 'done', state };
     } catch (err) {
-      await finishMeeting(db, meeting.id, 'failed');
-      // 공식 경로로 시작한 여행은 조건·성향을 고쳐 다시 시작할 수 있게 되돌림
-      await db.update(trips).set({ status: 'preparing' }).where(and(eq(trips.id, meeting.tripId), eq(trips.status, 'meeting')));
+      try {
+        await finishMeeting(db, meeting.id, 'failed');
+        // 공식 경로로 시작한 여행은 조건·성향을 고쳐 다시 시작할 수 있게 되돌림
+        await db.update(trips).set({ status: 'preparing' }).where(and(eq(trips.id, meeting.tripId), eq(trips.status, 'meeting')));
+      } catch (cleanupErr) {
+        // 이 약속을 기다리는 곳이 없으므로 여기서 던지면 처리되지 않은 거절로 서버가 꺼짐
+        console.error('회의 실패 정리 실패:', cleanupErr);
+      }
       console.error('회의 실행 실패:', err);
       try {
         const failed = await record({ type: 'meeting.failed', data: { meetingId: meeting.id, reason: 'error', planId: null } });

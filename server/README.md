@@ -7,7 +7,7 @@
 - 실행: `.env.example`을 참고해 `server/.env`를 만든 뒤 `server` 폴더에서 `docker compose up -d --build`를 실행함 (서버·PostgreSQL·터널). 공유 주소는 `docker compose logs tunnel | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'`로 확인하며, 터널을 다시 시작할 때마다 바뀌므로 저장소에 적지 않음
 - 장소 자료: 한국관광공사 TourAPI의 장소·연관 관광지·코드표(법정동 지역·장소 분류)를 PostgreSQL에 저장해 회의 후보 찾기에 사용함. 자료를 모으는 도구와 모은 자료는 저장소에 포함하지 않음. 장소 정보 출처 표시: ⓒ한국관광공사
 - 회의 엔진 시험: `http://localhost:3000/dev/meeting`에서 1–15단계를 하나씩 실제로 실행해 봄 (지금은 1 준비·2 후보 찾기·3 고르기×4·4 후보 보드·5 사람 확인). 시험용 경로는 이 PC에서만 열리고 터널로 들어온 요청은 403 (팀원 확인 기간에만 `DEV_UI_TUNNEL=true`로 허용)
-- 회의 API (명세서 4.4·5장): 방장이 `POST /trips/{tripId}/meetings`로 시작하면 바로 202를 돌려주고 회의는 뒤에서 진행함 (여행 상태 meeting). 상태는 `GET /meetings/{meetingId}`, 놓친 이벤트는 `GET /trips/{tripId}/events?afterSeq=`
+- 회의 API (명세서 4.4·5장): 방장이 `POST /trips/{tripId}/meetings`로 시작하면 바로 202를 돌려주고 회의는 뒤에서 진행함 (여행 상태 meeting). 상태는 `GET /meetings/{meetingId}`, 놓친 이벤트는 `GET /trips/{tripId}/events?afterSeq=`. 여행마다 실행 횟수 상한(`MEETING_RUNS_PER_TRIP`, 기본 3회)을 넘으면 409 `MEETING_LIMIT`. 서버가 다시 켜지면 실행 중이던 회의는 실패로 바꾸고 여행 상태를 준비 중으로 되돌림 (사람 확인을 기다리던 회의는 그대로 이어 감)
 - 실시간 연결: `wss://{host}/api/v1/trips/{tripId}/ws?token={token}&afterSeq={n}` (WebSocket, 서버 → 앱만). 접속하면 afterSeq 뒤 이벤트를 먼저 보내고 새 이벤트를 이어서 보냄, 25초마다 ping, 토큰이 없거나 다른 여행이면 연결하지 않음, 구성원당 연결 2개까지(넘으면 가장 오래된 연결을 닫음). 앱 → 서버 요청은 REST로 보냄
 - 5단계 사람 확인: 4단계 안건 중 장소 안건(⚠·✕가 붙은 곳·여행지 밖·이름이 달라 AI가 맞춘 꼭 지킬 곳)이 있을 때만 LangGraph `interrupt()`로 멈추고(상태는 Postgres 체크포인트), 각자 `POST /meetings/{id}/review`로 안건마다 남김·뺌을 냄. 안건마다 다수결, 같으면 방장의 응답. 시간 제한 없이 4명이 모두 내면 자동 마감, 방장 `POST /meetings/{id}/review/close`('진행')는 안 낸 사람을 남김으로 셈 (사용자 결정 10/19). LLM 0회
 - 4단계 반응: 분류·혼잡·영업시간·하루 시간은 코드 규칙으로, 사람이 쓴 말(바람·꼭 지킬 것·야경·오래 걷기·비싼 곳)은 AI가 다른 AI가 고른 곳의 소개글을 읽고 장소마다 충족(👍)·충돌(⚠)·언급 없음으로 가름 (생각 켬). 충족·충돌은 장소 글의 구절(근거)과 바람 글을 그대로 옮겨야 하고, 코드가 두 근거를 확인한 것만 받음 (사용자 결정 10/19, 설명문 구조는 10/19 근거 조사·비교 시험으로 정함). 바람 글이 없는 사람은 부르지 않음. 코드와 AI 중 더 무거운 반응을 남기고 ✕는 코드 규칙만 붙임
@@ -17,7 +17,7 @@
 - 시험: `npm ci` → `npm run typecheck` → `npm test` (PGlite·가짜 LLM을 써서 API 키 없이 실행)
 - 시험 화면: compose로 실행하면 `http://localhost:3000/dev/`에서 API를 직접 호출해 볼 수 있음 (`DEV_UI=true`일 때만 제공하며 운영 VM에서는 켜지 않음)
 - DB 테이블: `src/db/schema.ts`를 고친 뒤 `npm run db:generate`로 `drizzle/`에 마이그레이션 SQL을 만들며, 서버가 시작할 때 아직 적용하지 않은 마이그레이션을 자동 적용함
-- 기술 스택: Node.js 24, TypeScript, Hono (WebSocket은 Hono Node 서버 내장 기능 + ws), Zod, LangGraph.js (에이전트 흐름 관리), PostgreSQL, Drizzle ORM, LangChain으로 LLM 연결 (현재 Claude Haiku 5.5, 실패 시 Gemini 3.5 Flash-Lite로 자동 전환, 공급자·모델은 환경 변수로 교체), 카카오 로컬·경로 API, 한국관광공사 TourAPI·연관 관광지·집중률 예측, 기상청 단기예보(선택)
+- 기술 스택: Node.js 24, TypeScript, Hono (WebSocket은 Hono Node 서버 내장 기능 + ws), Zod, LangGraph.js (에이전트 흐름 관리), PostgreSQL, Drizzle ORM, LangChain으로 LLM 연결 (현재 Claude Haiku 5.5, 실패 시 Gemini 3.5 Flash-Lite로 자동 전환, 공급자·모델은 환경 변수로 교체), 카카오 로컬·경로 API(예정), 한국관광공사 TourAPI·연관 관광지·집중률 예측, 기상청 단기예보(선택)
 - 작업 브랜치: `server/setup`에서 계속 작업하고, 병합일마다 `develop`을 대상으로 PR을 열어 작성자가 직접 병합함 (기본 브랜치가 main이므로 PR 대상을 develop으로 지정함)
 - 병합일 이후에는 `git merge origin/develop`으로 상대방 변경 사항을 받아 둠
 - 비밀값: LLM·카카오·공공데이터포털 API 키는 `server/.env`(git 제외)와 GitHub Actions Secrets에만 저장하며 저장소에 커밋하지 않음

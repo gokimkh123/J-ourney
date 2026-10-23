@@ -18,10 +18,11 @@ import { type MemberInput, RETRIEVE, retrieveCandidates } from '../src/meeting/r
 import { ruleMatcher, sameName } from '../src/meeting/rules.js';
 import type { PersonaProfile } from '../src/persona/types.js';
 import type { TourClient } from '../src/tour/client.js';
-import { meetings } from '../src/db/schema.js';
+import { meetings, trips } from '../src/db/schema.js';
 import { LIVE } from '../src/meeting/live.js';
 import { PICK, type PickResult, ensureOwnLimits, ownConflictIds, pickTables, savedPickFor } from '../src/meeting/pick.js';
-import { REACT, overlapMinutes, reactBoard, reactionOf, reactionScore } from '../src/meeting/react.js';
+import { REACT, agendaOf, overlapMinutes, reactBoard, reactionOf, reactionScore } from '../src/meeting/react.js';
+import { failInterruptedMeetings } from '../src/meeting/runs.js';
 import { acceptReactions, reactRequest, reactWishes } from '../src/meeting/react-ai.js';
 import type { Candidate, RetrieveResult } from '../src/meeting/retrieve.js';
 import { MINSU, answersOf, call, createTestApp, fakeLlm } from './helpers.js';
@@ -954,6 +955,16 @@ describe('4단계 후보 보드 반응 (코드, LLM 0회)', () => {
       { placeId: null, text: "지은의 꼭 지킬 것 '해운대 가기' — 여행지 밖(해운대구)이라 후보에 넣지 못함" },
     ]);
   });
+
+  it('안건 상한을 넘어 잘린 곳 가운데 이름이 달라 AI가 맞춘 꼭 지킬 곳은 메모로 남김 (사람 확인 없이 빠지지 않게)', () => {
+    const warn = (m: string) => ({ agentId: `agt_${m}`, kind: 'warn' as const, reason: '싫어요: 오래 걷기' });
+    const row = (id: string, by: string, reactions: ReturnType<typeof warn>[]) => ({ placeId: `plc_${id}`, name: id, lat: null, lng: null, proposedBy: [`agt_${by}`], reactions });
+    const busy = ['s1', 's2', 's3', 's4', 's5', 's6'].map((id) => row(id, 'm1', [warn('m2'), warn('m3')]));
+    const named = new Map([['plc_n1', "이름이 달라 AI가 맞춘 서연의 꼭 지킬 곳 ('엘시티 전망대')"]]);
+    const agenda = agendaOf([...busy, row('n1', 'm4', [])], MEMBERS, { named, notes: ['메모'] });
+    expect(agenda.filter((a) => a.placeId).map((a) => a.placeId)).toEqual(['plc_s1', 'plc_s2', 'plc_s3', 'plc_s4', 'plc_s5']);
+    expect(agenda.filter((a) => !a.placeId).map((a) => a.text)).toEqual([`n1 — 이름이 달라 AI가 맞춘 서연의 꼭 지킬 곳 ('엘시티 전망대') (안건 상한 ${REACT.agendaMax}개를 넘어 메모로 남김)`, '메모']); // 잘린 s6(⚠만)은 메모로 남기지 않음
+  });
 });
 
 describe('3단계 입력 표·자기 조건 (코드)', () => {
@@ -1369,6 +1380,29 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     expect(lines.filter((l) => l.kind === 'node').map((l) => l.node)).toEqual(['review']);
     const end = lines.find((l) => l.kind === 'result');
     expect(end).toMatchObject({ status: 'done', reviewDecision: { closedBy: 'all', dropped: [] } });
+  }, STEP5_TIMEOUT_MS);
+
+  it('회의가 끊기거나 그만두게 되면 여행 상태를 준비 중으로 되돌림 (시험 경로 다시 실행 · 서버 재시작 때 실행 중이던 회의)', async () => {
+    const { app, db, token, tripId } = await reviewTrip({ llm: jangsanLlm(), devUi: true });
+    const tripStatus = async () => (await db.select().from(trips).where(eq(trips.id, tripId)))[0].status;
+    const started = await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token);
+    const official = started.body.meeting.id as string;
+    await waitStatus(app, token, official, 'reviewing');
+    expect(await tripStatus()).toBe('meeting');
+    // 시험 경로를 다시 실행하면 사람 확인을 기다리던 공식 회의는 그만두고, 여행은 다시 조건·성향을 고칠 수 있음
+    const res = await app.request('/api/v1/dev/meeting/run', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    const dev = (await res.text()).trim().split('\n').map((l) => JSON.parse(l)).find((l) => l.kind === 'result');
+    expect(dev.status).toBe('reviewing');
+    expect((await db.select().from(meetings).where(eq(meetings.id, official)))[0].status).toBe('failed');
+    expect(await tripStatus()).toBe('preparing');
+
+    // 서버가 켜질 때: 실행 중(running)으로 남은 회의만 실패로 바꾸고 그 여행을 되돌림 (사람 확인을 기다리는 회의는 그대로)
+    await db.insert(meetings).values({ id: 'mtg_cut', tripId, runNo: 99, status: 'running' });
+    await db.update(trips).set({ status: 'meeting' }).where(eq(trips.id, tripId));
+    expect(await failInterruptedMeetings(db)).toBe(1);
+    expect((await db.select().from(meetings).where(eq(meetings.id, 'mtg_cut')))[0].status).toBe('failed');
+    expect((await db.select().from(meetings).where(eq(meetings.id, dev.meetingId)))[0].status).toBe('reviewing');
+    expect(await tripStatus()).toBe('preparing');
   }, STEP5_TIMEOUT_MS);
 });
 
