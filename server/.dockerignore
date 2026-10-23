@@ -1,6 +1,9 @@
 # 이미지에 넣지 않는 파일 (비밀값·의존성·빌드 산출물)
 .env
 .env.*
+# 하위 폴더(dev-ui 등)의 .env도 넣지 않음 (위 두 줄은 맨 위 폴더에만 적용됨)
+**/.env
+**/.env.*
 node_modules
 dist
 coverage

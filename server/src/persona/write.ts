@@ -172,6 +172,23 @@ export function ruleCard(chips: Chip[], answers: PersonaAnswers): CardText {
   return { ...fallbackText(chips), mustKeep: [], wishes: text, source: 'rule' };
 }
 
+/** 카드 요청 (지시문 + 성향·좋아요·싫어요·15번). 닉네임은 보내지 않고, 15번의 연락처·식별번호는 가린 문장을 보냄 (인용 검사도 가린 문장 기준) */
+export function cardRequest(traits: TraitResult[], answers: PersonaAnswers, categories: readonly RuleCategory[] = []) {
+  const label = (options: readonly { id: string; text: string }[], ids: string[]) =>
+    ids.map((id) => options.find((o) => o.id === id)!.text);
+  return {
+    system: `${SYSTEM}\n\n분류표 (한국관광공사 공식 분류, [중분류] 코드 소분류):\n${categoryTable(categories)}`,
+    input: {
+      traits: traits.map((t) => ({ name: t.name, label: t.label, score: t.score })),
+      likes: label(LIKE_OPTIONS, answers.likes),
+      dislikes: label(DISLIKE_OPTIONS, answers.dislikes),
+      mustKeepText: answers.mustKeepText === null ? null : maskPersonal(answers.mustKeepText),
+    },
+    schema: CardDraft,
+    schemaName: 'persona_card',
+  };
+}
+
 /**
  * LLM이 카드 문장을 쓰고 15번을 해석함. 항목별로 검사해 틀린 칸만 규칙 문장으로 대신함
  * categories: '꼭 지킬 것'의 종류를 고를 공식 분류표 (비어 있으면 종류 규칙은 만들지 못함)
@@ -183,21 +200,12 @@ export async function llmCard(
   answers: PersonaAnswers,
   categories: readonly RuleCategory[] = [],
 ): Promise<CardText> {
-  const label = (options: readonly { id: string; text: string }[], ids: string[]) =>
-    ids.map((id) => options.find((o) => o.id === id)!.text);
-  // 닉네임은 보내지 않고, 15번의 연락처·식별번호는 가린 문장을 보냄 (인용 검사도 가린 문장 기준)
+  return cardFromDraft(await llm.generateJson(cardRequest(traits, answers, categories)), answers, chips, categories);
+}
+
+/** LLM 카드 초안 검사 (녹화된 답을 다시 쓸 때도 같은 검사를 거침) */
+export function cardFromDraft(draft: CardDraft, answers: PersonaAnswers, chips: Chip[], categories: readonly RuleCategory[] = []): CardText {
   const mustKeepText = answers.mustKeepText === null ? null : maskPersonal(answers.mustKeepText);
-  const draft = await llm.generateJson({
-    system: `${SYSTEM}\n\n분류표 (한국관광공사 공식 분류, [중분류] 코드 소분류):\n${categoryTable(categories)}`,
-    input: {
-      traits: traits.map((t) => ({ name: t.name, label: t.label, score: t.score })),
-      likes: label(LIKE_OPTIONS, answers.likes),
-      dislikes: label(DISLIKE_OPTIONS, answers.dislikes),
-      mustKeepText,
-    },
-    schema: CardDraft,
-    schemaName: 'persona_card',
-  });
   const fallback = fallbackText(chips);
   const knownCodes = new Set(categories.map((c) => c.code));
   const pick = (field: string, value: string, max: number, otherwise: string) => {

@@ -26,12 +26,14 @@
     "langchain": "^1.5.16",
     "pg": "8.23.1",
     "postgres": "^3.4.9",
+    "ws": "8.22.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.9",
     "@types/node": "^24.19.2",
     "@types/pg": "8.23.1",
+    "@types/ws": "8.18.2",
     "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
