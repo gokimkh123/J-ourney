@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import type { ReplayMode } from './llm/record.js';
 
 /** 환경 변수로 바꿀 수 있는 운영 값 (server/.env, 값이 없으면 기본값) */
 const num = (name: string, fallback: number) => {
@@ -43,10 +44,11 @@ export const config = {
   /** LLM 1회 응답(출력)의 토큰 상한. 위 상한 안에 들어가야 하며, 쓰는 모델이 모두 지원하는 값으로 둠 */
   llmMaxOutputTokens: num('LLM_MAX_OUTPUT_TOKENS', 8_192),
   /**
-   * true면 LLM을 부르지 않고 미리 나온 결과를 다시 씀 (10/19 사용자 지시: 이제 LLM은 부르지 않고 이미 나온 결과로만 확인)
-   * 회의: 같은 여행의 지난 회의에서 AI가 고른 곳·이름 맞추기 / 성향 카드: 같은 응답으로 AI가 만든 카드. 없으면 규칙으로 대신함
+   * LLM 다시 쓰기 (10/19 사용자 지시: 이제 LLM은 부르지 않고 이미 나온 결과로만 확인, 시험 답을 녹화해 API 없이 다시 시험)
+   * true(only): LLM을 부르지 않음 — 녹화된 같은 요청의 답 → 같은 여행의 지난 회의 AI 고르기·이름 맞추기, 같은 응답의 AI 카드 → 규칙
+   * fill: 위처럼 다시 쓰고, 없는 요청만 LLM을 불러 녹화함 (측정용) · 그 밖: 다시 쓰지 않음(off). 실제로 부른 답은 늘 녹화함
    */
-  llmReplay: process.env.LLM_REPLAY === 'true',
+  llmReplay: ((v) => (v === 'true' ? 'only' : v === 'fill' ? 'fill' : 'off'))(process.env.LLM_REPLAY) as ReplayMode,
   /** 하루 LLM 호출 상한 (넘으면 규칙 카드로 대신함) */
   llmDailyLimit: num('LLM_DAILY_LIMIT', 500),
   /** 구성원 1명이 AI(LLM)로 카드를 만들 수 있는 횟수 (넘으면 규칙 카드로 대신함) */

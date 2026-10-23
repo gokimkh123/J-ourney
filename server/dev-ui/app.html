@@ -974,7 +974,7 @@ async function finale() {
   sheetEl().classList.add('tall');
   drawSummary();
   sheetEl().scrollTop = 0;
-  $('meetNote').textContent = `실제 실행 ${(r.ms / 1000).toFixed(1)}초 · LLM ${r.llmCalls}회${r.replay ? ' (지난번 AI 결과를 다시 씀)' : ''} · 반응·안건은 코드(LLM 0회) · 지도의 색 선은 AI마다 고른 곳을 고른 순서(1·2·3·🏨)대로 이은 것이고 실제로 다닐 경로가 아니에요. 날짜별 순서와 이동 시간은 6단계(일정 배치)에서 정해요.`;
+  $('meetNote').textContent = `실제 실행 ${(r.ms / 1000).toFixed(1)}초 · LLM ${r.llmCalls}회${r.replay ? ' (지난번 AI 결과를 다시 씀)' : ''} · 반응은 코드 규칙(분류·혼잡·영업시간) + AI가 다른 AI가 고른 곳의 소개글을 읽고 판단(사람마다 1회) · 지도의 색 선은 AI마다 고른 곳을 고른 순서(1·2·3·🏨)대로 이은 것이고 실제로 다닐 경로가 아니에요. 날짜별 순서와 이동 시간은 6단계(일정 배치)에서 정해요.`;
   $('sub').textContent += ' · 1차 후보 완성';
   await wait(1800 + 450 * 3);
   if (run !== runId) return;
@@ -990,7 +990,7 @@ let view = null; // { r, cand: placeId → 보드 장소, place: placeId → 후
 let focusAgent = null;
 const agentOf = (agentId) => agents.find((a) => a.agentId === agentId);
 const memberAgent = (memberId) => agents.find((a) => a.memberId === memberId);
-const pickNote = (p, r) => (p.savedFrom ? '지난번 AI가 고른 결과를 다시 씀 · LLM 0회' : p.source === 'llm' ? `AI가 고름 · LLM ${p.llmCalls}회` : r.replay ? '지난 AI 결과가 없어 점수 상위로 고름 (LLM 0회)' : 'AI를 못 써 점수 상위로 대신함');
+const pickNote = (p, r) => (p.savedFrom || p.recorded ? '지난번 AI가 고른 결과를 다시 씀 · LLM 0회' : p.source === 'llm' ? `AI가 고름 · LLM ${p.llmCalls}회` : r.replay ? '지난 AI 결과가 없어 점수 상위로 고름 (LLM 0회)' : 'AI를 못 써 점수 상위로 대신함');
 function buildView(r) {
   const reason = new Map();
   for (const p of r.picks) {

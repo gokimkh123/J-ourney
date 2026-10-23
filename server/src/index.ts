@@ -83,6 +83,7 @@ const app = createApp({
 // 실시간 연결(WebSocket): 같은 포트에서 /api/v1/trips/{tripId}/ws로 받음 (Hono Node 서버의 내장 기능 + ws)
 serve({ fetch: app.fetch, port: config.port, websocket: { server: new WebSocketServer({ noServer: true }) } }, (info) => {
   console.log(`J-ourney 서버 실행 중: http://localhost:${info.port}/api/v1/health`);
-  if (config.llmReplay) console.log('LLM_REPLAY 켜짐: LLM을 부르지 않고 미리 나온 결과(지난 회의의 AI 고르기, 같은 응답의 AI 카드)를 다시 씀');
+  if (config.llmReplay === 'only') console.log('LLM_REPLAY 켜짐: LLM을 부르지 않고 녹화된 답·지난 결과(지난 회의의 AI 고르기, 같은 응답의 AI 카드)만 씀');
+  if (config.llmReplay === 'fill') console.log('LLM_REPLAY=fill: 녹화된 답·지난 결과는 다시 쓰고, 없는 요청만 LLM을 불러 녹화함');
   if (config.devUi) console.log(`백엔드 시험 화면: http://localhost:${info.port}/dev/ · 회의 엔진: http://localhost:${info.port}/dev/meeting`);
 });

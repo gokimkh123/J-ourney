@@ -1,6 +1,7 @@
 import { Annotation, END, START, StateGraph, getWriter } from '@langchain/langgraph';
 import { z } from 'zod';
 import type { LlmClient } from '../llm/client.js';
+import type { LlmRecorder } from '../llm/record.js';
 import { DISLIKE_OPTIONS, LIKE_OPTIONS } from '../persona/questions.js';
 import { REACT, reactionOf } from './react.js';
 import type { Candidate, MemberInput, RetrieveResult } from './retrieve.js';
@@ -45,6 +46,8 @@ export interface PickResult {
   llmCalls: number;
   /** LLM_REPLAY로 지난 결과를 다시 썼으면 AI가 처음 고른 회의 id (LLM 0회) */
   savedFrom?: string;
+  /** 녹화된 같은 요청의 AI 답을 다시 씀 (LLM 0회) */
+  recorded?: boolean;
 }
 
 const PickDraft = z.object({
@@ -86,7 +89,7 @@ const fits = (s: string, max: number) => s.length > 0 && s.length <= max;
  */
 const candidateCode = (i: number) => String(i + 1);
 const lodgingCode = (i: number) => `H${i + 1}`;
-const cell = (v: string | number | null) => (v === null || v === '' ? '-' : String(v).replaceAll('|', '/'));
+export const cell = (v: string | number | null) => (v === null || v === '' ? '-' : String(v).replaceAll('|', '/'));
 const short = (s: string | null) => (s ?? '-').replace(/\s*\/\s*/g, '/');
 
 /** 숫자 뒤에 뜻을 붙임 (예: 96(매우 붐빔)), 자료가 없으면 - */
@@ -98,13 +101,24 @@ const myMark = (c: Candidate, member: MemberInput, lodging: boolean) => {
 };
 const about = (c: Candidate, chars: number) => [c.outside ? `여행지 밖(${c.outside})` : '', c.menu ? `메뉴: ${c.menu}` : '', c.summary].filter(Boolean).join(' · ').slice(0, chars);
 
+/** 표 한 줄의 장소 사실 칸: 이름 · 분류 · 인기(뜻) · 혼잡(뜻) · 영업 · 소개 (4단계 AI 반응 표도 같은 칸을 씀) */
+export const placeCells = (c: Candidate, summaryChars: number) => ({
+  name: c.name,
+  category: short(c.category),
+  popularity: withWord(c.popularity, PICK.popularityWords),
+  crowd: withWord(c.crowd, PICK.crowdWords),
+  hours: c.hours,
+  about: about(c, summaryChars),
+});
+
 /** 3단계 입력 표 (사람마다 다름: 내 조건 칸) — 장소 사실과 그 뜻, 그 사람 기준에 걸리는지를 코드가 미리 적어 줌 */
 export function pickTables(pool: RetrieveResult, member: MemberInput) {
   const candidates = ['번호|이름|분류|인기|혼잡|영업|내 조건|소개']
     .concat(
-      pool.candidates.map((c, i) =>
-        [candidateCode(i), c.name, short(c.category), withWord(c.popularity, PICK.popularityWords), withWord(c.crowd, PICK.crowdWords), c.hours, myMark(c, member, false), about(c, PICK.summaryChars)].map(cell).join('|'),
-      ),
+      pool.candidates.map((c, i) => {
+        const f = placeCells(c, PICK.summaryChars);
+        return [candidateCode(i), f.name, f.category, f.popularity, f.crowd, f.hours, myMark(c, member, false), f.about].map(cell).join('|');
+      }),
     )
     .join('\n');
   const lodgings =
@@ -129,26 +143,33 @@ const prefer = (w: number, more: string, less: string) => (w >= PICK.preferWord 
 /** LLM에 넣는 '나' (닉네임은 넣지 않음). 기준은 숫자 그대로 말로 적어 줌 */
 export function pickInput(member: MemberInput, pool: RetrieveResult) {
   const tables = pickTables(pool, member);
-  const p = member.profile;
   return {
     me: {
-      title: member.title,
-      likes: text(LIKE_OPTIONS, member.likes),
-      dislikes: text(DISLIKE_OPTIONS, member.dislikes),
-      limits: [
-        `하루 일정 ${p.startTime}~${p.endTime ?? REACT.dayEnd}`,
-        ...(p.maxCrowd !== null ? [`혼잡 ${p.maxCrowd} 넘는 곳은 싫음`] : []),
-        ...(p.avoidQueue ? [`줄 서는 맛집 싫음 (인기 ${REACT.queuePopularity} 이상 음식점)`] : []),
-      ],
-      mustKeep: member.mustKeep.map((r) => ({ type: r.type, label: r.label })),
+      ...meInput(member),
       // 꼭 지킬 것(넣기)에 맞는 후보: 코드가 2단계에서 공식 분류·이름으로 맞춘 결과
       mustKeepIds: pool.candidates.flatMap((c, i) => (c.reasons[member.memberId]?.some((w) => w.startsWith('꼭 지킬 것')) ? [candidateCode(i)] : [])),
-      wishes: member.wishes ?? [],
-      prefers: { popular: prefer(p.weights.popularity, '이름난 곳', '덜 알려진 곳'), crowded: prefer(p.weights.crowd, '활기찬 곳', '한적한 곳') },
     },
     candidates: tables.candidates,
     nights: pool.nights,
     lodgings: tables.lodgings,
+  };
+}
+
+/** '나' 칸: 성향 이름·좋아요·싫어요·하루 기준·꼭 지킬 것·바람·선호 (3단계 고르기와 4단계 AI 반응이 같이 씀) */
+export function meInput(member: MemberInput) {
+  const p = member.profile;
+  return {
+    title: member.title,
+    likes: text(LIKE_OPTIONS, member.likes),
+    dislikes: text(DISLIKE_OPTIONS, member.dislikes),
+    limits: [
+      `하루 일정 ${p.startTime}~${p.endTime ?? REACT.dayEnd}`,
+      ...(p.maxCrowd !== null ? [`혼잡 ${p.maxCrowd} 넘는 곳은 싫음`] : []),
+      ...(p.avoidQueue ? [`줄 서는 맛집 싫음 (인기 ${REACT.queuePopularity} 이상 음식점)`] : []),
+    ],
+    mustKeep: member.mustKeep.map((r) => ({ type: r.type, label: r.label })),
+    wishes: member.wishes ?? [],
+    prefers: { popular: prefer(p.weights.popularity, '이름난 곳', '덜 알려진 곳'), crowded: prefer(p.weights.crowd, '활기찬 곳', '한적한 곳') },
   };
 }
 
@@ -218,7 +239,7 @@ export function ensureMust(result: PickResult, member: MemberInput, pool: Retrie
 }
 
 /** 입력 칸 이름 (사람에게 보이는 이유·한마디에 나오면 규칙 문장으로 바꿈) */
-const FIELD_NAMES = /\b(me|id|mustKeep|mustKeepIds|prefers|wishes|limits|likes|dislikes|nights|lodgings|candidates)\b/i;
+export const FIELD_NAMES = /\b(me|id|mustKeep|mustKeepIds|prefers|wishes|limits|likes|dislikes|nights|lodgings|candidates|places|quote|kind)\b/i;
 
 /** 통과한 답을 결과로 바꿈: 길이를 넘거나 칸 이름이 나온 이유·한마디는 규칙 문장, 숙소가 틀리거나 비면 규칙 숙소 */
 export function acceptDraft(member: MemberInput, pool: RetrieveResult, draft: PickDraft, llmCalls: number): PickResult {
@@ -243,6 +264,8 @@ const TRACE_EVERY_MS = 60;
 
 export interface PickDeps {
   llm: LlmClient | null;
+  /** 녹화된 같은 요청의 답은 부르지 않고 씀 (LLM 횟수에 세지 않음), 부른 답은 녹화 */
+  recorder?: LlmRecorder | null;
   /** true면 LLM 요청 내용·받는 글자·원본 응답을 시험 화면용 이벤트로 보냄 (시험 경로에서만) */
   traceLlm?: boolean;
   /** 이 회의에서 LLM을 1회 쓸 수 있으면 true (회의 실행 상한·하루 상한) */
@@ -262,6 +285,8 @@ export const PickState = Annotation.Root({
   calls: Annotation<number>(),
   /** LLM을 더 부를 수 없음 (LLM 없음·상한·오류) */
   blocked: Annotation<boolean>(),
+  /** 지금 답이 녹화된 답을 다시 쓴 것 (LLM 0회) */
+  recorded: Annotation<boolean>(),
   /** LLM_REPLAY: 지난 회의에서 AI가 고른 결과 (지금 후보에 모두 있을 때만). 있으면 LLM을 부르지 않고 이것을 씀 (부모의 saved와 이름을 달리 둠) */
   savedPick: Annotation<PickResult | null>(),
   /** 부모 그래프로 넘기는 결과 (부모의 picks에 합쳐짐) */
@@ -280,12 +305,21 @@ export function buildPickGraph(deps: PickDeps) {
     const tries = (s.tries ?? 0) + 1;
     emit({ type: 'research.progress', data: { agentId: agentIdOf(s.who.memberId), stage: 'picking', tool: null, focus: null, foundCount: s.from.candidates.length } });
     // 후보가 고를 수보다 적으면 답할 수 없으므로 LLM을 부르지 않음 (예: 여행지 전체가 누군가의 꼭 피할 것에 걸림). 지난 결과를 다시 쓸 때도 부르지 않음
-    if (s.savedPick || s.from.candidates.length < PICK.count || !deps.llm || !(await deps.reserveLlm(s.meeting))) return { tries, blocked: true, draft: null };
+    if (s.savedPick || s.from.candidates.length < PICK.count) return { tries, blocked: true, draft: null };
+    const req = { system: SYSTEM, input: pickInput(s.who, s.from), schema: PickDraft, schemaName: 'meeting_pick' };
+    // 녹화된 같은 요청(같은 시도 번호)의 답이 있으면 부르지 않음 (LLM 횟수에 세지 않음)
+    const replayed = await deps.recorder?.replay(req, tries);
+    if (replayed) return { tries, draft: decodeDraft(replayed, s.from), recorded: true };
+    const llm = deps.llm;
+    if (!llm || !(await deps.reserveLlm(s.meeting))) return { tries, blocked: true, draft: null };
     try {
-      const req = { system: SYSTEM, input: pickInput(s.who, s.from), schema: PickDraft, schemaName: 'meeting_pick' };
-      if (!deps.traceLlm || !deps.llm.streamJson) return { tries, draft: decodeDraft(await deps.llm.generateJson(req), s.from), calls: (s.calls ?? 0) + 1 };
+      if (!deps.traceLlm || !llm.streamJson) {
+        const value = await llm.generateJson(req);
+        await deps.recorder?.record(req, value, tries);
+        return { tries, draft: decodeDraft(value, s.from), calls: (s.calls ?? 0) + 1, recorded: false };
+      }
       const agentId = agentIdOf(s.who.memberId);
-      emit({ type: 'llm.request', data: { agentId, try: tries, model: deps.llm.name, system: SYSTEM, input: req.input } });
+      emit({ type: 'llm.request', data: { agentId, try: tries, model: llm.name, system: SYSTEM, input: req.input } });
       let sent = 0;
       let lastAt = 0;
       const flush = (text: string) => {
@@ -293,12 +327,13 @@ export function buildPickGraph(deps: PickDeps) {
         sent = text.length;
         lastAt = Date.now();
       };
-      const out = await deps.llm.streamJson(req, (text) => {
+      const out = await llm.streamJson(req, (text) => {
         if (Date.now() - lastAt >= TRACE_EVERY_MS) flush(text);
       });
       flush(out.text);
       emit({ type: 'llm.response', data: { agentId, try: tries, model: out.model, ms: out.ms, usage: out.usage, text: out.text } });
-      return { tries, draft: decodeDraft(out.value, s.from), calls: (s.calls ?? 0) + 1 };
+      await deps.recorder?.record(req, out.value, tries);
+      return { tries, draft: decodeDraft(out.value, s.from), calls: (s.calls ?? 0) + 1, recorded: false };
     } catch (err) {
       console.warn('3단계 고르기 LLM 실패, 규칙으로 대신함:', err instanceof Error ? err.message.slice(0, 200) : err);
       return { tries, draft: null, blocked: true, calls: (s.calls ?? 0) + 1 };
@@ -314,7 +349,11 @@ export function buildPickGraph(deps: PickDeps) {
   const finish = async (s: PickStateType): Promise<Partial<PickStateType>> => {
     const ok = !s.blocked && !!s.draft && checkDraft(s.draft, s.from);
     if (s.draft && !ok && !s.blocked) console.info(`3단계 고르기: ${s.tries}번 모두 형식이 틀려 규칙으로 대신함`);
-    const made = s.savedPick ? { ...s.savedPick, llmCalls: 0 } : ok ? acceptDraft(s.who, s.from, s.draft!, s.calls ?? 0) : { ...rulePick(s.who, s.from), llmCalls: s.calls ?? 0 };
+    const made = s.savedPick
+      ? { ...s.savedPick, llmCalls: 0 }
+      : ok
+        ? { ...acceptDraft(s.who, s.from, s.draft!, s.calls ?? 0), ...(s.recorded ? { recorded: true } : {}) }
+        : { ...rulePick(s.who, s.from), llmCalls: s.calls ?? 0 };
     const result = ensureOwnLimits(ensureMust(made, s.who, s.from), s.who, s.from);
     const agentId = agentIdOf(s.who.memberId);
     const byId = new Map([...s.from.candidates, ...s.from.lodgings].map((c) => [c.id, c]));

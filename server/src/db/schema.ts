@@ -82,6 +82,21 @@ export const llmIpUsage = pgTable(
 );
 
 /**
+ * LLM 녹화: 실제로 부른 LLM의 답을 요청 지문(sha256)으로 저장함 (LLM_REPLAY에서 같은 요청은 부르지 않고 이 답을 씀)
+ * 요청 원문은 저장하지 않음 (크기, 성향 원문은 personas에 이미 있음). 시험을 다시 돌리는 용도라 지워도 회의·카드 동작에는 지장 없음
+ */
+export const llmRecords = pgTable('llm_records', {
+  key: text('key').primaryKey(),
+  /** 용도 (schemaName: persona_card · meeting_pick · place_names · meeting_react) */
+  purpose: text('purpose').notNull(),
+  /** 부른 LLM 설정 이름 (공급자:모델 → 예비 모델) */
+  model: text('model').notNull(),
+  attempt: smallint('attempt').notNull(),
+  response: jsonb('response').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * 장소 — TourAPI(국문 관광정보) 장소 정보 (목록 값과 상세: 소개글·영업시간)
  * 비표출(폐업·삭제 등)된 장소는 지우지 않고 visible=false로 둠. 출처 표시: ⓒ한국관광공사
  */

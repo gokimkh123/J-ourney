@@ -139,9 +139,9 @@
 <script>
 const STEPS = [
   { n: 1, name: '준비', kind: 'code', live: true, desc: '시연 여행(4명 성향) + 회의 조건' },
-  { n: 2, name: '후보 찾기', kind: 'code', live: true, desc: 'DB·인기도·혼잡도 → 40곳' },
+  { n: 2, name: '후보 찾기', kind: 'code', live: true, desc: 'DB·인기도·혼잡도 → 40곳 · 이름 맞추기만 LLM 0–1회' },
   { n: 3, name: '고르기 ×4', kind: 'llm', live: true, desc: 'AI 4명이 각자 3곳 + 숙소' },
-  { n: 4, name: '후보 보드', kind: 'code', live: true, desc: '4명 반응 👍 ⚠ ✕ · 회의 안건' },
+  { n: 4, name: '후보 보드', kind: 'llm', live: true, desc: '4명 반응 👍 ⚠ ✕ (코드 + AI) · 회의 안건' },
   { n: 5, name: '사람 확인', kind: 'human', live: true, desc: '안건마다 남김·뺌 (interrupt)' },
   { n: 6, name: '일정 배치', kind: 'code', desc: 'A안·B안 시간 계산' },
   { n: 7, name: '평가 1라운드', kind: 'llm', desc: '4명 찬반·요청' },
@@ -158,7 +158,7 @@ const KIND = { code: '코드', llm: 'LLM', human: '사람', end: '끝' };
 /* 서버 실행 방식: LLM_REPLAY면 LLM을 부르지 않고 지난 결과를 다시 씀 (GET /dev/meeting/mode) */
 let MODE = { replay: false };
 const runText = (steps) => (MODE.replay ? `회의 실행 (${steps}, 저장된 결과 · LLM 0회)` : `회의 실행 (${steps}, 실제 LLM)`);
-const pickSource = (p) => (p.savedFrom ? '<span class="ok">저장된 AI 결과</span>' : p.source === 'llm' ? '<span class="ok">AI가 고름</span>' : MODE.replay ? '<span class="warn">지난 AI 결과 없음 · 규칙</span>' : '<span class="warn">규칙으로 대신함</span>');
+const pickSource = (p) => (p.savedFrom || p.recorded ? '<span class="ok">저장된 AI 결과</span>' : p.source === 'llm' ? '<span class="ok">AI가 고름</span>' : MODE.replay ? '<span class="warn">지난 AI 결과 없음 · 규칙</span>' : '<span class="warn">규칙으로 대신함</span>');
 const KEY = 'journey-dev-meeting';
 let cur = 1;
 let saved = load();
@@ -312,11 +312,11 @@ const NODE_VIEW = {
     desc: 'AI 4명이 각자 성향으로 40곳 중 3곳 + 숙소를 고름 (사람마다 서브그래프 choose → 형식이 틀리면 1번 더 → finish, 4명 동시에)',
     subs: (d) => (d?.picks ?? [null, null, null, null]).map((p, i) => {
       const who = d?.members?.find((m) => m.memberId === p?.memberId);
-      return [who ? `${who.nickname} AI` : `AI ${i + 1}`, '', p ? `${p.savedFrom ? 'AI(저장)' : p.source === 'llm' ? 'AI' : '규칙'} · ${p.picks.map((x) => nameOfPlace(d, x.id)).join(', ')}` : '', p ? p.memberId : ''];
+      return [who ? `${who.nickname} AI` : `AI ${i + 1}`, '', p ? `${p.savedFrom || p.recorded ? 'AI(저장)' : p.source === 'llm' ? 'AI' : '규칙'} · ${p.picks.map((x) => nameOfPlace(d, x.id)).join(', ')}` : '', p ? p.memberId : ''];
     }),
   },
   react: {
-    desc: '장소마다 4명의 반응(👍 ⚠ ✕)을 규칙으로 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 정리 (코드, LLM 0회)',
+    desc: '장소마다 4명의 반응(👍 ⚠ ✕): 분류·혼잡·영업시간은 코드 규칙, 사람이 쓴 말·바람은 AI가 다른 AI가 고른 곳의 소개글을 읽고 판단(사람마다 LLM 1회, 근거 글은 코드가 확인), 더 무거운 쪽을 남기고 ⚠·✕가 붙은 곳을 회의 안건으로 정리',
     subs: (d) => {
       const all = d?.board ? d.board.candidates.flatMap((c) => c.reactions) : [];
       const n = (k) => all.filter((x) => x.kind === k).length;
@@ -524,6 +524,17 @@ function agentCards() {
     <div class="say" hidden></div><ol class="picks"></ol></div>`).join('');
 }
 function onLlm(type, d) {
+  // 4단계 AI 반응 (사람마다 1회): 고르기 카드를 덮지 않고 기록만
+  if (d.purpose === 'react') {
+    const who = agents3.find((a) => a.agentId === d.agentId)?.nickname ?? '';
+    if (type === 'llm.request') log(`${who} AI → 4단계 반응 LLM 요청 (다른 AI가 고른 곳 ${d.input.places.split('\n').length - 1}곳)`);
+    else if (type === 'llm.response') {
+      let n = '-';
+      try { n = JSON.parse(d.text).reactions.length; } catch { /* 받은 그대로 둠 */ }
+      log(`${who} AI ← 4단계 반응 LLM 응답 (반응 ${n}개, ${d.ms}ms, 출력 ${d.usage.output ?? '-'}토큰)`);
+    }
+    return;
+  }
   // 2단계 이름 맞추기 (회의 1번에 1회, 사람 카드 없이 기록만)
   if (d.purpose === 'names') {
     if (type === 'llm.request') log(`이름 맞추기 → LLM 요청 (코드가 이름으로 못 찾은 꼭 지킬 것 ${d.input.rules.length}개)`);
@@ -700,8 +711,8 @@ function rules4() {
 }
 function renderStep4() {
   const p = $('panel');
-  p.innerHTML = `<h2>4. 후보 보드 반응 <span class="k code">코드 · LLM 0회</span></h2>
-    <p class="muted">3단계 후보 보드의 장소마다 AI 4명의 반응을 규칙으로 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 정리합니다. 실행하면 1–4단계가 함께 돌고 ${MODE.replay ? '저장된 결과를 다시 써 LLM은 0회입니다' : 'LLM은 3단계의 4회뿐입니다'}.</p>
+  p.innerHTML = `<h2>4. 후보 보드 반응 <span class="k llm">${MODE.replay ? 'LLM 0회 (녹화된 답)' : '코드 + AI 반응 (LLM 4회)'}</span></h2>
+    <p class="muted">3단계 후보 보드의 장소마다 AI 4명의 반응을 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 정리합니다. 분류·혼잡·영업시간은 코드 규칙으로, 사람이 쓴 말·바람은 AI가 다른 AI가 고른 곳의 소개글을 읽고 판단합니다 (근거 글이 소개글에 있어야 받음). 실행하면 1–4단계가 함께 돌고 ${MODE.replay ? '녹화된 답·저장된 결과를 다시 써 LLM은 0회입니다 (녹화가 없는 반응은 코드 규칙만)' : 'LLM은 3단계 4회 + 4단계 4회입니다'}.</p>
     <div id="rules4">${rules4()}</div>
     <div class="row"><button class="btn primary" id="run3">${runText('1–4단계')}</button>
       <label style="display:flex;flex-direction:row;align-items:center;gap:6px">보기 속도 <select id="speed3"><option value="1">실제 속도</option><option value="0.5">½ (느리게 재생)</option><option value="0.25">¼ (느리게 재생)</option></select></label>

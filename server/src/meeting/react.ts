@@ -8,6 +8,8 @@ import type { Board, BoardCandidate, Reaction, ReactionKind } from './types.js';
  * score: 6단계 일정 배치가 장소 조합을 고를 때 쓰는 반응 점수 (고름 +2 · 👍 +1 · ⚠ −1, ✕가 하나라도 붙은 곳은 일정안에서 뺌)
  * dayEnd: 끝 시각을 정하지 않은 사람의 하루 끝 · tightMinutes: 하루 시간대가 영업시간을 잘라 이보다 적게 겹치면 ⚠
  * queuePopularity: 줄 서기 싫어요인 사람에게 인기도가 이 값 이상인 음식점은 ⚠ (줄 자료가 없어 인기도로 가늠)
+ * ai: 4단계 AI 반응(react-ai.ts, 10/19 사용자 결정) — 이유·근거 글 길이, 표에 넣는 소개글 길이, 생각 세기
+ *   (thinking 'medium': 10/19 비교 시험에서 생각을 끄거나 low로 두면 틀린 ⚠가 늘고 low는 형식 오류가 남)
  * 가격 규칙은 장소별 가격 자료가 없어 넣지 않음
  */
 export const REACT = {
@@ -17,7 +19,25 @@ export const REACT = {
   queuePopularity: 85,
   agendaMax: 5,
   reasonsMax: 2,
+  ai: { reasonMax: 40, reasonHardMax: 60, quoteMin: 2, quoteMax: 40, summaryChars: 160, thinking: 'medium' },
 } as const;
+
+/** AI가 붙인 반응 하나 (react-ai.ts가 근거를 확인한 것만) */
+export interface AiReaction {
+  placeId: string;
+  kind: ReactionKind;
+  reason: string;
+}
+/** 반응 무게: ✕ > ⚠ > 👍 */
+export const REACTION_WEIGHT: Record<ReactionKind, number> = { like: 1, warn: 2, block: 3 };
+
+/** 코드 반응과 AI 반응을 합침: 더 무거운 쪽을 남기고, 같은 무게면 이유를 이어 붙임 */
+function mergeReaction(code: Omit<Reaction, 'agentId'> | null, ai: AiReaction | null): Omit<Reaction, 'agentId'> | null {
+  if (!ai) return code;
+  if (!code || REACTION_WEIGHT[ai.kind] > REACTION_WEIGHT[code.kind]) return { kind: ai.kind, reason: ai.reason };
+  if (REACTION_WEIGHT[ai.kind] < REACTION_WEIGHT[code.kind]) return code;
+  return { kind: code.kind, reason: `${code.reason} · ${ai.reason}` };
+}
 
 const DAY = 1440;
 const toMinutes = (hhmm: string) => {
@@ -118,8 +138,11 @@ export function agendaOf(
   return [...items, ...(extra.notes ?? []).map((text) => ({ placeId: null, text }))];
 }
 
-/** 4단계: 후보 보드의 장소마다 4명의 반응을 붙이고, ⚠·✕가 붙은 곳·여행지 밖에서 넣은 곳·이름이 달라 AI가 맞춘 꼭 지킬 곳을 회의 안건으로 정리함 (코드, LLM 0회) */
-export function reactBoard(board: Board, pool: RetrieveResult, members: readonly MemberInput[]): Board {
+/**
+ * 4단계: 후보 보드의 장소마다 4명의 반응을 붙이고, ⚠·✕가 붙은 곳·여행지 밖에서 넣은 곳·이름이 달라 AI가 맞춘 꼭 지킬 곳을 회의 안건으로 정리함
+ * 반응은 코드 규칙(분류·혼잡·영업시간·하루 시간) + ai(에이전트 id → AI 반응, 사람이 쓴 말·바람을 AI가 소개글로 판단)를 합친 것 (더 무거운 쪽)
+ */
+export function reactBoard(board: Board, pool: RetrieveResult, members: readonly MemberInput[], ai: ReadonlyMap<string, readonly AiReaction[]> = new Map()): Board {
   const spots = new Map(pool.candidates.map((c) => [placeIdOf(c.id), c]));
   const lodgings = new Map(pool.lodgings.map((c) => [placeIdOf(c.id), c]));
   const candidates = board.candidates.map((b) => {
@@ -128,7 +151,8 @@ export function reactBoard(board: Board, pool: RetrieveResult, members: readonly
       ? []
       : members.flatMap((m) => {
           const agentId = agentIdOf(m.memberId);
-          const r = reactionOf(c, m, { lodging: lodgings.has(b.placeId), proposed: b.proposedBy.includes(agentId) });
+          const code = reactionOf(c, m, { lodging: lodgings.has(b.placeId), proposed: b.proposedBy.includes(agentId) });
+          const r = mergeReaction(code, ai.get(agentId)?.find((x) => x.placeId === b.placeId) ?? null);
           return r ? [{ agentId, ...r }] : [];
         });
     return { ...b, reactions };

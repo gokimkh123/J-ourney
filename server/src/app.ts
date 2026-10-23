@@ -8,6 +8,7 @@ import { ApiError } from './lib/errors.js';
 import { writeRateLimit } from './lib/rate-limit.js';
 import { nowKst } from './lib/time.js';
 import type { LlmClient } from './llm/client.js';
+import { type ReplayMode, llmRecorder } from './llm/record.js';
 import { buildMeetingGraph } from './meeting/graph.js';
 import { EventHub } from './meeting/live.js';
 import { meetingService } from './meeting/service.js';
@@ -28,8 +29,8 @@ export interface AppOptions {
   devUiTunnel?: boolean;
   /** null이면 LLM 없이 규칙 카드만 만듦 */
   llm?: LlmClient | null;
-  /** true면 LLM을 부르지 않고 미리 나온 결과(지난 회의의 AI 고르기, 같은 응답의 AI 카드)를 다시 씀 (LLM_REPLAY) */
-  llmReplay?: boolean;
+  /** LLM 다시 쓰기 (LLM_REPLAY): true·'only'면 LLM을 부르지 않고 녹화·지난 결과만, 'fill'이면 없는 요청만 부르고 녹화 */
+  llmReplay?: boolean | ReplayMode;
   llmDailyLimit?: number;
   llmCardsPerMember?: number;
   llmPerIpDaily?: number;
@@ -95,14 +96,16 @@ export function createApp({
 
   if (db) {
     api.route('/', tripRoutes(db));
-    // LLM_REPLAY: LLM 호출기를 넘기지 않아 어떤 경로도 LLM을 부르지 않음 (미리 나온 결과가 없으면 규칙)
-    api.route('/', personaRoutes({ db, llm: llmReplay ? null : llm, replay: llmReplay, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret }));
+    // LLM 녹화·재생: 실제로 부른 답은 늘 녹화하고, only(LLM_REPLAY=true)면 LLM 호출기를 넘기지 않아 어떤 경로도 LLM을 부르지 않음
+    const mode: ReplayMode = llmReplay === true ? 'only' : llmReplay === false ? 'off' : llmReplay;
+    const recorder = llmRecorder(db, (llm ?? meetingLlm)?.name ?? 'none', mode);
+    api.route('/', personaRoutes({ db, llm: mode === 'only' ? null : llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret }));
     // 회의 그래프와 실행기는 서버가 켜질 때 한 번만 만들고 공식 경로·시험 경로가 함께 씀
     const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
-    const graph = buildMeetingGraph({ db, crowdClient, llm: llmReplay ? null : (meetingLlm ?? llm), limits, checkpointer, traceLlm: true });
-    const service = meetingService({ db, graph, limits, publisher: hub, replay: llmReplay });
+    const graph = buildMeetingGraph({ db, crowdClient, llm: mode === 'only' ? null : (meetingLlm ?? llm), recorder, limits, checkpointer, traceLlm: true });
+    const service = meetingService({ db, graph, limits, publisher: hub, replay: mode !== 'off' });
     api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs }));
-    if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: devUiTunnel, replay: llmReplay }));
+    if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: devUiTunnel, replay: mode !== 'off' }));
   } else {
     api.all('*', () => {
       throw new ApiError('INTERNAL_ERROR', 'DB가 설정되지 않아 사용할 수 없음');

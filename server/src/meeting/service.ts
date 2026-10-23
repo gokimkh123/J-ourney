@@ -4,6 +4,7 @@ import type { Db } from '../db/client.js';
 import { meetingReviews, meetings, members, personas, trips } from '../db/schema.js';
 import type { Member } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
+import { stableJson } from '../lib/stable.js';
 import { nowKst } from '../lib/time.js';
 import { type MeetingStateType, type SavedResults, type buildMeetingGraph, loadMeetingInput } from './graph.js';
 import type { SavedNameMatch } from './names.js';
@@ -24,10 +25,6 @@ export interface MeetingObserver {
 
 /** 실행 한 번의 끝: 사람 확인에서 멈춤 · 끝 · 실패 */
 export type RunOutcome = { status: 'reviewing' | 'done' | 'failed'; state: MeetingStateType | null; error?: unknown };
-
-/** 키 순서와 상관없이 같은 값이면 같은 글자 (지난 회의와 조건이 같은지 볼 때) */
-const stable = (v: unknown) =>
-  JSON.stringify(v ?? null, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
 
 /** API에 보이는 회의 상태 (명세서: 시작하면 researching) */
 const STATUS_VIEW = { running: 'researching', reviewing: 'reviewing', done: 'done', failed: 'failed' } as const;
@@ -130,7 +127,7 @@ export function meetingService({ db, graph, limits, publisher, replay = false }:
     const names = new Map<string, SavedNameMatch>();
     for (const m of past) {
       const v = (await graph.getState(configOf(m.id))).values as Partial<MeetingStateType>;
-      if (!v?.picks?.length || stable(v.conditions) !== stable(trip.conditions)) continue;
+      if (!v?.picks?.length || stableJson(v.conditions) !== stableJson(trip.conditions)) continue;
       for (const p of v.picks) {
         const at = personaAt.get(p.memberId);
         if (p.source !== 'llm' || picks.has(p.memberId) || !at || at > m.startedAt) continue;

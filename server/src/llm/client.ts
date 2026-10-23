@@ -6,6 +6,8 @@ export interface JsonRequest<T extends z.ZodType> {
   input: unknown;
   schema: T;
   schemaName: string;
+  /** Claude 생각(adaptive thinking)의 세기. 없으면 생각을 끔 (다른 공급자에는 보내지 않음) */
+  thinking?: 'low' | 'medium' | 'high';
 }
 
 /** 글자 단위로 받은 응답 (시험 화면에서 LLM이 쓰는 과정을 보여 줄 때) */
@@ -74,6 +76,15 @@ export async function createLangChainLlm({ provider, model, timeoutMs, callToken
     // Claude는 따로 끄지 않으면 생각(thinking)부터 해서 카드 1장에 4–7초 걸림. 끄면 약 2.7초 (10/14 실측, 다른 공급자에는 보내지 않음)
     ...(provider === 'anthropic' ? { thinking: { type: 'disabled' }, outputConfig: { effort: 'low' } } : {}),
   });
+  // 요청이 생각을 바라면(4단계 AI 반응) 그 세기의 Claude를 한 번만 열어 둠. 10/19 비교 시험: 생각을 켜야 짐작으로 붙는 반응이 줄어듦
+  const thinkers = new Map<string, Promise<typeof chat>>();
+  const chatFor = (thinking: JsonRequest<z.ZodType>['thinking']) => {
+    if (provider !== 'anthropic' || !thinking) return Promise.resolve(chat);
+    if (!thinkers.has(thinking)) {
+      thinkers.set(thinking, initChatModel(model, { modelProvider: provider, maxRetries: 1, maxTokens: maxOutputTokens, thinking: { type: 'adaptive' }, outputConfig: { effort: thinking } }));
+    }
+    return thinkers.get(thinking)!;
+  };
   // 1회 호출 토큰 상한: 입력 최댓값 + 출력 상한이 넘으면 부르지 않음 (부르는 쪽이 규칙 카드로 대신함)
   const guard = (system: string, input: unknown, schema: z.ZodType) => {
     const upper = inputTokenUpperBound(system, input, schema);
@@ -89,17 +100,18 @@ export async function createLangChainLlm({ provider, model, timeoutMs, callToken
   ];
   return {
     name: `${provider}:${model}`,
-    async streamJson({ system, input, schema, schemaName }, onText) {
+    async streamJson({ system, input, schema, schemaName, thinking }, onText) {
       guard(system, input, schema);
       const started = performance.now();
-      const structured = chat.withStructuredOutput(schema, { name: schemaName, method: 'jsonSchema' });
+      const structured = (await chatFor(thinking)).withStructuredOutput(schema, { name: schemaName, method: 'jsonSchema' });
       let text = '';
       const usage: StreamedJson<unknown>['usage'] = { input: null, output: null };
       // 구조화 출력은 결과를 한 번에 돌려주므로, 안쪽 모델의 글자 조각(on_chat_model_stream)을 모아 보여 주고 끝에 직접 검사함
       for await (const ev of structured.streamEvents(messages(system, input), { version: 'v2', signal: AbortSignal.timeout(timeoutMs) })) {
         if (ev.event !== 'on_chat_model_stream') continue;
         const chunk = ev.data.chunk as { content?: unknown; usage_metadata?: { input_tokens?: number; output_tokens?: number; input_token_details?: { cache_read?: number; cache_creation?: number } } };
-        const piece = typeof chunk.content === 'string' ? chunk.content : Array.isArray(chunk.content) ? chunk.content.map((p: { text?: string }) => p?.text ?? '').join('') : '';
+        // 생각 글(thinking)은 답이 아니므로 모으지 않음
+        const piece = typeof chunk.content === 'string' ? chunk.content : Array.isArray(chunk.content) ? chunk.content.map((p: { type?: string; text?: string }) => (p?.type === 'thinking' ? '' : (p?.text ?? ''))).join('') : '';
         if (chunk.usage_metadata) {
           usage.input = Math.max(usage.input ?? 0, chunk.usage_metadata.input_tokens ?? 0) || usage.input;
           usage.output = Math.max(usage.output ?? 0, chunk.usage_metadata.output_tokens ?? 0) || usage.output;
@@ -114,9 +126,9 @@ export async function createLangChainLlm({ provider, model, timeoutMs, callToken
       }
       return { value: schema.parse(JSON.parse(text)), model: `${provider}:${model}`, text, usage, ms: Math.round(performance.now() - started) };
     },
-    async generateJson({ system, input, schema, schemaName }) {
+    async generateJson({ system, input, schema, schemaName, thinking }) {
       guard(system, input, schema);
-      const structured = chat.withStructuredOutput(schema, { name: schemaName, method: 'jsonSchema' });
+      const structured = (await chatFor(thinking)).withStructuredOutput(schema, { name: schemaName, method: 'jsonSchema' });
       const raw = await structured.invoke(messages(system, input), { timeout: timeoutMs });
       // 공급자가 지원하지 않아 빠진 제약(길이 등)까지 여기서 다시 검사함
       return schema.parse(raw);

@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { categories, llmIpUsage, members, personas, places, trips } from '../src/db/schema.js';
+import { categories, llmIpUsage, llmRecords, llmUsage, members, personas, places, trips } from '../src/db/schema.js';
 import { ApiError } from '../src/lib/errors.js';
 import { buildProfile, pickChips, readAnswers, scoreTraits } from '../src/persona/score.js';
 import { maskPersonal } from '../src/persona/write.js';
@@ -304,6 +304,25 @@ describe('성향 질문·페르소나 API', () => {
     expect(reused).toMatchObject({ source: 'llm', title: made.title, catchphrase: made.catchphrase, tmi: made.tmi, mustKeep: made.mustKeep });
     expect((await submit(replay, seoyeon('다른 바람'))).source).toBe('rule');
     expect(llm.calls).toBe(1);
+  });
+
+  it('녹화·재생: 실제로 만든 AI 카드의 답은 녹화되고, LLM_REPLAY면 같은 요청은 녹화된 답으로 만듦 (AI 카드 횟수·하루 횟수에 세지 않음)', async () => {
+    const llm = fakeLlm(() => draft());
+    const { app, db } = await createTestApp({ llm });
+    const newMember = async (target: typeof app) => (await call(target, 'POST', '/trips', { title: '부산', nickname: '민수' })).body.token as string;
+    const made = (await call(app, 'POST', '/me/persona', { answers: seoyeon(MUST_KEEP) }, await newMember(app))).body.persona;
+    expect(made.source).toBe('llm');
+    expect((await db.select().from(llmRecords)).map((r) => r.purpose)).toEqual(['persona_card']);
+    await db.delete(personas); // 같은 응답의 AI 카드(지난 결과)로는 못 찾게 하고 녹화만 남김
+    const replay = createApp({ db, rateLimitPerMinute: 1000, llm, llmReplay: 'only' });
+    const token = await newMember(replay);
+    const reused = (await call(replay, 'POST', '/me/persona', { answers: seoyeon(MUST_KEEP) }, token)).body.persona;
+    expect(reused).toMatchObject({ source: 'llm', title: made.title, catchphrase: made.catchphrase, mustKeep: made.mustKeep });
+    expect(llm.calls).toBe(1);
+    const [usage] = await db.select().from(llmUsage);
+    expect(usage.count).toBe(1);
+    const [me] = await db.select().from(members).where(eq(members.id, reused.memberId));
+    expect(me.llmCards).toBe(0);
   });
 
   it('개발 기간(IP당 0회)에는 터널 요청은 LLM 없이 규칙 카드, 이 PC 요청은 AI 카드', async () => {

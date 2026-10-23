@@ -4,11 +4,13 @@ import type { Db } from '../db/client.js';
 import { members, personas, regions, trips } from '../db/schema.js';
 import { ApiError } from '../lib/errors.js';
 import type { LlmClient } from '../llm/client.js';
+import type { LlmRecorder } from '../llm/record.js';
 import { memberColor } from '../routes/views.js';
 import type { TourClient } from '../tour/client.js';
 import { type SavedNameMatch, nameMatcher, savedNameMatcher } from './names.js';
 import { type PickResult, boardOf, buildPickGraph, savedPickFor } from './pick.js';
-import { REACT, reactBoard } from './react.js';
+import { type AiReaction, REACT, reactBoard } from './react.js';
+import { acceptReactions, reactRequest } from './react-ai.js';
 import { type MemberInput, type RetrieveResult, retrieveCandidates } from './retrieve.js';
 import { applyReview, reviewRequestOf } from './review.js';
 import { type MeetingEventDraft, type MeetingLimits, agentIdOf, reserveMeetingLlm } from './runs.js';
@@ -53,6 +55,8 @@ export interface MeetingDeps {
   today?: string;
   /** 3단계부터 씀 (null이면 규칙 고르기) */
   llm?: LlmClient | null;
+  /** LLM 녹화·재생: 녹화된 같은 요청의 답은 부르지 않고 씀 (LLM 횟수에 세지 않음), 부른 답은 녹화 */
+  recorder?: LlmRecorder | null;
   limits?: MeetingLimits;
   /** true면 LLM 요청·받는 글자·응답을 시험 화면용 이벤트로 보냄 */
   traceLlm?: boolean;
@@ -118,10 +122,14 @@ async function prepare(deps: MeetingDeps, state: MeetingStateType): Promise<Part
  */
 async function retrieve(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
   const meetingId = state.meetingId;
-  const matchNames = state.saved
-    ? savedNameMatcher(state.saved.nameMatches)
-    : deps.llm && deps.limits && meetingId
-      ? nameMatcher(deps.llm, () => reserveMeetingLlm(deps.db, meetingId, deps.limits!), deps.traceLlm ? emit : undefined)
+  // 녹화된 같은 요청 → 지난 회의에서 맞춘 이름(LLM_REPLAY) → LLM 순서 (회의 실행 중일 때만)
+  const matchNames =
+    deps.limits && meetingId
+      ? nameMatcher(deps.llm ?? null, () => reserveMeetingLlm(deps.db, meetingId, deps.limits!), {
+          emit: deps.traceLlm ? emit : undefined,
+          recorder: deps.recorder,
+          saved: state.saved ? savedNameMatcher(state.saved.nameMatches) : undefined,
+        })
       : null;
   const result = await retrieveCandidates(deps.db, {
     conditions: state.conditions!,
@@ -154,9 +162,45 @@ async function gather(state: MeetingStateType): Promise<Partial<MeetingStateType
   return { board };
 }
 
-/** 4단계: 장소마다 4명의 반응(👍 ⚠ ✕)을 규칙으로 붙이고, ⚠·✕가 붙은 곳을 회의 안건으로 (코드, LLM 0회). 5단계에서 사람에게 물을 안건도 여기서 정함 */
-async function react(state: MeetingStateType): Promise<Partial<MeetingStateType>> {
-  const board = reactBoard(state.board!, state.pool!, state.members);
+/**
+ * 4단계 AI 반응: 사람마다 LLM 1회(4명 동시에, 생각 켬) — 그 사람이 쓴 말·바람을 그대로 들고 다른 AI가 고른 곳의 소개글을 읽어 👍⚠ (근거를 코드가 확인, ✕는 코드 규칙만)
+ * 순서: 녹화된 같은 요청의 답(LLM 횟수에 세지 않음) → 회의 LLM 상한 안에서 부름(부른 답은 녹화). 못 쓰면 그 사람은 코드 반응만
+ */
+async function aiReactions(deps: MeetingDeps, state: MeetingStateType): Promise<Map<string, AiReaction[]>> {
+  const meetingId = state.meetingId;
+  if (!meetingId || !deps.limits) return new Map();
+  const pairs = await Promise.all(
+    state.members.map(async (m): Promise<[string, AiReaction[]]> => {
+      const agentId = agentIdOf(m.memberId);
+      const { req, rows, wishes } = reactRequest(m, state.pool!, state.board!);
+      // 반응할 곳이 없거나 소개글로 볼 바람 글이 없는 사람은 부르지 않음 (10/19 예비 시험: 204명 중 12명이 바람 글 없음)
+      if (!rows.length || !wishes.length) return [agentId, []];
+      const replayed = await deps.recorder?.replay(req);
+      if (replayed) return [agentId, acceptReactions(replayed, rows, wishes)];
+      const llm = deps.llm;
+      if (!llm || !(await reserveMeetingLlm(deps.db, meetingId, deps.limits!))) return [agentId, []];
+      try {
+        let value;
+        if (deps.traceLlm && llm.streamJson) {
+          emit({ type: 'llm.request', data: { agentId, purpose: 'react', try: 1, model: llm.name, system: req.system, input: req.input } });
+          const out = await llm.streamJson(req, () => {});
+          emit({ type: 'llm.response', data: { agentId, purpose: 'react', try: 1, model: out.model, ms: out.ms, usage: out.usage, text: out.text } });
+          value = out.value;
+        } else value = await llm.generateJson(req);
+        await deps.recorder?.record(req, value);
+        return [agentId, acceptReactions(value, rows, wishes)];
+      } catch (err) {
+        console.warn('4단계 AI 반응 LLM 실패, 코드 반응만 씀:', err instanceof Error ? err.message.slice(0, 200) : err);
+        return [agentId, []];
+      }
+    }),
+  );
+  return new Map(pairs);
+}
+
+/** 4단계: 장소마다 4명의 반응(👍 ⚠ ✕) = 코드 규칙 + AI 반응(더 무거운 쪽), ⚠·✕가 붙은 곳을 회의 안건으로. 5단계에서 사람에게 물을 안건도 여기서 정함 */
+async function react(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const board = reactBoard(state.board!, state.pool!, state.members, await aiReactions(deps, state));
   emit({ type: 'board.updated', data: board });
   return { board, reviewRequest: reviewRequestOf(board, state.pool!, state.members) };
 }
@@ -179,7 +223,7 @@ export const MEETING_NODES = [
   { id: 'retrieve', step: 2, label: '후보 찾기', kind: 'code' },
   { id: 'pick', step: 3, label: '고르기 ×4', kind: 'llm' },
   { id: 'gather', step: 3, label: '후보 보드 모으기', kind: 'code' },
-  { id: 'react', step: 4, label: '반응·안건', kind: 'code' },
+  { id: 'react', step: 4, label: '반응·안건', kind: 'llm' },
   { id: 'review', step: 5, label: '사람 확인', kind: 'human' },
 ] as const;
 
@@ -207,13 +251,14 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
   if (opts.upTo === 'retrieve') return base.addEdge('retrieve', END).compile({ checkpointer: deps.checkpointer });
   const pickGraph = buildPickGraph({
     llm: deps.llm ?? null,
+    recorder: deps.recorder,
     traceLlm: deps.traceLlm,
     reserveLlm: (meetingId) => (meetingId && deps.limits ? reserveMeetingLlm(deps.db, meetingId, deps.limits) : Promise.resolve(false)),
   });
   return base
     .addNode('pick', pickGraph)
     .addNode('gather', gather)
-    .addNode('react', react)
+    .addNode('react', (s) => react(deps, s))
     .addNode('review', review)
     .addConditionalEdges(
       'retrieve',
