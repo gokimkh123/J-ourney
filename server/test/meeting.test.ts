@@ -560,8 +560,11 @@ describe('회의 조건 API와 시험 경로', () => {
 
     // 그래프 칸: 실제 그래프 구조 (실행·외부 호출 없음), 터널 요청은 막음
     const graph = await call(app, 'GET', '/dev/meeting/graph');
-    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', 'react', 'review', '__end__']);
+    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', 'react', 'review', 'schedule', '__end__']);
     expect(graph.body.edges).toContainEqual({ from: 'react', to: 'review', conditional: true }); // 고를 안건이 있을 때만 사람 확인
+    expect(graph.body.edges).toContainEqual({ from: 'react', to: 'schedule', conditional: true }); // 없으면 바로 6단계
+    expect(graph.body.edges).toContainEqual({ from: 'review', to: 'schedule', conditional: false });
+    expect(graph.body.nodes.find((n: { id: string }) => n.id === 'schedule')).toMatchObject({ step: 6, kind: 'code' });
     expect(graph.body.nodes.find((n: { id: string }) => n.id === 'review')).toMatchObject({ step: 5, kind: 'human' });
     expect(graph.body.edges).toContainEqual({ from: 'prepare', to: 'retrieve', conditional: false });
     expect(graph.body.edges).toContainEqual({ from: 'gather', to: 'react', conditional: false });
@@ -633,9 +636,9 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => i + 1));
     expect(events[0]).toMatchObject({ type: 'meeting.started', data: { kind: 'meeting' } });
     expect(events[0].data.agents).toHaveLength(4);
-    expect(events.at(-1).type).toBe('board.updated');
-    // 고를 안건(장소 안건)이 없는 보드라 5단계에서 멈추지 않고 끝남
-    expect(events.at(-1).data.agenda.some((a: { placeId: string | null }) => a.placeId !== null)).toBe(false);
+    // 고를 안건(장소 안건)이 없는 보드라 5단계에서 멈추지 않고 6단계 A·B 두 안을 보내고 끝남
+    expect(events.slice(-2).map((e) => [e.type, e.data.label])).toEqual([['plan.proposed', 'A'], ['plan.proposed', 'B']]);
+    expect(events.filter((e) => e.type === 'board.updated').at(-1).data.agenda.some((a: { placeId: string | null }) => a.placeId !== null)).toBe(false);
     expect(events.some((e) => e.type.startsWith('review.'))).toBe(false);
     // 4단계: 3단계 끝의 보드(반응 없음) 다음에 반응·안건을 채운 보드를 한 번 더 보냄 (코드, LLM 횟수 그대로)
     const boards = events.filter((e) => e.type === 'board.updated');
@@ -650,6 +653,16 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(Array.isArray(boards[1].data.agenda)).toBe(true);
     expect(result.board).toEqual(boards[1].data);
     expect(result.scores).toHaveLength(result.board.candidates.length);
+    // 6단계: A·B 두 안을 이벤트와 결과에 같이 보냄. 길찾기 호출기가 없어 카카오 0회이고 구간은 시간 없이 직선거리만 (LLM 횟수 그대로)
+    expect(result.plans.map((p: { label: string }) => p.label)).toEqual(['A', 'B']);
+    expect(events.filter((e) => e.type === 'plan.proposed').map((e) => e.data)).toEqual(result.plans);
+    expect(result.plans[0].route.map((d: { date: string }) => d.date)).toEqual(['2099-11-07', '2099-11-08']);
+    expect(result.kakao.calls).toEqual({ transit: 0, walk: 0, car: 0 });
+    const legs = result.plans.flatMap((p: { route: { stops: { moveFromPrev: { source: string; minutes: number | null } | null }[] }[] }) =>
+      p.route.flatMap((d) => d.stops.flatMap((s) => (s.moveFromPrev ? [s.moveFromPrev] : []))),
+    );
+    expect(legs.length).toBeGreaterThan(0);
+    expect(legs.every((l: { source: string; minutes: number | null }) => l.source === 'estimate' && l.minutes === null)).toBe(true);
     const stages = events.filter((e) => e.type === 'research.progress').map((e) => e.data.stage);
     for (const stage of ['planning', 'done']) expect(stages.filter((x) => x === stage)).toHaveLength(4);
     expect(stages.filter((x) => x === 'searching').length).toBeGreaterThanOrEqual(8); // 사람마다 장소 찾기·인기 순위(+혼잡도)
@@ -1189,7 +1202,7 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     const { events } = (await call(app, 'GET', `/trips/${tripId}/events?afterSeq=0`, undefined, token)).body;
     expect(events.map((e: { seq: number }) => e.seq)).toEqual(events.map((_: unknown, i: number) => i + 1));
     const tail = events.slice(events.findIndex((e: { type: string }) => e.type === 'review.requested'));
-    expect(tail.map((e: { type: string }) => e.type)).toEqual(['review.requested', 'review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated']);
+    expect(tail.map((e: { type: string }) => e.type)).toEqual(['review.requested', 'review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated', 'plan.proposed', 'plan.proposed']);
     expect(tail[0].data).toMatchObject({ meetingId: id, total: 4, items: waiting.review.items });
     expect(tail[4].data).toMatchObject({ memberId: hyunwoo.id, answered: 3, total: 4 });
     expect(tail[5].data).toMatchObject({ meetingId: id, dropped: [item.placeId] });
@@ -1376,8 +1389,8 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     const responses = people.map((p, i) => ({ memberId: p.id, choices: second.review.items.map((it: { placeId: string }) => ({ placeId: it.placeId, keep: i !== 0 })) }));
     const { status, lines } = await ndjsonOf('/dev/meeting/review', { meetingId: second.meetingId, responses });
     expect(status).toBe(200);
-    expect(lines.filter((l) => l.kind === 'event').map((l) => l.event.type)).toEqual(['review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated']);
-    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node)).toEqual(['review']);
+    expect(lines.filter((l) => l.kind === 'event').map((l) => l.event.type)).toEqual(['review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated', 'plan.proposed', 'plan.proposed']);
+    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node)).toEqual(['review', 'schedule']);
     const end = lines.find((l) => l.kind === 'result');
     expect(end).toMatchObject({ status: 'done', reviewDecision: { closedBy: 'all', dropped: [] } });
   }, STEP5_TIMEOUT_MS);

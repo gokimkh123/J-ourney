@@ -11,7 +11,7 @@ import type { SavedNameMatch } from './names.js';
 import type { PickResult } from './pick.js';
 import { tallyReview } from './review.js';
 import { type EventPublisher, type MeetingEnvelope, type MeetingEventDraft, type MeetingLimits, eventRecorder, finishMeeting, isLlmTrace, startMeeting } from './runs.js';
-import type { ReviewChoice, ReviewDecision, ReviewRequest } from './types.js';
+import type { ReviewChoice, ReviewDecision, ReviewRequest, TripConditions } from './types.js';
 
 type MeetingGraph = ReturnType<typeof buildMeetingGraph>;
 type MeetingRow = typeof meetings.$inferSelect;
@@ -116,6 +116,12 @@ export function meetingService({ db, graph, limits, publisher, replay = false }:
    * 조건이 지금과 같은 회의만 봄 → 사람마다 AI가 고른 결과(source llm) 중 가장 최근 것, 그 회의 뒤에 성향을 바꾼 사람은 빼서 규칙으로 고름
    * 이름 맞추기는 이름표·낱말이 같은 규칙에만 다시 씀. 체크포인트는 회의가 끝난 뒤 MEETING_KEEP_DAYS일 동안 남음
    */
+  // 현지 이동 수단(moveMode)은 6단계에만 쓰여 AI 고르기와 상관없으므로 비교에서 뺌 (v1.8 전에 저장한 조건에는 없음)
+  const pickConditions = (c: TripConditions | null | undefined) => {
+    if (!c) return stableJson(c ?? null);
+    const { moveMode: _moveMode, ...rest } = c;
+    return stableJson(rest);
+  };
   async function savedResults(tripId: string): Promise<SavedResults> {
     const [trip] = await db.select({ conditions: trips.conditions }).from(trips).where(eq(trips.id, tripId));
     const personaAt = new Map(
@@ -132,7 +138,7 @@ export function meetingService({ db, graph, limits, publisher, replay = false }:
     const names = new Map<string, SavedNameMatch>();
     for (const m of past) {
       const v = (await graph.getState(configOf(m.id))).values as Partial<MeetingStateType>;
-      if (!v?.picks?.length || stableJson(v.conditions) !== stableJson(trip.conditions)) continue;
+      if (!v?.picks?.length || pickConditions(v.conditions) !== pickConditions(trip.conditions)) continue;
       for (const p of v.picks) {
         const at = personaAt.get(p.memberId);
         if (p.source !== 'llm' || picks.has(p.memberId) || !at || at > m.startedAt) continue;

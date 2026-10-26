@@ -70,4 +70,14 @@ export const config = {
   tourMobileApp: process.env.TOUR_MOBILE_APP ?? 'J-ourney',
   /** 기능별 하루 TourAPI 호출 상한 (공공데이터포털 개발계정은 기능마다 하루 1,000건) */
   tourDailyLimit: num('TOUR_DAILY_LIMIT', 1000),
+  /** 카카오 REST API 키 (6단계 길찾기). 없으면 구간 정보는 '정보 없음'으로 두고 순서는 거리로 비교함 */
+  kakaoRestKey: process.env.KAKAO_REST_API_KEY || null,
+  /** 카카오맵 길찾기(대중교통·도보) 주소 · 카카오모빌리티 자동차 길찾기 주소 */
+  kakaoMapBase: process.env.KAKAO_MAP_API_BASE ?? 'https://dapi.kakao.com',
+  kakaoNaviBase: process.env.KAKAO_NAVI_API_BASE ?? 'https://apis-navi.kakaomobility.com',
+  /** 기능별 하루 호출 상한: 대중교통·도보는 공식 무료 한도(하루 1,000건), 자동차는 공식 표에 없어(문의 글 하루 1만 건) 낮게 둠 */
+  kakaoTransitDailyLimit: count('KAKAO_TRANSIT_DAILY_LIMIT', 1000),
+  kakaoWalkDailyLimit: count('KAKAO_WALK_DAILY_LIMIT', 1000),
+  kakaoCarDailyLimit: count('KAKAO_CAR_DAILY_LIMIT', 3000),
+  kakaoTimeoutMs: num('KAKAO_TIMEOUT_MS', 8000),
 };

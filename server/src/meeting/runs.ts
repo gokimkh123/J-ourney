@@ -20,6 +20,7 @@ export type MeetingEventType =
   | 'review.requested'
   | 'review.cast'
   | 'review.closed'
+  | 'plan.proposed'
   | 'meeting.failed';
 
 /** 시험 화면에만 보내는 LLM 과정 이벤트 (요청 내용·받는 글자·원본 응답). DB에 기록하지 않음 */

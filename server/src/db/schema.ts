@@ -5,6 +5,8 @@ import type { ReviewChoice, StoredReview, TripConditions } from '../meeting/type
 
 /** 참가 인원 상한 (방장 포함). 4명 초과 참가는 추후 유료 기능으로 둠 */
 export const MAX_MEMBERS = 4;
+/** 회의를 시작할 수 있는 최소 인원 (방장 포함). 혼자서는 회의·투표가 성립하지 않음 */
+export const MIN_MEMBERS = 2;
 
 /** 여행 (명세서 4.2) — status: preparing 페르소나 준비, meeting 회의 중, voting 확정 투표 중, confirmed 확정 */
 export const trips = pgTable('trips', {
@@ -219,6 +221,17 @@ export const crowdFetches = pgTable(
   },
   (t) => [primaryKey({ columns: [t.signguCd, t.fetchedOn] })],
 );
+
+/**
+ * 길찾기 결과 보관 (카카오 대중교통·도보·자동차). 같은 구간은 ROUTE.cacheDays일 동안 다시 써 무료 한도를 아낌 (카카오 정책상 오래 보관하지 않음)
+ * key = 방식 + 출발·도착 좌표(소수 넷째 자리, 약 11m). result가 null이면 카카오가 '경로 없음'으로 답한 구간 (다시 묻지 않음)
+ */
+export const routeCache = pgTable('route_cache', {
+  key: text('key').primaryKey(),
+  mode: text('mode').notNull(),
+  result: jsonb('result'),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 /** 장소 분류 이름표 (TourAPI 신분류 3단계, 예: EX050100 = 체험관광 > 웰니스관광 > 온천 / 사우나 / 스파) */
 export const categories = pgTable('categories', {

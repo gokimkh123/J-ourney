@@ -9,6 +9,7 @@ import { createLangChainLlm, type LlmClient, type ModelSpec, parseModelSpec, wit
 import { failInterruptedMeetings, pruneMeetingCheckpoints } from './meeting/runs.js';
 import { createTourClient } from './tour/client.js';
 import { tryConsumeTourCall } from './tour/usage.js';
+import { kakaoQuota, kakaoRouter } from './meeting/route.js';
 
 if (!config.databaseUrl) console.warn('DATABASE_URL이 없어 DB 없이 실행함 (/health만 동작)');
 const db = config.databaseUrl ? await connectDb(config.databaseUrl) : null;
@@ -48,6 +49,19 @@ const crowdClient =
       })
     : null;
 
+// 6단계 길찾기 호출기: 카카오 기능별 하루 상한을 tour_api_usage 표로 셈 (무료 한도 안, 결제 수단 연결 안 함). 키가 없으면 저장된 길찾기만 씀
+const routeClient =
+  db && config.kakaoRestKey
+    ? kakaoRouter({
+        restKey: config.kakaoRestKey,
+        mapBase: config.kakaoMapBase,
+        naviBase: config.kakaoNaviBase,
+        timeoutMs: config.kakaoTimeoutMs,
+        beforeCall: kakaoQuota(db, { transit: config.kakaoTransitDailyLimit, walk: config.kakaoWalkDailyLimit, car: config.kakaoCarDailyLimit }),
+      })
+    : null;
+console.log(`카카오 길찾기: ${routeClient ? '켬' : '없음 (저장된 길찾기만 씀)'}`);
+
 // 회의 단계 저장: LangGraph 체크포인트를 별도 스키마(langgraph)에 둠 (우리 표와 섞이지 않게). 끝난 지 오래된 회의 기록은 하루 한 번 지움
 const CHECKPOINT_SCHEMA = 'langgraph';
 const DAY_MS = 86400000;
@@ -67,6 +81,7 @@ if (db && config.databaseUrl) {
 const app = createApp({
   db,
   crowdClient,
+  routeClient,
   checkpointer,
   meetingLlm,
   devUi: config.devUi,

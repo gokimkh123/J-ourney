@@ -1,3 +1,6 @@
+/** 현지 이동 수단 (명세서 v1.8 moveMode): 대중교통이면 6단계가 대중교통·택시를, 자차면 자동차 길을 붙임 */
+export type MoveMode = 'transit' | 'car';
+
 /** 회의 조건 (명세서 4.4 PUT /trips/{tripId}/conditions 본문과 같은 형식) */
 export interface TripConditions {
   destination: string;
@@ -5,6 +8,8 @@ export interface TripConditions {
   endDate: string;
   budgetPerPerson: number | null;
   transport: string | null;
+  /** v1.8에서 생김: 그 전에 저장한 조건에는 없으며 없으면 대중교통 */
+  moveMode?: MoveMode;
   rules: { aiMinSatisfaction: number; maxRounds: number };
 }
 

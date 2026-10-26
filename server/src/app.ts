@@ -10,6 +10,7 @@ import { nowKst } from './lib/time.js';
 import type { LlmClient } from './llm/client.js';
 import { type ReplayMode, llmRecorder } from './llm/record.js';
 import { buildMeetingGraph } from './meeting/graph.js';
+import type { RouteClient } from './meeting/route.js';
 import { EventHub } from './meeting/live.js';
 import { meetingService } from './meeting/service.js';
 import { meetingDevRoutes } from './routes/meeting-dev.js';
@@ -48,6 +49,8 @@ export interface AppOptions {
   hub?: EventHub;
   /** 실시간 연결 ping 간격 (시험에서 줄일 때만, 기본 명세서 25초) */
   livePingMs?: number;
+  /** 6단계 길찾기 호출기 (카카오, 하루 한도 포함). null이면 저장된 길찾기만 씀 */
+  routeClient?: RouteClient | null;
 }
 
 const devUiFile = new URL('../dev-ui/index.html', import.meta.url);
@@ -78,6 +81,7 @@ export function createApp({
   meetingLlmCallsPerRun = config.meetingLlmCallsPerRun,
   hub = new EventHub(),
   livePingMs,
+  routeClient = null,
 }: AppOptions) {
   const api = new Hono();
   api.use('*', writeRateLimit(rateLimitPerMinute));
@@ -102,7 +106,7 @@ export function createApp({
     api.route('/', personaRoutes({ db, llm: mode === 'only' ? null : llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret }));
     // 회의 그래프와 실행기는 서버가 켜질 때 한 번만 만들고 공식 경로·시험 경로가 함께 씀
     const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
-    const graph = buildMeetingGraph({ db, crowdClient, llm: mode === 'only' ? null : (meetingLlm ?? llm), recorder, limits, checkpointer, traceLlm: true });
+    const graph = buildMeetingGraph({ db, crowdClient, llm: mode === 'only' ? null : (meetingLlm ?? llm), recorder, limits, checkpointer, traceLlm: true, router: routeClient });
     const service = meetingService({ db, graph, limits, publisher: hub, replay: mode !== 'off' });
     api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs }));
     if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: devUiTunnel, replay: mode !== 'off' }));

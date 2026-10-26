@@ -136,6 +136,10 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
       retrieve: s.pool,
       review: out.status === 'reviewing' ? s.reviewRequest : null,
       reviewDecision: s.reviewDecision ?? null,
+      /** 6단계 A·B 두 안 (사람 확인을 기다리면 null) */
+      plans: s.plans?.plans ?? null,
+      /** 6단계에서 카카오를 실제로 부른 수(기능별)·저장된 구간을 쓴 수·못 쓴 수 */
+      kakao: s.plans?.kakao ?? null,
       /** LLM_REPLAY로 실행함 (고른 결과마다 savedFrom이 있으면 지난 AI 결과, 없으면 규칙) */
       replay: !!s.saved,
     };
