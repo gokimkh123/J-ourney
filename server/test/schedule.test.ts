@@ -149,7 +149,8 @@ const restaurant = (id: string, title: string, lat: number, lng: number, intro: 
 const run = (db: TestDb, router: RouteClient, pool: RetrieveResult, board: Board, members: MemberInput[], o: { decision?: ReviewDecision | null; moveMode?: MoveMode } = {}) =>
   schedulePlans(db, router, { meetingId: 'mtg_test1', pool, board, members, decision: o.decision ?? null, moveMode: o.moveMode ?? 'transit' });
 
-describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', () => {
+// 시험마다 PGlite DB를 새로 만들어(같은 구간 저장분이 다음 결과를 바꾸지 않게) 느린 CI에서는 5초를 넘음 → 이 묶음만 20초
+describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { timeout: 20_000 }, () => {
   it('하루 관광지 수는 참여한 사람(2·3·4명)마다 원하는 장소 수의 평균 (반올림, 2–6)', async () => {
     const db = await testDb();
     const cands = Array.from({ length: 12 }, (_, i) => near(`관광지${i}`, i));
