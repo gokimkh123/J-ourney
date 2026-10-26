@@ -43,13 +43,13 @@
   <tr>
     <td align="center"><img src=".github/assets/screen-1-persona.webp" alt="성향 설문으로 만든 AI 캐릭터 카드 화면" width="200"></td>
     <td align="center"><img src=".github/assets/screen-2-research.webp" alt="지도 위에서 AI 4명이 후보를 고르는 화면" width="200"></td>
-    <td align="center"><img src=".github/assets/screen-3-deliberate.webp" alt="AI 예상 만족도와 수정 요청 화면" width="200"></td>
+    <td align="center"><img src=".github/assets/screen-3-deliberate.webp" alt="AI 4명의 평균 만족도를 보고 고쳐서 다시 평가하는 화면" width="200"></td>
     <td align="center"><img src=".github/assets/screen-4-vote.webp" alt="A안·B안 확정 투표 화면" width="200"></td>
   </tr>
   <tr>
-    <td>15문항 성향 설문으로 구성원마다 AI 1명 생성</td>
+    <td>15문항 성향 설문으로 구성원마다 AI 1개 생성</td>
     <td>지도 위 후보 40곳에서 AI마다 취향에 맞는 3곳 선정</td>
-    <td>AI 예상 만족도 7점 미만이면 수정 후 재평가 (최대 5라운드)</td>
+    <td>AI 예상 만족도 평균 7점 미만이면 수정 후 재평가 (최대 5라운드)</td>
     <td>AI가 합의한 일정안(A안·B안) 중 사람이 과반 투표로 확정</td>
   </tr>
 </table>
@@ -86,7 +86,7 @@ flowchart LR
     end
     subgraph S3["③ 결정 · 사람이"]
         direction TB
-        EVAL["AI 평가<br/>7점 미만이면 수정 후 재평가"] -->|"통과"| VOTE{{"🗳️ 사람 투표<br/>과반 · 2:2면 방장"}}
+        EVAL["AI 평가<br/>평균 7점 미만이면 수정 후 재평가"] -->|"통과"| VOTE{{"🗳️ 사람 투표<br/>과반 · 2:2면 방장"}}
         VOTE --> DONE(["✅ 최종 일정<br/>날짜별 경로·선정 근거"])
     end
     S1 --> S2 --> S3
@@ -98,7 +98,7 @@ flowchart LR
 | Send · Subgraph | 구성원 수(N)만큼 AI를 만들어 동시에 실행함 |
 | Reducer | AI별 결과를 공용 후보 보드로 합침 |
 | Conditional Edge | 갈린 안건이 있을 때만 사람 확인으로 보냄 |
-| Cycle | AI 예상 만족도 7점 미만이면 수정 후 재평가함 (최대 5라운드) |
+| Cycle | AI 예상 만족도 평균 7점 미만이면 수정 후 재평가함 (최대 5라운드) |
 | interrupt | 사람 확인·투표 동안 멈췄다가 결과를 받아 이어 감 |
 
 | 원칙 | 맡는 일 |
