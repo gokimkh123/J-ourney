@@ -26,6 +26,7 @@ import { failInterruptedMeetings } from '../src/meeting/runs.js';
 import { acceptReactions, reactRequest, reactWishes } from '../src/meeting/react-ai.js';
 import type { Candidate, RetrieveResult } from '../src/meeting/retrieve.js';
 import { MINSU, answersOf, call, createTestApp, fakeLlm } from './helpers.js';
+import { hashAccessKey, parseAccessKeys } from '../src/lib/access.js';
 
 /** 4단계 AI 반응 호출 수: 다른 AI가 고른 곳이 보드에 하나라도 있는 사람마다 1회 (시험의 4명은 모두 바람 글이 있음) */
 const reactCalls = (r: { members: { memberId: string }[]; board: { candidates: { proposedBy: string[] }[] } }) =>
@@ -1467,5 +1468,114 @@ describe('LLM 녹화·재생 (지문)', () => {
     expect(await only.replay({ ...req, schema: z.object({ answer: z.number() }) })).toBeNull();
     await only.record(req, { answer: '나' }); // 같은 지문은 덮어쓰지 않음
     expect(await only.replay(req)).toEqual({ answer: '가' });
+  });
+});
+
+describe('접근 키 (ACCESS_KEYS): 키가 있는 서버는 키를 낸 터널 요청만 실제 API로 회의, 키마다 횟수', () => {
+  const KEY = 'team-test-key-0123456789';
+  const keyOf = (quota: number) => [{ label: 'team', quota, hash: hashAccessKey(KEY) }];
+  const tunnel = { 'cf-connecting-ip': '203.0.113.7' };
+  const withKey = { ...tunnel, 'x-access-key': KEY };
+  /** 가짜 LLM: 후보 표의 앞 3곳을 고름 (당일 여행이라 숙소 없음) */
+  const pickLlm = () =>
+    fakeLlm((input) => {
+      if (input.rules) return { matches: [] };
+      if (input.places) return { checks: [] };
+      const ids = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|')[0]).slice(0, PICK.count);
+      return { picks: ids.map((id) => ({ id, reason: '좋아요' })), lodging: { id: '', reason: '' }, comment: '가요!' };
+    });
+  type T = Awaited<ReturnType<typeof createTestApp>>;
+  async function readyTrip(t: T) {
+    const demo = await call(t.app, 'POST', '/trips', { title: '부산 시연', nickname: '민수', demoMode: true });
+    const token = demo.body.token as string;
+    const tripId = demo.body.trip.id as string;
+    await call(t.app, 'POST', '/me/persona', { answers: answersOf(MINSU, ['like_night', 'like_sea'], []) }, token);
+    await call(t.app, 'PUT', `/trips/${tripId}/conditions`, { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-07' }, token);
+    return { token, tripId };
+  }
+  /** 회의가 뒤에서 끝나거나 사람 확인에서 멈출 때까지 기다림 */
+  async function settled(t: T, token: string, id: string) {
+    for (let i = 0; i < 300; i++) {
+      const m = (await call(t.app, 'GET', `/meetings/${id}`, undefined, token)).body.meeting;
+      if (m && m.status !== 'researching') return m;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error('회의가 끝나지 않음');
+  }
+  const start = (t: T, trip: { token: string; tripId: string }, headers?: Record<string, string>) => call(t.app, 'POST', `/trips/${trip.tripId}/meetings`, undefined, trip.token, headers);
+
+  it('키 없는·틀린 터널 요청은 회의를 시작하지 못하고(403), 키를 내면 202·회의에 키 이름, 키 몫을 다 쓰면 409, 서버 안 요청은 키 없이 됨', async () => {
+    const t = await createTestApp({ llm: pickLlm(), accessKeys: keyOf(1) });
+    await seedDb(t.db);
+    const a = await readyTrip(t);
+    for (const headers of [tunnel, { ...tunnel, 'x-access-key': 'wrong-key' }]) {
+      const res = await start(t, a, headers);
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('ACCESS_KEY_REQUIRED');
+    }
+    expect(await t.db.select().from(meetings)).toHaveLength(0);
+    const ok = await start(t, a, withKey);
+    expect(ok.status).toBe(202);
+    await settled(t, a.token, ok.body.meeting.id);
+    // 다른 여행이어도 같은 키의 몫(1회)을 다 씀
+    const b = await readyTrip(t);
+    const over = await start(t, b, withKey);
+    expect(over.status).toBe(409);
+    expect(over.body.error.code).toBe('ACCESS_QUOTA_EXCEEDED');
+    const local = await start(t, b);
+    expect(local.status).toBe(202);
+    await settled(t, b.token, local.body.meeting.id);
+    const rows = await t.db.select({ trip: meetings.tripId, label: meetings.accessLabel }).from(meetings);
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(expect.arrayContaining([{ trip: a.tripId, label: 'team' }, { trip: b.tripId, label: null }]));
+  });
+
+  it('LLM_REPLAY=true여도 키로 시작한 회의만 LLM을 부르고(키 그래프), 서버 안에서 시작한 회의는 LLM 0회', async () => {
+    const llm = pickLlm();
+    const t = await createTestApp({ llm, llmReplay: true, accessKeys: keyOf(5) });
+    await seedDb(t.db);
+    const a = await readyTrip(t);
+    const local = await start(t, a);
+    expect(local.status).toBe(202);
+    await settled(t, a.token, local.body.meeting.id);
+    expect(llm.calls).toBe(0);
+    const b = await readyTrip(t);
+    const keyed = await start(t, b, withKey);
+    expect(keyed.status).toBe(202);
+    await settled(t, b.token, keyed.body.meeting.id);
+    expect(llm.calls).toBeGreaterThan(0);
+  });
+
+  it('시험 경로: 키가 있는 서버의 터널 요청은 키(헤더·쿠키)가 있어야 하고, 시험 화면은 /dev/key로 보냄. 맞는 키를 넣으면 HttpOnly·Secure 쿠키', async () => {
+    const { app } = await createTestApp({ devUi: true, devUiTunnel: true, accessKeys: keyOf(1) });
+    const graph = (headers: Record<string, string>) => call(app, 'GET', '/dev/meeting/graph', undefined, undefined, headers);
+    expect((await graph(tunnel)).body.error.code).toBe('ACCESS_KEY_REQUIRED');
+    expect((await graph(withKey)).status).toBe(200);
+    expect((await graph({ ...tunnel, Cookie: `journey_key=${KEY}` })).status).toBe(200);
+    expect((await graph({})).status).toBe(200);
+    const page = await app.request('/dev/meeting', { headers: tunnel });
+    expect(page.status).toBe(302);
+    expect(page.headers.get('location')).toBe('/dev/key');
+    expect((await app.request('/dev/meeting', { headers: { ...tunnel, Cookie: `journey_key=${KEY}` } })).status).toBe(200);
+    const post = (key: string) =>
+      app.request('/dev/key', { method: 'POST', headers: { ...tunnel, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ key }).toString() });
+    expect((await post('wrong-key')).status).toBe(403);
+    const ok = await post(KEY);
+    expect(ok.status).toBe(302);
+    const cookie = ok.headers.get('set-cookie') ?? '';
+    expect(cookie).toContain('journey_key=');
+    expect(cookie).toMatch(/HttpOnly/i);
+    expect(cookie).toMatch(/Secure/i);
+  });
+
+  it('ACCESS_KEYS 형식: 이름:횟수:sha256를 쉼표로 이음, 틀리면 서버를 켜지 않고 오류 문구에 키 값을 넣지 않음', () => {
+    const h = hashAccessKey(KEY);
+    expect(parseAccessKeys(` team:100:${h} , demo:5:${h.toUpperCase()}`)).toEqual([
+      { label: 'team', quota: 100, hash: h },
+      { label: 'demo', quota: 5, hash: h },
+    ]);
+    expect(parseAccessKeys('')).toEqual([]);
+    expect(() => parseAccessKeys(`team:100:${KEY}`)).toThrow(/ACCESS_KEYS 형식/);
+    expect(() => parseAccessKeys(`team:100:${KEY}`)).not.toThrow(new RegExp(KEY));
   });
 });

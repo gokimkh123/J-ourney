@@ -256,6 +256,8 @@ export const meetings = pgTable(
     runNo: integer('run_no').notNull(),
     status: text('status', { enum: ['running', 'reviewing', 'done', 'failed'] }).notNull(),
     llmCalls: integer('llm_calls').notNull().default(0),
+    /** 접근 키로 시작한 회의면 그 키 이름 (키마다 짤 수 있는 여행 횟수를 셈). 서버 안에서 시작했거나 키가 없는 서버면 null */
+    accessLabel: text('access_label'),
     /** 5단계 사람 확인 요청과 마감 결과 */
     review: jsonb('review').$type<StoredReview>(),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),

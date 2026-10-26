@@ -2,6 +2,7 @@ import { Command } from '@langchain/langgraph';
 import { and, asc, desc, eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { meetingReviews, meetings, members, personas, trips } from '../db/schema.js';
+import type { AccessGrant } from '../lib/access.js';
 import type { Member } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { stableJson } from '../lib/stable.js';
@@ -37,6 +38,10 @@ export interface MeetingServiceDeps {
   publisher?: EventPublisher;
   /** LLM_REPLAY: 회의를 시작할 때 지난 회의의 결과를 모아 넘김 (그래프는 LLM 없이 만듦) */
   replay?: boolean;
+  /** 접근 키로 시작한 회의가 쓰는 그래프 (LLM_REPLAY=true여도 LLM을 부름, 체크포인트는 같은 곳). 없으면 graph */
+  liveGraph?: MeetingGraph;
+  /** 접근 키로 시작한 회의도 지난 회의의 결과를 다시 쓰는지 (ACCESS_LLM_REPLAY가 off가 아니면) */
+  liveReplay?: boolean;
 }
 
 /**
@@ -44,12 +49,14 @@ export interface MeetingServiceDeps {
  * 그래프는 뒤에서 돌고, 5단계 사람 확인에서 멈추면 회의 상태를 reviewing으로 바꾼 뒤 review.requested를 보냄 (응답은 그 뒤에만 받음)
  * 사람 응답이 마감되면 상태를 running으로 바꾸는 쪽 하나만 Command({ resume })로 이어서 실행함 (두 번 이어서 실행되지 않음)
  */
-export function meetingService({ db, graph, limits, publisher, replay = false }: MeetingServiceDeps) {
+export function meetingService({ db, graph, limits, publisher, replay = false, liveGraph, liveReplay = replay }: MeetingServiceDeps) {
   const configOf = (meetingId: string) => ({ configurable: { thread_id: meetingId } });
   const recorderOf = (m: Pick<MeetingRow, 'id' | 'tripId'>) => eventRecorder(db, m.tripId, m.id, publisher);
+  const graphOf = (m: Pick<MeetingRow, 'accessLabel'>) => (m.accessLabel && liveGraph ? liveGraph : graph);
 
-  async function run(meeting: Pick<MeetingRow, 'id' | 'tripId'>, input: Record<string, unknown> | Command, observer?: MeetingObserver): Promise<RunOutcome> {
+  async function run(meeting: Pick<MeetingRow, 'id' | 'tripId' | 'accessLabel'>, input: Record<string, unknown> | Command, observer?: MeetingObserver): Promise<RunOutcome> {
     const record = recorderOf(meeting);
+    const graph = graphOf(meeting);
     let mark = Date.now();
     try {
       const stream = await graph.stream(input as never, { ...configOf(meeting.id), streamMode: ['custom', 'updates'] });
@@ -156,10 +163,10 @@ export function meetingService({ db, graph, limits, publisher, replay = false }:
    * 회의 시작: 조건·성향을 확인하고 회의 행을 만든 뒤 그래프를 뒤에서 돌림
    * official: 공식 경로면 여행 상태를 meeting으로 바꿈 (회의 중에는 조건·성향을 바꾸지 않음) · onStart: 실행 전에 부름 (시험 화면이 회의 id를 먼저 보냄)
    */
-  async function start(tripId: string, opts: { observer?: MeetingObserver; official?: boolean; onStart?: (m: MeetingRow) => void } = {}) {
+  async function start(tripId: string, opts: { observer?: MeetingObserver; official?: boolean; onStart?: (m: MeetingRow) => void; access?: AccessGrant } = {}) {
     await loadMeetingInput(db, tripId); // 조건·성향이 준비되지 않았으면 실행 횟수를 쓰기 전에 오류
-    const saved = replay ? await savedResults(tripId) : null;
-    const meeting = await startMeeting(db, tripId, limits);
+    const saved = (opts.access && liveGraph ? liveReplay : replay) ? await savedResults(tripId) : null;
+    const meeting = await startMeeting(db, tripId, limits, opts.access);
     if (opts.official) await db.update(trips).set({ status: 'meeting' }).where(eq(trips.id, tripId));
     opts.onStart?.(meeting);
     return { meeting, done: run(meeting, { tripId, meetingId: meeting.id, saved }, opts.observer) };

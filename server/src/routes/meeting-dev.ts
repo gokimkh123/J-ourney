@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import { MAX_MEMBERS, meetings, trips } from '../db/schema.js';
+import { type AccessKey, requireGrant } from '../lib/access.js';
 import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { tunnelIp } from '../lib/rate-limit.js';
@@ -24,6 +25,8 @@ export interface MeetingDevDeps {
   allowTunnel?: boolean;
   /** LLM_REPLAY: LLM 없이 지난 결과를 다시 씀 (화면에 알리기만 함) */
   replay?: boolean;
+  /** 접근 키 (ACCESS_KEYS): 있으면 터널 요청은 맞는 키(시험 화면은 /dev/key에서 넣은 쿠키)를 내야 함 */
+  accessKeys?: readonly AccessKey[];
 }
 
 const devReviewBody = z.object({
@@ -70,12 +73,15 @@ function ndjson() {
  * 회의 엔진 시험 경로 (시험 화면 /dev/meeting 전용, DEV_UI=true일 때만 열림)
  * 실제 외부 API(집중률)·LLM을 부르므로 터널(외부)로 들어온 요청은 막고 이 PC에서만 씀 (allowTunnel이면 터널 요청도 받음)
  */
-export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel = false, replay = false }: MeetingDevDeps) {
+export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel = false, replay = false, accessKeys = [] }: MeetingDevDeps) {
   const r = new Hono<AuthEnv>();
   // 1–2단계만 보는 그래프는 서버가 켜질 때 한 번만 만듦 (요청마다 다시 만들지 않음)
   const upToRetrieve = buildMeetingGraph({ db, crowdClient }, { upTo: 'retrieve' });
   r.use('/dev/*', async (c, next) => {
-    if (!allowTunnel && tunnelIp(c)) throw new ApiError('FORBIDDEN', '시험용 경로는 이 PC에서만 쓸 수 있음');
+    if (tunnelIp(c)) {
+      if (!allowTunnel) throw new ApiError('FORBIDDEN', '시험용 경로는 이 PC에서만 쓸 수 있음');
+      requireGrant(c, accessKeys);
+    }
     await next();
   });
 
@@ -168,6 +174,7 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
       node: (node, ms) => stream.send({ kind: 'node', node, ms }),
     };
     const { meeting, done } = await service.start(tripId, {
+      access: requireGrant(c, accessKeys),
       observer,
       onStart: (m) => stream.send({ kind: 'meeting', meetingId: m.id, runNo: m.runNo, limit: limits.runsPerTrip }),
     });

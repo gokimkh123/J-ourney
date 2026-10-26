@@ -9,6 +9,7 @@ import { config } from '../src/config.js';
 import { createLangChainLlm, inputTokenUpperBound, LlmTokenLimitError } from '../src/llm/client.js';
 import type { MustKeepRule } from '../src/persona/types.js';
 import { MINSU, SEOYEON, answersOf, call, createTestApp, fakeLlm } from './helpers.js';
+import { hashAccessKey } from '../src/lib/access.js';
 
 const MUST_KEEP = '해산물은 꼭 먹고, 밤 9시 전엔 숙소에 들어가고 싶어요';
 const seoyeon = (text?: string) => answersOf(SEOYEON, ['like_spa', 'like_sea', 'like_cafe'], ['dislike_walk', 'dislike_crowd'], text);
@@ -288,6 +289,20 @@ describe('성향 질문·페르소나 API', () => {
     const rows = await db.select().from(llmIpUsage);
     expect(rows.map((r) => r.count).sort()).toEqual([1, 2]);
     expect(rows.every((r) => r.ipHash.length === 32 && !r.ipHash.includes('203.0.113.7'))).toBe(true);
+  });
+
+  it('접근 키가 있는 서버: 키 없는 터널 요청은 규칙 카드(LLM 0회), 키를 내면 IP 횟수 없이 AI 카드 (LLM_REPLAY=true여도)', async () => {
+    const llm = fakeLlm(() => draft());
+    const KEY = 'team-test-key-0123456789';
+    const { app } = await createTestApp({ llm, llmReplay: true, llmPerIpDaily: 0, accessKeys: [{ label: 'team', quota: 1, hash: hashAccessKey(KEY) }] });
+    const submit = async (text: string, headers: Record<string, string>) => {
+      const token = (await call(app, 'POST', '/trips', { title: '부산', nickname: '민수' })).body.token as string;
+      return (await call(app, 'POST', '/me/persona', { answers: seoyeon(text) }, token, headers)).body.persona.source;
+    };
+    expect(await submit('첫 번째', { 'cf-connecting-ip': '203.0.113.7' })).toBe('rule');
+    expect(llm.calls).toBe(0);
+    expect(await submit('두 번째', { 'cf-connecting-ip': '203.0.113.7', 'x-access-key': KEY })).toBe('llm');
+    expect(llm.calls).toBe(1);
   });
 
   it('LLM_REPLAY: 같은 응답으로 AI가 만든 카드가 있으면 다른 구성원에게도 그 카드를 쓰고(좋아요 순서 무관), 없으면 규칙 카드 (LLM 0회)', async () => {

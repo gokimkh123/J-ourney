@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { parseAccessKeys } from './lib/access.js';
 import type { ReplayMode } from './llm/record.js';
 
 /** 환경 변수로 바꿀 수 있는 운영 값 (server/.env, 값이 없으면 기본값) */
@@ -49,6 +50,13 @@ export const config = {
    * fill: 위처럼 다시 쓰고, 없는 요청만 LLM을 불러 녹화함 (측정용) · 그 밖: 다시 쓰지 않음(off). 실제로 부른 답은 늘 녹화함
    */
   llmReplay: ((v) => (v === 'true' ? 'only' : v === 'fill' ? 'fill' : 'off'))(process.env.LLM_REPLAY) as ReplayMode,
+  /**
+   * 접근 키 (10/26 사용자 지시): "이름:횟수:sha256(키)"를 쉼표로 이음. 키가 있으면 터널(바깥) 요청은 맞는 키(X-Access-Key 헤더, 시험 화면은 쿠키)를 낸 경우만
+   * 회의를 시작하고(키마다 '횟수'번) AI 카드를 씀. 서버 안에서 보낸 요청(포트 연결)은 예전과 같음. 비우면 잠그지 않음
+   */
+  accessKeys: parseAccessKeys(process.env.ACCESS_KEYS),
+  /** 접근 키로 시작한 회의·카드의 LLM 다시 쓰기 (LLM_REPLAY와 같은 값). 비우면 fill: 녹화된 답은 다시 쓰고 없는 요청만 LLM을 부름 */
+  accessReplay: ((v) => (!v ? 'fill' : v === 'true' ? 'only' : v === 'fill' ? 'fill' : 'off'))(process.env.ACCESS_LLM_REPLAY?.trim()) as ReplayMode,
   /** 하루 LLM 호출 상한 (넘으면 규칙 카드로 대신함) */
   llmDailyLimit: num('LLM_DAILY_LIMIT', 500),
   /** 구성원 1명이 AI(LLM)로 카드를 만들 수 있는 횟수 (넘으면 규칙 카드로 대신함) */
