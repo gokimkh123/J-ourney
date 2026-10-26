@@ -2,6 +2,7 @@ import type { BaseCheckpointSaver } from '@langchain/langgraph';
 import { and, asc, desc, eq, gt, inArray, lt, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { meetingEvents, meetings, trips } from '../db/schema.js';
+import type { AccessGrant } from '../lib/access.js';
 import { ApiError } from '../lib/errors.js';
 import { newId } from '../lib/ids.js';
 import { nowKst } from '../lib/time.js';
@@ -20,6 +21,7 @@ export type MeetingEventType =
   | 'review.requested'
   | 'review.cast'
   | 'review.closed'
+  | 'plan.proposed'
   | 'meeting.failed';
 
 /** 시험 화면에만 보내는 LLM 과정 이벤트 (요청 내용·받는 글자·원본 응답). DB에 기록하지 않음 */
@@ -53,20 +55,28 @@ const ACTIVE = ['running', 'reviewing'] as const;
 /**
  * 회의 실행을 시작함: 진행 중인 실행이 있으면 MEETING_IN_PROGRESS(그 회의를 이어 보기), 실행 횟수를 다 썼으면 MEETING_LIMIT
  * 같은 여행에 동시에 두 요청이 와도 (trip_id, run_no) 고유 조건으로 하나만 만들어짐
+ * access: 접근 키로 시작하면 그 키로 시작한 회의가 quota개 미만일 때만 시작함 (키마다 잠가 동시에 와도 넘지 않음), 회의 행에 키 이름을 남김
  */
-export async function startMeeting(db: Db, tripId: string, limits: MeetingLimits) {
-  const rows = await db.select().from(meetings).where(eq(meetings.tripId, tripId)).orderBy(desc(meetings.runNo));
-  const running = rows.find((m) => (ACTIVE as readonly string[]).includes(m.status));
-  if (running) throw new ApiError('MEETING_IN_PROGRESS', `이미 진행 중인 회의가 있음 (${running.id})`);
-  if (rows.length >= limits.runsPerTrip) throw new ApiError('MEETING_LIMIT', `이 여행의 회의 실행 횟수(${limits.runsPerTrip}회)를 모두 씀`);
-  const id = newId('mtg');
-  const inserted = await db
-    .insert(meetings)
-    .values({ id, tripId, runNo: (rows[0]?.runNo ?? 0) + 1, status: 'running' })
-    .onConflictDoNothing()
-    .returning();
-  if (!inserted.length) throw new ApiError('MEETING_IN_PROGRESS', '같은 여행의 회의가 방금 시작됨');
-  return inserted[0];
+export async function startMeeting(db: Db, tripId: string, limits: MeetingLimits, access?: AccessGrant) {
+  return db.transaction(async (tx) => {
+    const rows = await tx.select().from(meetings).where(eq(meetings.tripId, tripId)).orderBy(desc(meetings.runNo));
+    const running = rows.find((m) => (ACTIVE as readonly string[]).includes(m.status));
+    if (running) throw new ApiError('MEETING_IN_PROGRESS', `이미 진행 중인 회의가 있음 (${running.id})`);
+    if (rows.length >= limits.runsPerTrip) throw new ApiError('MEETING_LIMIT', `이 여행의 회의 실행 횟수(${limits.runsPerTrip}회)를 모두 씀`);
+    if (access) {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`access:${access.label}`}))`);
+      const [{ used }] = await tx.select({ used: sql<number>`count(*)::int` }).from(meetings).where(eq(meetings.accessLabel, access.label));
+      if (used >= access.quota) throw new ApiError('ACCESS_QUOTA_EXCEEDED', `이 접근 키로 짤 수 있는 여행 횟수(${access.quota}회)를 모두 씀`);
+    }
+    const id = newId('mtg');
+    const inserted = await tx
+      .insert(meetings)
+      .values({ id, tripId, runNo: (rows[0]?.runNo ?? 0) + 1, status: 'running', accessLabel: access?.label ?? null })
+      .onConflictDoNothing()
+      .returning();
+    if (!inserted.length) throw new ApiError('MEETING_IN_PROGRESS', '같은 여행의 회의가 방금 시작됨');
+    return inserted[0];
+  });
 }
 
 /**

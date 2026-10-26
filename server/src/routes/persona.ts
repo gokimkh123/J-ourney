@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import { personas, trips } from '../db/schema.js';
+import { type Access, type AccessKey, accessOf } from '../lib/access.js';
 import { type AuthEnv, type Member, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { nowKst } from '../lib/time.js';
@@ -27,6 +28,10 @@ export interface PersonaDeps {
   llmCardsPerMember: number;
   llmPerIpDaily: number;
   ipHashSecret: string;
+  /** 접근 키 (ACCESS_KEYS): 있으면 키 없는 터널 요청은 LLM을 부르지 않고, 키를 낸 터널 요청은 IP 횟수 없이 live로 AI 카드를 만듦 */
+  accessKeys?: readonly AccessKey[];
+  /** 키를 낸 요청이 쓰는 LLM·녹화 (LLM_REPLAY=true여도 부름, ACCESS_LLM_REPLAY). 없으면 llm·recorder */
+  live?: { llm: LlmClient; recorder: LlmRecorder } | null;
 }
 
 const answersBody = z.object({
@@ -60,8 +65,12 @@ async function savedCard(db: Db, answers: PersonaAnswers): Promise<CardText | nu
  * 설문 응답 → 성향·칩(규칙) → 카드 문장 → 회의용 숨은 값(규칙)
  * 카드 문장 순서: 녹화된 같은 요청의 답(LLM_REPLAY, LLM 횟수에 세지 않음) → 같은 응답으로 AI가 만든 카드(LLM_REPLAY) → LLM(부른 답은 녹화) → 규칙 카드
  */
-async function makePersona(memberId: string, ip: string | null, answers: PersonaAnswers, deps: PersonaDeps) {
-  const { db, llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret } = deps;
+async function makePersona(memberId: string, ip: string | null, answers: PersonaAnswers, access: Access | null, deps: PersonaDeps) {
+  const { db, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret } = deps;
+  // 접근 키가 있는 서버: 키를 낸 터널 요청은 키 몫의 LLM(IP 횟수 없음), 키 없는 터널 요청은 LLM 없음(녹화·규칙만)
+  const keyed = access?.kind === 'key';
+  const llm = keyed ? (deps.live?.llm ?? deps.llm) : access?.kind === 'none' ? null : deps.llm;
+  const recorder = keyed ? (deps.live?.recorder ?? deps.recorder) : deps.recorder;
   const traits = scoreTraits(answers.scale);
   const chips = pickChips(traits);
   const done = (card: CardText) => ({ answers, traits, chips, ...card, profile: buildProfile(traits, answers, card.mustKeep) });
@@ -74,10 +83,10 @@ async function makePersona(memberId: string, ip: string | null, answers: Persona
   if (saved) return done(saved);
   let card: CardText = ruleCard(chips, answers);
   // 개발 기간(llmPerIpDaily 0)에는 터널로 들어온 요청(팀원 앱)에 LLM을 쓰지 않음
-  const tunnelBlocked = ip !== null && llmPerIpDaily === 0;
+  const tunnelBlocked = ip !== null && !keyed && llmPerIpDaily === 0;
   // AI 카드 확인 순서: 구성원당 llmCardsPerMember회 → 터널 IP당 하루 llmPerIpDaily회 → 서버 전체 하루 상한 (하나라도 막히면 규칙 카드)
   if (llm && !tunnelBlocked && (await reserveLlmCard(db, memberId, llmCardsPerMember))) {
-    const key = ip === null ? null : ipKey(ip, ipHashSecret);
+    const key = ip === null || keyed ? null : ipKey(ip, ipHashSecret);
     const ipReserved = key === null || (await reserveIpLlm(db, key, llmPerIpDaily));
     let written = false;
     if (ipReserved && (await tryConsumeLlmCall(db, llmDailyLimit))) {
@@ -138,7 +147,8 @@ export function personaRoutes(deps: PersonaDeps) {
     // 같은 응답으로 다시 제출하면 이전 카드를 그대로 돌려줌 (LLM을 다시 부르지 않음)
     const [prev] = await db.select().from(personas).where(eq(personas.memberId, me.id));
     if (prev && sameAnswers(prev.answers, answers)) return c.json({ persona: personaView(me, prev) }, 201);
-    const made = await makePersona(me.id, tunnelIp(c), answers, deps);
+    const keys = deps.accessKeys ?? [];
+    const made = await makePersona(me.id, tunnelIp(c), answers, keys.length ? accessOf(c, keys) : null, deps);
     const [row] = await db
       .insert(personas)
       .values({ memberId: me.id, ...made })

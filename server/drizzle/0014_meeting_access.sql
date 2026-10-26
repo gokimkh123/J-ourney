@@ -1,0 +1,1 @@
+ALTER TABLE "meetings" ADD COLUMN "access_label" text;

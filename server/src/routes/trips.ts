@@ -39,6 +39,7 @@ const conditionsBody = z
     endDate: ymd,
     budgetPerPerson: z.number().int().min(0).max(BUDGET_MAX).nullable().default(null),
     transport: z.string().trim().max(TRANSPORT_MAX, `이동 수단은 ${TRANSPORT_MAX}자 이하여야 함`).nullable().default(null),
+    moveMode: z.enum(['transit', 'car'], { message: '현지 이동 수단은 transit(대중교통) 또는 car(자차)여야 함' }).default('transit'),
     rules: z
       .object({ aiMinSatisfaction: z.number().min(1).max(10).default(7), maxRounds: z.number().int().min(1).max(5).default(5) })
       .default({ aiMinSatisfaction: 7, maxRounds: 5 }),

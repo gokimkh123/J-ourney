@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import { members, trips } from '../db/schema.js';
+import { type AccessKey, requireGrant } from '../lib/access.js';
 import { type AuthEnv, type Member, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken } from '../lib/ids.js';
@@ -30,13 +31,15 @@ export interface MeetingRouteDeps {
   hub: EventHub;
   /** 시험에서 ping 간격을 줄일 때만 (기본 명세서 25초) */
   pingMs?: number;
+  /** 접근 키 (ACCESS_KEYS): 있으면 터널 요청은 맞는 키를 낸 경우만 회의를 시작함 */
+  accessKeys?: readonly AccessKey[];
 }
 
 /**
  * 회의 API (명세서 4.5·5장): 회의 시작 · 상태 · 사람 확인(5단계) · 놓친 이벤트 · 실시간 연결(WebSocket)
  * 앱 → 서버는 일반 요청(REST), 서버 → 앱은 WebSocket으로 기록한 이벤트를 바로 보냄
  */
-export function meetingRoutes({ db, service, hub, pingMs }: MeetingRouteDeps) {
+export function meetingRoutes({ db, service, hub, pingMs, accessKeys = [] }: MeetingRouteDeps) {
   const r = new Hono<AuthEnv>();
   const auth = requireMember(db);
 
@@ -53,7 +56,8 @@ export function meetingRoutes({ db, service, hub, pingMs }: MeetingRouteDeps) {
     const me = c.get('member');
     const trip = await ownTrip(c.req.param('tripId'), me);
     if (!me.isHost) throw new ApiError('FORBIDDEN', '회의는 방장만 시작할 수 있음');
-    const { meeting } = await service.start(trip.id, { official: true });
+    const access = requireGrant(c, accessKeys);
+    const { meeting } = await service.start(trip.id, { official: true, access });
     return c.json({ meeting: { id: meeting.id, status: 'researching', maxRounds: trip.conditions?.rules.maxRounds ?? null } }, 202);
   });
 
