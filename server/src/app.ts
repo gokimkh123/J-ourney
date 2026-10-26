@@ -1,15 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { type BaseCheckpointSaver, MemorySaver } from '@langchain/langgraph';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { setCookie } from 'hono/cookie';
 import type { Db } from './db/client.js';
 import { config } from './config.js';
+import { ACCESS, type AccessKey, accessOf, matchKey } from './lib/access.js';
 import { ApiError } from './lib/errors.js';
 import { writeRateLimit } from './lib/rate-limit.js';
 import { nowKst } from './lib/time.js';
 import type { LlmClient } from './llm/client.js';
 import { type ReplayMode, llmRecorder } from './llm/record.js';
 import { buildMeetingGraph } from './meeting/graph.js';
+import type { RouteClient } from './meeting/route.js';
 import { EventHub } from './meeting/live.js';
 import { meetingService } from './meeting/service.js';
 import { meetingDevRoutes } from './routes/meeting-dev.js';
@@ -48,7 +51,20 @@ export interface AppOptions {
   hub?: EventHub;
   /** 실시간 연결 ping 간격 (시험에서 줄일 때만, 기본 명세서 25초) */
   livePingMs?: number;
+  /** 6단계 길찾기 호출기 (카카오, 하루 한도 포함). null이면 저장된 길찾기만 씀 */
+  routeClient?: RouteClient | null;
+  /** 접근 키 (ACCESS_KEYS): 있으면 터널 요청은 맞는 키를 낸 경우만 회의를 시작하고(키마다 횟수) AI 카드를 씀 */
+  accessKeys?: readonly AccessKey[];
+  /** 키를 낸 요청의 LLM 다시 쓰기 (ACCESS_LLM_REPLAY, 기본 fill). LLM_REPLAY=true여도 이 모드로 LLM을 부름 */
+  accessReplay?: ReplayMode;
 }
+
+/** 시험 화면 접근 키 입력 화면 (터널로 시험 화면을 쓸 때만) */
+const keyPage = (error = '') => `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>J-ourney 접근 키</title><style>body{font-family:Pretendard,system-ui,sans-serif;max-width:360px;margin:12vh auto;padding:0 16px;color:#17191c}
+input,button{width:100%;box-sizing:border-box;font-size:16px;padding:12px;border-radius:12px;margin-top:10px}input{border:1.5px solid #d5d8de}button{border:0;background:#1e2126;color:#fff;font-weight:700}
+p{color:#6b7280;font-size:14px}.e{color:#dc2626}</style></head><body><h2>접근 키</h2><p>키를 넣으면 이 브라우저에서 시험 화면을 쓸 수 있음 (30일 기억)</p>
+${error ? `<p class="e">${error}</p>` : ''}<form method="post" action="/dev/key"><input name="key" type="password" autocomplete="off" required><button>확인</button></form></body></html>`;
 
 const devUiFile = new URL('../dev-ui/index.html', import.meta.url);
 const devMeetingFile = new URL('../dev-ui/meeting.html', import.meta.url);
@@ -78,6 +94,9 @@ export function createApp({
   meetingLlmCallsPerRun = config.meetingLlmCallsPerRun,
   hub = new EventHub(),
   livePingMs,
+  routeClient = null,
+  accessKeys = config.accessKeys,
+  accessReplay = config.accessReplay,
 }: AppOptions) {
   const api = new Hono();
   api.use('*', writeRateLimit(rateLimitPerMinute));
@@ -99,13 +118,18 @@ export function createApp({
     // LLM 녹화·재생: 실제로 부른 답은 늘 녹화하고, only(LLM_REPLAY=true)면 LLM 호출기를 넘기지 않아 어떤 경로도 LLM을 부르지 않음
     const mode: ReplayMode = llmReplay === true ? 'only' : llmReplay === false ? 'off' : llmReplay;
     const recorder = llmRecorder(db, (llm ?? meetingLlm)?.name ?? 'none', mode);
-    api.route('/', personaRoutes({ db, llm: mode === 'only' ? null : llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret }));
+    // 접근 키를 낸 요청: 전체가 녹화만(only)이어도 accessReplay 모드로 LLM을 씀 (녹화는 같은 표·같은 지문)
+    const anyLlm = llm ?? meetingLlm ?? null;
+    const liveRecorder = mode === 'only' && accessKeys.length > 0 && accessReplay !== 'only' && anyLlm ? llmRecorder(db, anyLlm.name, accessReplay) : null;
+    const live = liveRecorder && llm ? { llm, recorder: liveRecorder } : null;
+    api.route('/', personaRoutes({ db, llm: mode === 'only' ? null : llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret, accessKeys, live }));
     // 회의 그래프와 실행기는 서버가 켜질 때 한 번만 만들고 공식 경로·시험 경로가 함께 씀
     const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
-    const graph = buildMeetingGraph({ db, crowdClient, llm: mode === 'only' ? null : (meetingLlm ?? llm), recorder, limits, checkpointer, traceLlm: true });
-    const service = meetingService({ db, graph, limits, publisher: hub, replay: mode !== 'off' });
-    api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs }));
-    if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: devUiTunnel, replay: mode !== 'off' }));
+    const graph = buildMeetingGraph({ db, crowdClient, llm: mode === 'only' ? null : (meetingLlm ?? llm), recorder, limits, checkpointer, traceLlm: true, router: routeClient });
+    const liveGraph = liveRecorder ? buildMeetingGraph({ db, crowdClient, llm: meetingLlm ?? llm, recorder: liveRecorder, limits, checkpointer, traceLlm: true, router: routeClient }) : undefined;
+    const service = meetingService({ db, graph, liveGraph, limits, publisher: hub, replay: mode !== 'off', liveReplay: accessReplay !== 'off' });
+    api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs, accessKeys }));
+    if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: devUiTunnel, replay: mode !== 'off', accessKeys }));
   } else {
     api.all('*', () => {
       throw new ApiError('INTERNAL_ERROR', 'DB가 설정되지 않아 사용할 수 없음');
@@ -116,18 +140,31 @@ export function createApp({
   app.route('/api/v1', api);
 
   if (devUi) {
+    // 터널로 시험 화면을 쓰는데(DEV_UI_TUNNEL) 접근 키가 있는 서버면 먼저 키를 넣음: 맞으면 HttpOnly 쿠키로 기억 (키 원문은 응답·로그에 넣지 않음)
+    const needKey = (c: Context) => devUiTunnel && accessKeys.length > 0 && accessOf(c, accessKeys).kind === 'none';
+    app.get('/dev/key', (c) => c.html(keyPage()));
+    app.post('/dev/key', writeRateLimit(rateLimitPerMinute), bodyLimit({ maxSize: 1024 }), async (c) => {
+      const form = await c.req.parseBody();
+      const key = typeof form.key === 'string' ? form.key.trim() : '';
+      if (!matchKey(accessKeys, key)) return c.html(keyPage('키가 맞지 않음'), 403);
+      setCookie(c, ACCESS.cookie, key, { path: '/', httpOnly: true, secure: true, sameSite: 'Strict', maxAge: ACCESS.cookieDays * 86_400 });
+      return c.redirect('/dev/');
+    });
     app.get('/dev', (c) => c.redirect('/dev/'));
     app.get('/dev/', async (c) => {
+      if (needKey(c)) return c.redirect('/dev/key');
       c.header('Cache-Control', 'no-store');
       return c.html(await readFile(devUiFile, 'utf8'));
     });
     // 회의 엔진 단계별 시험 화면 (1–15단계를 하나씩 실행해 봄)
     app.get('/dev/meeting', async (c) => {
+      if (needKey(c)) return c.redirect('/dev/key');
       c.header('Cache-Control', 'no-store');
       return c.html(await readFile(devMeetingFile, 'utf8'));
     });
     // 앱처럼 보이는 시연 화면 (개발자 도구 휴대폰 보기용): 시연 여행 → 성향 카드 → 조건 → 지도 위 AI 회의
     app.get('/dev/app', async (c) => {
+      if (needKey(c)) return c.redirect('/dev/key');
       c.header('Cache-Control', 'no-store');
       return c.html(await readFile(devAppFile, 'utf8'));
     });

@@ -1,7 +1,7 @@
 import { Annotation, type BaseCheckpointSaver, END, START, Send, StateGraph, getWriter, interrupt } from '@langchain/langgraph';
 import { asc, eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { members, personas, regions, trips } from '../db/schema.js';
+import { MIN_MEMBERS, members, personas, regions, trips } from '../db/schema.js';
 import { ApiError } from '../lib/errors.js';
 import type { LlmClient } from '../llm/client.js';
 import type { LlmRecorder } from '../llm/record.js';
@@ -13,6 +13,8 @@ import { type AiReaction, REACT, reactBoard } from './react.js';
 import { acceptReactions, reactRequest } from './react-ai.js';
 import { type MemberInput, type RetrieveResult, retrieveCandidates } from './retrieve.js';
 import { applyReview, reviewRequestOf } from './review.js';
+import { ROUTE, type RouteClient, type RouteMeter, cachedRouter, newRouteMeter } from './route.js';
+import { type PlanProposal, SCHEDULE, schedulePlans } from './schedule.js';
 import { type MeetingEventDraft, type MeetingLimits, agentIdOf, reserveMeetingLlm } from './runs.js';
 import type { Board, ResolvedDestination, ReviewDecision, ReviewRequest, TripConditions } from './types.js';
 
@@ -45,6 +47,8 @@ export const MeetingState = Annotation.Root({
   reviewRequest: Annotation<ReviewRequest | null>(),
   /** 5단계 결과: 사람 4명이 남김·뺌을 정한 결과 (다수결, 같으면 방장) */
   reviewDecision: Annotation<ReviewDecision | null>(),
+  /** 6단계 결과: A·B 두 안(경로·가는 길·식당)과 이 회의에서 부른 카카오 길찾기 수 */
+  plans: Annotation<{ plans: PlanProposal[]; kakao: RouteMeter } | null>(),
 });
 export type MeetingStateType = typeof MeetingState.State;
 
@@ -62,6 +66,8 @@ export interface MeetingDeps {
   traceLlm?: boolean;
   /** 단계 저장 (LangGraph 체크포인트). 없으면 저장하지 않음 */
   checkpointer?: BaseCheckpointSaver;
+  /** 6단계 길찾기 호출기 (카카오, 하루 한도 포함). null이면 저장된 길찾기만 쓰고 없는 구간은 '경로 정보 없음' */
+  router?: RouteClient | null;
 }
 
 const emit = (e: MeetingEventDraft) => getWriter()?.(e);
@@ -79,6 +85,7 @@ export async function loadMeetingInput(db: Db, tripId: string) {
     .orderBy(asc(members.seat));
   const missing = rows.filter((r) => !r.persona).map((r) => r.member.nickname);
   if (missing.length) throw new ApiError('PERSONA_REQUIRED', `성향 설문을 마치지 않은 구성원: ${missing.join(', ')}`);
+  if (rows.length < MIN_MEMBERS) throw new ApiError('NOT_ENOUGH_MEMBERS', `회의는 방장 포함 ${MIN_MEMBERS}명 이상이어야 함 (지금 ${rows.length}명)`);
   return { trip: { ...trip, conditions: trip.conditions, regionCode: trip.regionCode }, rows: rows.map((r) => ({ member: r.member, persona: r.persona! })) };
 }
 
@@ -217,6 +224,24 @@ async function review(state: MeetingStateType): Promise<Partial<MeetingStateType
   return { board, reviewDecision: decision };
 }
 
+/**
+ * 6단계 동선 짜기 (코드, LLM 0회): 반응·사람 확인을 반영해 A·B 두 안을 짜고 구간마다 카카오 길찾기(도보·대중교통·택시·자차)를 붙여 plan.proposed로 보냄
+ * 카카오는 회의마다 새로 세며(저장된 구간은 세지 않음) 한도·오류인 구간은 시간 없이 직선거리만 둠. 시각표·머무는 시간은 만들지 않음 (10/23 사용자 결정)
+ */
+async function schedule(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const kakao = newRouteMeter();
+  const plans = await schedulePlans(deps.db, cachedRouter(deps.db, deps.router ?? null, kakao), {
+    meetingId: state.meetingId,
+    pool: state.pool!,
+    board: state.board!,
+    members: state.members,
+    decision: state.reviewDecision ?? null,
+    moveMode: state.conditions?.moveMode ?? 'transit',
+  });
+  for (const plan of plans) emit({ type: 'plan.proposed', data: plan });
+  return { plans: { plans, kakao } };
+}
+
 /** 회의 그래프의 노드 이름과 단계 (시험 화면의 그래프 칸에 씀) */
 export const MEETING_NODES = [
   { id: 'prepare', step: 1, label: '준비', kind: 'code' },
@@ -225,6 +250,7 @@ export const MEETING_NODES = [
   { id: 'gather', step: 3, label: '후보 보드 모으기', kind: 'code' },
   { id: 'react', step: 4, label: '반응·안건', kind: 'llm' },
   { id: 'review', step: 5, label: '사람 확인', kind: 'human' },
+  { id: 'schedule', step: 6, label: '동선 짜기 A·B', kind: 'code' },
 ] as const;
 
 /** 실제 회의 그래프의 노드·연결과 단계별 규칙 값 (그래프를 만들기만 하고 실행하지 않음, 시험 화면이 규칙 값을 따로 적지 않게 함) */
@@ -234,12 +260,12 @@ export async function meetingGraphShape() {
   return {
     nodes: Object.keys(graph.nodes).map((id) => ({ id, step: meta.get(id)?.step ?? null, label: meta.get(id)?.label ?? id, kind: meta.get(id)?.kind ?? 'edge' })),
     edges: graph.edges.map((e) => ({ from: e.source, to: e.target, conditional: !!e.conditional })),
-    rules: { react: REACT },
+    rules: { react: REACT, schedule: SCHEDULE, route: ROUTE },
   };
 }
 
 /**
- * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건 → (고를 안건이 있으면) 사람 확인
+ * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건 → (고를 안건이 있으면) 사람 확인 → 동선 짜기 A·B
  * upTo 'retrieve'면 2단계에서 멈춤 (LLM 0회 시험용). 사람 확인은 멈췄다 이어서 실행하므로 체크포인트 저장(checkpointer)이 있어야 함
  */
 export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' } = {}) {
@@ -260,6 +286,7 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
     .addNode('gather', gather)
     .addNode('react', (s) => react(deps, s))
     .addNode('review', review)
+    .addNode('schedule', (s) => schedule(deps, s))
     .addConditionalEdges(
       'retrieve',
       (s) =>
@@ -281,7 +308,8 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
     )
     .addEdge('pick', 'gather')
     .addEdge('gather', 'react')
-    .addConditionalEdges('react', (s) => (s.reviewRequest?.items.length ? 'review' : END), ['review', END])
-    .addEdge('review', END)
+    .addConditionalEdges('react', (s) => (s.reviewRequest?.items.length ? 'review' : 'schedule'), ['review', 'schedule'])
+    .addEdge('review', 'schedule')
+    .addEdge('schedule', END)
     .compile({ checkpointer: deps.checkpointer });
 }

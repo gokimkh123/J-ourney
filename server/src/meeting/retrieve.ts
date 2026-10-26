@@ -101,6 +101,10 @@ export interface Candidate {
   open: OpenHours | null;
   /** 휴무일 문장을 읽지 못한 장소 (빼지 않고 '확인 필요'로 표시) */
   restUnknown: boolean;
+  /** 공식 분류 코드 (lcls3). 6단계가 야경 전망대·카페를 가릴 때 씀 (이 칸이 생기기 전 회의의 후보에는 없음) */
+  code?: string | null;
+  /** 휴무일 문장 원문. 6단계가 날마다 쉬는 날인지 볼 때 씀 */
+  rest?: string | null;
   summary: string;
   /** 음식점 대표 메뉴 (상세 정보가 있을 때) */
   menu: string | null;
@@ -161,13 +165,13 @@ function meters(a: { lat: number | null; lng: number | null }, b: { lat: number 
   const y = (b.lat - a.lat) * r;
   return 6371000 * Math.hypot(x, y);
 }
-const intro = (raw: Record<string, string> | null, ...keys: string[]) => {
+export const intro = (raw: Record<string, string> | null, ...keys: string[]) => {
   for (const k of keys) if (raw?.[k]?.trim()) return raw[k];
   return null;
 };
 /** 소개 정보(detailIntro2)의 휴무일·이용시간 칸 이름 (장소 유형마다 다름) */
-const REST_KEYS = ['restdate', 'restdateculture', 'restdateleports', 'restdatefood', 'restdateshopping'];
-const HOURS_KEYS = ['usetime', 'usetimeculture', 'usetimeleports', 'opentimefood', 'opentime', 'playtime'];
+export const REST_KEYS = ['restdate', 'restdateculture', 'restdateleports', 'restdatefood', 'restdateshopping'];
+export const HOURS_KEYS = ['usetime', 'usetimeculture', 'usetimeleports', 'opentimefood', 'opentime', 'playtime'];
 
 /**
  * 후보 찾기 (회의 2단계, 코드만 씀 · LLM 0회)
@@ -390,6 +394,8 @@ export async function retrieveCandidates(
       hours: hoursLabel(intro(p.introRaw, ...HOURS_KEYS), month),
       open: hoursOn(intro(p.introRaw, ...HOURS_KEYS), month),
       restUnknown: dates.some((d) => closedOn(rest, d) === 'unknown'),
+      code: p.lcls3,
+      rest,
       summary: strip(p.overview).slice(0, RETRIEVE.summaryChars),
       menu: view.isFood ? view.menu : null,
       lat: p.lat,

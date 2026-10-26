@@ -9,6 +9,7 @@ import { createLangChainLlm, type LlmClient, type ModelSpec, parseModelSpec, wit
 import { failInterruptedMeetings, pruneMeetingCheckpoints } from './meeting/runs.js';
 import { createTourClient } from './tour/client.js';
 import { tryConsumeTourCall } from './tour/usage.js';
+import { kakaoQuota, kakaoRouter } from './meeting/route.js';
 
 if (!config.databaseUrl) console.warn('DATABASE_URL이 없어 DB 없이 실행함 (/health만 동작)');
 const db = config.databaseUrl ? await connectDb(config.databaseUrl) : null;
@@ -48,6 +49,19 @@ const crowdClient =
       })
     : null;
 
+// 6단계 길찾기 호출기: 카카오 기능별 하루 상한을 tour_api_usage 표로 셈 (무료 한도 안, 결제 수단 연결 안 함). 키가 없으면 저장된 길찾기만 씀
+const routeClient =
+  db && config.kakaoRestKey
+    ? kakaoRouter({
+        restKey: config.kakaoRestKey,
+        mapBase: config.kakaoMapBase,
+        naviBase: config.kakaoNaviBase,
+        timeoutMs: config.kakaoTimeoutMs,
+        beforeCall: kakaoQuota(db, { transit: config.kakaoTransitDailyLimit, walk: config.kakaoWalkDailyLimit, car: config.kakaoCarDailyLimit }),
+      })
+    : null;
+console.log(`카카오 길찾기: ${routeClient ? '켬' : '없음 (저장된 길찾기만 씀)'}`);
+
 // 회의 단계 저장: LangGraph 체크포인트를 별도 스키마(langgraph)에 둠 (우리 표와 섞이지 않게). 끝난 지 오래된 회의 기록은 하루 한 번 지움
 const CHECKPOINT_SCHEMA = 'langgraph';
 const DAY_MS = 86400000;
@@ -67,6 +81,7 @@ if (db && config.databaseUrl) {
 const app = createApp({
   db,
   crowdClient,
+  routeClient,
   checkpointer,
   meetingLlm,
   devUi: config.devUi,
@@ -78,6 +93,8 @@ const app = createApp({
   llmPerIpDaily: config.llmPerIpDaily,
   ipHashSecret: config.ipHashSecret,
   rateLimitPerMinute: config.rateLimitPerMinute,
+  accessKeys: config.accessKeys,
+  accessReplay: config.accessReplay,
 });
 
 // 실시간 연결(WebSocket): 같은 포트에서 /api/v1/trips/{tripId}/ws로 받음 (Hono Node 서버의 내장 기능 + ws)
@@ -85,5 +102,7 @@ serve({ fetch: app.fetch, port: config.port, websocket: { server: new WebSocketS
   console.log(`J-ourney 서버 실행 중: http://localhost:${info.port}/api/v1/health`);
   if (config.llmReplay === 'only') console.log('LLM_REPLAY 켜짐: LLM을 부르지 않고 녹화된 답·지난 결과(지난 회의의 AI 고르기, 같은 응답의 AI 카드)만 씀');
   if (config.llmReplay === 'fill') console.log('LLM_REPLAY=fill: 녹화된 답·지난 결과는 다시 쓰고, 없는 요청만 LLM을 불러 녹화함');
+  // 키 이름·횟수만 적음 (키·해시는 로그에 넣지 않음)
+  if (config.accessKeys.length) console.log(`접근 키 ${config.accessKeys.map((k) => `${k.label}(${k.quota}회)`).join(', ')}: 터널 요청은 키를 낸 경우만 회의·AI 카드 (키 LLM: ${config.accessReplay})`);
   if (config.devUi) console.log(`백엔드 시험 화면: http://localhost:${info.port}/dev/ · 회의 엔진: http://localhost:${info.port}/dev/meeting`);
 });
