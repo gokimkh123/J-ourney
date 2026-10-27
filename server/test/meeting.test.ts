@@ -532,6 +532,7 @@ describe('후보 찾기 (2단계, 코드)', () => {
       expect(mustOf(r, 'p1', 'm7')).toBe(true);
       expect(mustOf(r, 'shop1', 'm7')).toBe(false);
       expect(mustOf(r, 'pen1', 'm7')).toBe(false); // 숙소 고르기는 꼭 지킬 숙소를 먼저 고르므로, 이름만 같은 펜션이 숙소로 뽑히지 않게
+      expect(r.lodgings.some((c) => c.id === 'pen1')).toBe(true); // 후보에서 빼지는 않음: 다른 숙소와 같은 잣대로 고를 수 있음 (꼭 지킬 표시만 안 붙음)
       expect(mustOf(r, 'p14', 'm7')).toBe(true); // 이재모피자: 식당만 맞으면 그 식당이 꼭 지킬 곳
     });
 
