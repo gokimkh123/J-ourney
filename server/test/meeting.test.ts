@@ -223,7 +223,8 @@ describe('꼭 지킬 것 맞추기 (코드·이름만, 낱말 해석 없음)', (
   });
 });
 
-describe('목적지 → 법정동 코드', () => {
+// PGlite DB를 새로 만드는 시험이라 느린 CI에서는 5초를 넘음 (10/27 GitHub 5.1초) → 이 묶음만 20초
+describe('목적지 → 법정동 코드', { timeout: 20_000 }, () => {
   it('시·도, 시·도 + 구, 구 이름, 줄인 이름을 읽고 여러 곳이면 오류', async () => {
     const { db } = await createTestApp();
     await db.insert(regions).values(REGIONS);
