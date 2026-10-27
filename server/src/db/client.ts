@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
+import pg from 'pg';
 import postgres from 'postgres';
 import * as schema from './schema.js';
 
@@ -17,4 +18,14 @@ export async function connectDb(url: string): Promise<Db> {
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder });
   return db;
+}
+
+/**
+ * LangGraph 체크포인트 전용 연결 풀 (PostgresSaver가 씀)
+ * 쉬던 연결이 끊기면(DB 재시작 등) 풀이 'error'를 냄. 받는 곳이 없으면 서버가 꺼지므로 기록만 함 (다음 요청은 새 연결을 씀)
+ */
+export function checkpointPool(url: string, max: number) {
+  const pool = new pg.Pool({ connectionString: url, max });
+  pool.on('error', (err) => console.warn('체크포인트 DB 연결 끊김:', err.message));
+  return pool;
 }

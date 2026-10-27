@@ -48,7 +48,8 @@ export interface TourClientOptions {
 export function createTourClient(opts: TourClientOptions): TourClient {
   const doFetch: TourFetch = opts.fetch ?? ((url, init) => fetch(url, init));
   const timeoutMs = opts.timeoutMs ?? 20000;
-  const mask = (text: string) => text.split(opts.serviceKey).join('***');
+  // 키 원문과 주소에 넣은 형태(퍼센트 인코딩) 모두 가림
+  const mask = (text: string) => text.split(opts.serviceKey).join('***').split(encodeURIComponent(opts.serviceKey)).join('***');
 
   async function once(operation: string, params: Record<string, string | number>): Promise<TourPage> {
     if (opts.beforeAttempt && !(await opts.beforeAttempt(operation))) throw new TourApiError('budget', '오늘 TourAPI 호출 상한에 닿음');

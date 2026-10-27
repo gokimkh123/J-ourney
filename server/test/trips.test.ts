@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { members } from '../src/db/schema.js';
+import { meetings, members, trips } from '../src/db/schema.js';
 import { hashToken } from '../src/lib/ids.js';
 import { call, createTestApp } from './helpers.js';
 
@@ -82,6 +82,41 @@ describe('초대·참여', () => {
     const results = await Promise.all(['가', '나', '다', '라', '마'].map((n) => join(code, n)));
     expect(results.filter((r) => r.status === 201)).toHaveLength(3);
     expect(results.filter((r) => r.body.error?.code === 'TRIP_FULL')).toHaveLength(2);
+  });
+});
+
+describe('초대·참여: 회의 시작 뒤 · 코드 맞추기', () => {
+  it('회의가 시작된 여행(공식 경로 상태 meeting · 시험 경로의 진행 중인 회의)에는 참여할 수 없음 (MEETING_IN_PROGRESS 409)', async () => {
+    const host = await createTrip();
+    const code = host.body.trip.inviteCode as string;
+    const tripId = host.body.trip.id as string;
+    await t.db.update(trips).set({ status: 'meeting' }).where(eq(trips.id, tripId));
+    const late = await join(code, '늦은 사람');
+    expect(late.status).toBe(409);
+    expect(late.body.error.code).toBe('MEETING_IN_PROGRESS');
+    // 시험 경로 회의는 여행 상태를 바꾸지 않으므로 진행 중인 회의도 봄
+    await t.db.update(trips).set({ status: 'preparing' }).where(eq(trips.id, tripId));
+    await t.db.insert(meetings).values({ id: 'mtg_join_test', tripId, runNo: 1, status: 'reviewing' });
+    expect((await join(code, '늦은 사람')).body.error.code).toBe('MEETING_IN_PROGRESS');
+    await t.db.update(meetings).set({ status: 'done' }).where(eq(meetings.id, 'mtg_join_test'));
+    expect((await join(code, '다음 사람')).status).toBe(201);
+    expect((await t.db.select().from(members).where(eq(members.tripId, tripId))).map((m) => m.nickname)).toEqual(['민수', '다음 사람']);
+  });
+
+  it('틀린 초대 코드는 IP마다 1분에 20번까지 (넘으면 RATE_LIMITED 429), 맞는 코드로 자주 조회하는 화면은 막지 않음', async () => {
+    const fresh = await createTestApp();
+    const host = await call(fresh.app, 'POST', '/trips', { title: '부산', nickname: '민수' });
+    const code = host.body.trip.inviteCode as string;
+    // 앱 대기실처럼 맞는 코드로 여러 번 조회해도 막히지 않음
+    for (let i = 0; i < 30; i++) expect((await call(fresh.app, 'GET', `/invites/${code}`)).status).toBe(200);
+    const miss = (ip: string) => call(fresh.app, 'GET', '/invites/ZZZZZZ', undefined, undefined, { 'cf-connecting-ip': ip });
+    for (let i = 0; i < 20; i++) expect((await miss('198.51.100.7')).status).toBe(404);
+    const blocked = await miss('198.51.100.7');
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error.code).toBe('RATE_LIMITED');
+    // 막힌 IP는 맞는 코드·참여도 그 1분 동안 막히고, 다른 IP는 그대로
+    expect((await call(fresh.app, 'POST', `/invites/${code}/join`, { nickname: '지은' }, undefined, { 'cf-connecting-ip': '198.51.100.7' })).status).toBe(429);
+    expect((await call(fresh.app, 'POST', `/invites/${code}/join`, { nickname: '지은' }, undefined, { 'cf-connecting-ip': '198.51.100.8' })).status).toBe(201);
   });
 });
 

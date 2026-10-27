@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { categories, places, regions, routeCache } from '../src/db/schema.js';
 import type { MemberInput, Candidate, RetrieveResult } from '../src/meeting/retrieve.js';
-import { ROUTE, type RouteClient, RouteUnavailable, cachedRouter, kakaoRouter, newRouteMeter, routeKey } from '../src/meeting/route.js';
+import { ROUTE, type RouteClient, RouteUnavailable, cachedRouter, kakaoLink, kakaoRouter, newRouteMeter, routeKey } from '../src/meeting/route.js';
 import { SCHEDULE, type PlanProposal, duskKst, schedulePlans } from '../src/meeting/schedule.js';
 import { distanceKm } from '../src/meeting/travel.js';
 import type { Board, BoardCandidate, MoveMode, ReviewDecision } from '../src/meeting/types.js';
@@ -97,10 +97,8 @@ const poolOf = (candidates: Candidate[], dates: string[], lodgings: Candidate[] 
   destination: { regionCode: '26', regionName: '부산광역시', districtCodes: ['500'], label: '부산 수영구' },
   dates,
   candidates,
-  table: '',
   nights: dates.length - 1,
   lodgings,
-  lodgingTable: '',
   stages: [],
   excluded: [],
   popularity: { baseYm: null, matched: 0 },
@@ -381,6 +379,24 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
 describe('6단계 길찾기 저장·카카오 호출기', () => {
   const a = { lat: 35.15, lng: 129.1 };
   const b = { lat: 35.2, lng: 129.15 };
+
+  it('회의 안에서 같은 구간을 동시에 물어도 카카오는 한 번만 부름 (A·B안이 같은 구간을 함께 물을 때)', async () => {
+    const db = await testDb();
+    const { router, calls } = fakeRouter();
+    const meter = newRouteMeter();
+    const r = cachedRouter(db, router, meter);
+    await Promise.all([r.transit(a, b), r.transit(a, b), r.car(a, b), r.car(b, a)]);
+    expect(calls).toEqual({ transit: 1, walk: 0, car: 1 });
+    expect(meter).toMatchObject({ calls: { transit: 1, walk: 0, car: 1 }, cached: 2 });
+  });
+
+  it('카카오가 준 길찾기 링크는 https의 카카오맵 주소만 화면에 넘김', () => {
+    expect(kakaoLink('https://map.kakao.com/?sX=1&sY=2')).toBe('https://map.kakao.com/?sX=1&sY=2');
+    expect(kakaoLink('javascript:alert(1)')).toBeNull();
+    expect(kakaoLink('http://map.kakao.com/')).toBeNull();
+    expect(kakaoLink('https://map.kakao.com.evil.example/')).toBeNull();
+    expect(kakaoLink(42)).toBeNull();
+  });
 
   it('같은 구간은 7일 동안 저장해 다시 쓰고(자동차는 오가는 방향이 같은 구간), 회의당 상한을 넘으면 부르지 않음', async () => {
     const db = await testDb();

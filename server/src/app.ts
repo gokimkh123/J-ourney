@@ -3,6 +3,7 @@ import { type BaseCheckpointSaver, MemorySaver } from '@langchain/langgraph';
 import { type Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { setCookie } from 'hono/cookie';
+import { secureHeaders } from 'hono/secure-headers';
 import type { Db } from './db/client.js';
 import { config } from './config.js';
 import { ACCESS, type AccessKey, accessOf, matchKey } from './lib/access.js';
@@ -98,6 +99,8 @@ export function createApp({
   accessKeys = config.accessKeys,
   accessReplay = config.accessReplay,
 }: AppOptions) {
+  // 터널로 시험 경로를 여는데(DEV_UI_TUNNEL) 접근 키가 하나도 없으면 열지 않음 (키를 빠뜨려 바깥에 실제 API가 열리지 않게, 서버 시작 로그에 경고)
+  const tunnelDev = devUiTunnel && accessKeys.length > 0;
   const api = new Hono();
   api.use('*', writeRateLimit(rateLimitPerMinute));
   api.use(
@@ -129,7 +132,7 @@ export function createApp({
     const liveGraph = liveRecorder ? buildMeetingGraph({ db, crowdClient, llm: meetingLlm ?? llm, recorder: liveRecorder, limits, checkpointer, traceLlm: true, router: routeClient }) : undefined;
     const service = meetingService({ db, graph, liveGraph, limits, publisher: hub, replay: mode !== 'off', liveReplay: accessReplay !== 'off' });
     api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs, accessKeys }));
-    if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: devUiTunnel, replay: mode !== 'off', accessKeys }));
+    if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: tunnelDev, replay: mode !== 'off', accessKeys }));
   } else {
     api.all('*', () => {
       throw new ApiError('INTERNAL_ERROR', 'DB가 설정되지 않아 사용할 수 없음');
@@ -137,11 +140,13 @@ export function createApp({
   }
 
   const app = new Hono();
+  // 기본 보안 헤더 (내용 보안 정책 CSP는 시험 화면이 바깥 지도 스크립트를 써서 넣지 않음)
+  app.use('*', secureHeaders());
   app.route('/api/v1', api);
 
   if (devUi) {
     // 터널로 시험 화면을 쓰는데(DEV_UI_TUNNEL) 접근 키가 있는 서버면 먼저 키를 넣음: 맞으면 HttpOnly 쿠키로 기억 (키 원문은 응답·로그에 넣지 않음)
-    const needKey = (c: Context) => devUiTunnel && accessKeys.length > 0 && accessOf(c, accessKeys).kind === 'none';
+    const needKey = (c: Context) => tunnelDev && accessOf(c, accessKeys).kind === 'none';
     app.get('/dev/key', (c) => c.html(keyPage()));
     app.post('/dev/key', writeRateLimit(rateLimitPerMinute), bodyLimit({ maxSize: 1024 }), async (c) => {
       const form = await c.req.parseBody();

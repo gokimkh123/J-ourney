@@ -5,9 +5,8 @@ import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { llmRecorder } from '../src/llm/record.js';
-import { WebSocketServer } from 'ws';
 import { createApp } from '../src/app.js';
-import { categories, crowdFetches, llmRecords, llmUsage, members, placeRelations, places, regions, relatedFetches } from '../src/db/schema.js';
+import { categories, crowdFetches, llmRecords, llmUsage, members, placeRelations, places, regions, relatedFetches, routeCache } from '../src/db/schema.js';
 import { hashToken } from '../src/lib/ids.js';
 import { REVIEW, applyReview, reviewRequestOf, tallyReview } from '../src/meeting/review.js';
 import { ruleCategories } from '../src/meeting/categories.js';
@@ -19,10 +18,14 @@ import { ruleMatcher, sameName } from '../src/meeting/rules.js';
 import type { PersonaProfile } from '../src/persona/types.js';
 import type { TourClient } from '../src/tour/client.js';
 import { meetings, trips } from '../src/db/schema.js';
-import { LIVE } from '../src/meeting/live.js';
+import { EventHub, LIVE, liveSocketServer } from '../src/meeting/live.js';
 import { PICK, type PickResult, ensureOwnLimits, ownConflictIds, pickTables, savedPickFor } from '../src/meeting/pick.js';
 import { REACT, agendaOf, overlapMinutes, reactBoard, reactionOf, reactionScore } from '../src/meeting/react.js';
-import { failInterruptedMeetings } from '../src/meeting/runs.js';
+import { failInterruptedMeetings, pendingEventLanes, pruneMeetingCheckpoints, reopenTrip } from '../src/meeting/runs.js';
+import { pruneRouteCache } from '../src/meeting/route.js';
+import { checkpointPool } from '../src/db/client.js';
+import type { BaseCheckpointSaver } from '@langchain/langgraph';
+import { sql } from 'drizzle-orm';
 import { acceptReactions, reactRequest, reactWishes } from '../src/meeting/react-ai.js';
 import type { Candidate, RetrieveResult } from '../src/meeting/retrieve.js';
 import { MINSU, answersOf, call, createTestApp, fakeLlm } from './helpers.js';
@@ -271,8 +274,6 @@ describe('후보 찾기 (2단계, 코드)', () => {
     expect(by['온천천 카페'].category).toBe('카페');
     expect(by['장산'].reasons.m4).toContain('싫어요: 오래 걷기'); // 산 분류
     expect(by['광안리해수욕장'].reasons.m1).toContain('좋아요: 바다'); // 해변 분류
-    expect(r.table.split('\n')[0]).toBe('id|이름|분류|인기|혼잡|영업|요약');
-    expect(r.table.split('\n')).toHaveLength(r.candidates.length + 1);
     expect(r.sources).toEqual(['tour_api', 'tour_rank', 'tour_crowd']);
     expect(r.popularity.baseYm).toBe('202511');
 
@@ -378,7 +379,7 @@ describe('후보 찾기 (2단계, 코드)', () => {
     const { db } = await createTestApp();
     await seedDb(db);
     const day = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: MEMBERS, crowdClient: null, today: '2026-11-01' });
-    expect(day).toMatchObject({ nights: 0, lodgings: [], lodgingTable: '' });
+    expect(day).toMatchObject({ nights: 0, lodgings: [] });
     expect(day.candidates.some((c) => c.type === 32)).toBe(false);
 
     const twoDays = { ...CONDITIONS, endDate: '2026-11-08' };
@@ -387,7 +388,6 @@ describe('후보 찾기 (2단계, 코드)', () => {
     expect(r.nights).toBe(1);
     expect(r.lodgings.map((c) => c.name)).toEqual(['광안호텔']);
     expect(r.candidates.some((c) => c.type === 32)).toBe(false); // 40곳에는 넣지 않음
-    expect(r.lodgingTable.split('\n')[1]).toContain('광안호텔|호텔');
     expect(r.excluded.find((e) => e.reason === '누군가 꼭 피할 것에 걸림')?.count).toBe(4); // 시장 3곳 + 게스트하우스
   });
 
@@ -572,11 +572,13 @@ describe('회의 조건 API와 시험 경로', () => {
     expect((await call(app, 'GET', '/dev/meeting/graph', undefined, undefined, { 'cf-connecting-ip': '203.0.113.7' })).status).toBe(403);
   });
 
-  it('DEV_UI_TUNNEL을 켜면 터널 요청도 시험 경로를 씀 (팀원 확인용)', async () => {
+  it('DEV_UI_TUNNEL을 켜도 접근 키가 없는 서버는 터널 요청에 시험 경로를 열지 않음 (키를 빠뜨려 바깥에 열리지 않게)', async () => {
     const { app } = await createTestApp({ devUi: true, devUiTunnel: true });
-    const graph = await call(app, 'GET', '/dev/meeting/graph', undefined, undefined, { 'cf-connecting-ip': '203.0.113.7' });
-    expect(graph.status).toBe(200);
-    expect(graph.body.nodes.length).toBeGreaterThan(0);
+    const tunnel = { 'cf-connecting-ip': '203.0.113.7' };
+    expect((await call(app, 'GET', '/dev/meeting/graph', undefined, undefined, tunnel)).status).toBe(403);
+    // 빈 헤더도 서버 안 요청으로 보지 않음
+    expect((await call(app, 'GET', '/dev/meeting/graph', undefined, undefined, { 'cf-connecting-ip': '' })).status).toBe(403);
+    expect((await call(app, 'GET', '/dev/meeting/graph')).status).toBe(200);
   });
 });
 
@@ -1311,7 +1313,7 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     const id = (await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.meeting.id as string;
     const waiting = await waitStatus(app, token, id, 'reviewing');
     const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
-      const s = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1', websocket: { server: new WebSocketServer({ noServer: true }) } }, () => resolve(s));
+      const s = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1', websocket: { server: liveSocketServer() } }, () => resolve(s));
     });
     const port = (server.address() as AddressInfo).port;
     const url = (query: string) => `ws://127.0.0.1:${port}/api/v1/trips/${tripId}/ws?${query}`;
@@ -1368,6 +1370,91 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     } finally {
       server.close();
     }
+  }, STEP5_TIMEOUT_MS);
+
+  it('연결을 여러 번 열고 닫거나 시험 경로 응답을 중간에 끊어도 메모리 항목(구독·구성원 연결·이벤트 줄)이 남지 않음 · 앱이 큰 글을 보내면 닫음(1009) · 보안 헤더', async () => {
+    const hub = new EventHub();
+    const { app, db, token, tripId } = await reviewTrip({ llm: jangsanLlm(), livePingMs: 40, hub, devUi: true, meetingRunsPerTrip: 100 });
+    const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
+      const s = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1', websocket: { server: liveSocketServer() } }, () => resolve(s));
+    });
+    const port = (server.address() as AddressInfo).port;
+    const open = () =>
+      new Promise<WebSocket>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/trips/${tripId}/ws?token=${token}&afterSeq=0`);
+        ws.onopen = () => resolve(ws);
+        ws.onerror = reject;
+      });
+    const closed = (ws: WebSocket) => new Promise<number>((resolve) => ws.addEventListener('close', (e) => resolve(e.code)));
+    const gc = (globalThis as { gc?: () => void }).gc;
+    const heap = () => (gc?.(), process.memoryUsage().heapUsed);
+    try {
+      // 공식 회의 1번(사람 확인에서 멈춤) 뒤 연결 열고 닫기 반복
+      const id = (await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.meeting.id as string;
+      await waitStatus(app, token, id, 'reviewing');
+      const cycles = Number(process.env.SOAK_CYCLES ?? 40);
+      const before = heap();
+      for (let i = 0; i < cycles; i++) {
+        const ws = await open();
+        const done = closed(ws);
+        ws.close();
+        await done;
+      }
+      await until(() => hub.entries(), (e) => e.trips === 0 && e.members === 0, '연결 항목 정리');
+      const afterWs = heap();
+
+      // 서버는 앱의 글을 받지 않음: 상한보다 큰 글은 연결을 닫음 (메모리에 모으지 않음)
+      const big = await open();
+      const code = closed(big);
+      big.send('x'.repeat(LIVE.maxPayloadBytes * 2));
+      expect(await code).toBe(1009);
+      await until(() => hub.entries(), (e) => e.trips === 0 && e.members === 0, '큰 글 연결 정리');
+
+      // 시험 경로 응답을 첫 줄만 읽고 끊어도 회의는 끝까지 돌고 이벤트 줄이 남지 않음
+      const drops = Number(process.env.SOAK_DROPS ?? 3);
+      let last = '';
+      for (let i = 0; i < drops; i++) {
+        const res = await app.request('/api/v1/dev/meeting/run', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+        const reader = res.body!.getReader();
+        last = JSON.parse(new TextDecoder().decode((await reader.read()).value!).split('\n')[0]).meetingId;
+        await reader.cancel();
+        await until(async () => (await db.select().from(meetings).where(eq(meetings.id, last)))[0].status, (st) => st !== 'running', '끊긴 회의 진행');
+      }
+      await until(() => pendingEventLanes(), (n) => n === 0, '이벤트 줄 정리');
+      expect(hub.entries()).toEqual({ trips: 0, members: 0 });
+      if (process.env.SOAK_CYCLES) console.log(`[soak] 연결 ${cycles}회 · 응답 끊기 ${drops}회 · heap ${(before / 1e6).toFixed(1)}MB → 연결 뒤 ${(afterWs / 1e6).toFixed(1)}MB → 끝 ${(heap() / 1e6).toFixed(1)}MB`);
+
+      // 기본 보안 헤더
+      const health = await app.request('/api/v1/health');
+      expect(health.headers.get('x-content-type-options')).toBe('nosniff');
+      expect(health.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+    } finally {
+      server.close();
+    }
+  }, 60_000);
+
+  it('회의 시작은 여행 행을 잠근 한 거래에서 함: 공식 경로는 바로 meeting · 시험 경로 다시 실행은 횟수가 남을 때만 이전 확인을 그만둠 · 실패 정리는 다른 회의가 진행 중이면 여행을 되돌리지 않음', async () => {
+    const { app, db, token, tripId } = await reviewTrip({ llm: jangsanLlm(), devUi: true, meetingRunsPerTrip: 1 });
+    const tripStatus = async () => (await db.select().from(trips).where(eq(trips.id, tripId)))[0].status;
+    const id = (await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.meeting.id as string;
+    expect(await tripStatus()).toBe('meeting'); // 202를 돌려주기 전에 이미 바뀜 (회의 행과 같은 거래)
+    await waitStatus(app, token, id, 'reviewing');
+    // 횟수(1회)를 다 쓴 여행: 시험 경로 다시 실행은 MEETING_LIMIT이고, 사람 확인을 기다리던 회의는 그대로 둠
+    const again = await call(app, 'POST', '/dev/meeting/run', undefined, token);
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe('MEETING_LIMIT');
+    expect((await db.select().from(meetings).where(eq(meetings.id, id)))[0].status).toBe('reviewing');
+    expect(await tripStatus()).toBe('meeting');
+    // 방장이 아니면 시험 경로로도 회의를 시작하지 못함
+    const guest = await call(app, 'POST', '/trips', { title: '다른 여행', nickname: '손님' });
+    const joined = await call(app, 'POST', `/invites/${guest.body.trip.inviteCode}/join`, { nickname: '친구' });
+    expect((await call(app, 'POST', '/dev/meeting/run', undefined, joined.body.token)).status).toBe(403);
+    // 진행 중인 회의가 있으면 되돌리지 않음 → 끝나면 되돌림
+    await reopenTrip(db, tripId);
+    expect(await tripStatus()).toBe('meeting');
+    await db.update(meetings).set({ status: 'failed' }).where(eq(meetings.id, id));
+    await reopenTrip(db, tripId);
+    expect(await tripStatus()).toBe('preparing');
   }, STEP5_TIMEOUT_MS);
 
   it('시험 화면: 1–5단계 실행이 사람 확인에서 멈추고, /dev/meeting/review로 4명 몫을 내면 이어서 끝까지 실행함 (다시 실행하면 이전 확인은 그만둠)', async () => {
@@ -1577,5 +1664,47 @@ describe('접근 키 (ACCESS_KEYS): 키가 있는 서버는 키를 낸 터널 �
     expect(parseAccessKeys('')).toEqual([]);
     expect(() => parseAccessKeys(`team:100:${KEY}`)).toThrow(/ACCESS_KEYS 형식/);
     expect(() => parseAccessKeys(`team:100:${KEY}`)).not.toThrow(new RegExp(KEY));
+  });
+});
+
+describe('매일 정리 · 체크포인트 연결 풀', () => {
+  it('끝난 회의 기록은 기록이 남은 회의만 지움 (이미 지운 회의를 매일 다시 지우지 않음) · 보관 날 수가 지난 길찾기는 지움', async () => {
+    const t = await createTestApp();
+    const host = await call(t.app, 'POST', '/trips', { title: '부산', nickname: '민수' });
+    const tripId = host.body.trip.id as string;
+    const old = new Date(Date.now() - 40 * 86400000);
+    await t.db.insert(meetings).values([
+      { id: 'mtg_old_kept', tripId, runNo: 1, status: 'done', finishedAt: old },
+      { id: 'mtg_old_gone', tripId, runNo: 2, status: 'failed', finishedAt: old },
+      { id: 'mtg_recent', tripId, runNo: 3, status: 'done', finishedAt: new Date() },
+    ]);
+    // 체크포인트 표 흉내: 기록이 남은 회의는 mtg_old_kept·mtg_recent뿐 (mtg_old_gone은 이미 지움)
+    await t.db.execute(sql`create schema lg_test`);
+    await t.db.execute(sql`create table lg_test.checkpoints (thread_id text not null)`);
+    await t.db.execute(sql`insert into lg_test.checkpoints values ('mtg_old_kept'), ('mtg_recent')`);
+    const deleted: string[] = [];
+    const saver = { deleteThread: async (id: string) => void deleted.push(id) } as unknown as BaseCheckpointSaver;
+    expect(await pruneMeetingCheckpoints(t.db, saver, 30, 'lg_test')).toBe(1);
+    expect(deleted).toEqual(['mtg_old_kept']);
+
+    const now = new Date();
+    await t.db.insert(routeCache).values([
+      { key: 'car|old', mode: 'car', result: null, fetchedAt: new Date(now.getTime() - 8 * 86400000) },
+      { key: 'car|new', mode: 'car', result: null, fetchedAt: new Date(now.getTime() - 86400000) },
+    ]);
+    expect(await pruneRouteCache(t.db, now)).toBe(1);
+    expect((await t.db.select().from(routeCache)).map((r) => r.key)).toEqual(['car|new']);
+  });
+
+  it('체크포인트 연결 풀은 쉬던 연결이 끊긴 오류(error)를 받아 서버가 꺼지지 않음', async () => {
+    const pool = checkpointPool('postgres://journey@127.0.0.1:1/journey', 1);
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      expect(() => pool.emit('error', new Error('terminating connection due to administrator command'))).not.toThrow();
+    } finally {
+      console.warn = warn;
+      await pool.end();
+    }
   });
 });

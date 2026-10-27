@@ -126,14 +126,10 @@ export interface RetrieveResult {
   destination: ResolvedDestination;
   dates: string[];
   candidates: Candidate[];
-  /** LLM에 넣는 한 줄 표 (id|이름|분류|인기|혼잡|영업|요약) */
-  table: string;
   /** 숙박 일수 (당일치기 0) */
   nights: number;
-  /** 숙소 후보 (1박 이상일 때만, 40곳과 따로) */
+  /** 숙소 후보 (1박 이상일 때만, 40곳과 따로). 3단계 LLM 입력 표는 사람마다 pickTables(pick.ts)가 만듦 */
   lodgings: Candidate[];
-  /** 숙소 후보의 한 줄 표 (형식은 table과 같음, 당일치기면 빈 문자열) */
-  lodgingTable: string;
   stages: { label: string; count: number }[];
   excluded: { reason: string; count: number; examples: string[] }[];
   popularity: { baseYm: string | null; matched: number };
@@ -538,11 +534,6 @@ export async function retrieveCandidates(
     .sort((a, b) => Number(isMust(b)) - Number(isMust(a)) || b.total - a.total || (b.popularity ?? -1) - (a.popularity ?? -1) || a.id.localeCompare(b.id))
     .slice(0, RETRIEVE.lodgingPoolSize)
     .concat([...outsideLodgings.values()]);
-  const tableOf = (list: readonly Candidate[]) =>
-    ['id|이름|분류|인기|혼잡|영업|요약']
-      .concat(list.map((c) => [c.id, c.name, (c.category ?? '-').replace(/\s*\/\s*/g, '/'), c.popularity ?? '-', c.crowd ?? '-', c.hours ?? '-', c.summary.replaceAll('|', '/')].join('|')))
-      .join('\n');
-  const table = tableOf(candidates);
 
   // 꼭 지킬 것(넣기)이 후보에 하나도 없으면 표시 없이 빠지지 않게 까닭과 함께 남김 (4단계 안건 메모). 여행지 밖 메모가 있는 규칙은 거기서 이미 알림
   const pool = [...candidates, ...lodgings];
@@ -562,10 +553,8 @@ export async function retrieveCandidates(
     destination,
     dates,
     candidates,
-    table,
     nights,
     lodgings,
-    lodgingTable: nights > 0 ? tableOf(lodgings) : '',
     stages: [
       { label: '지역·후보 유형', count: rows.filter((p) => !isLodging(p)).length },
       { label: '축제 날짜·휴무일·꼭 피할 것을 거른 뒤', count: scored.length },

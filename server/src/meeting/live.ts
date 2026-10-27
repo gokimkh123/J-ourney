@@ -1,3 +1,4 @@
+import { WebSocketServer } from 'ws';
 import type { Db } from '../db/client.js';
 import { nowKst } from '../lib/time.js';
 import { type EventPublisher, type MeetingEnvelope, eventsAfter } from './runs.js';
@@ -6,8 +7,12 @@ import { type EventPublisher, type MeetingEnvelope, eventsAfter } from './runs.j
  * 실시간 연결(WebSocket) 규칙 값
  * pingMs: 연결이 살아 있는지 보내는 간격 (명세서 5장 ping 25초)
  * perMember: 구성원 1명이 동시에 여는 연결 수 (10/19 사용자 결정 2개). 넘으면 가장 오래된 연결을 닫음 (끊긴 연결이 남아도 새 연결이 바로 붙게)
+ * maxPayloadBytes: 앱이 보내는 글 하나의 상한. 서버는 앱의 글을 받지 않으므로 작게 두고, 넘으면 연결을 닫음 (ws 기본 100MB를 메모리에 모으지 않게)
  */
-export const LIVE = { pingMs: 25_000, perMember: 2 } as const;
+export const LIVE = { pingMs: 25_000, perMember: 2, maxPayloadBytes: 1024 } as const;
+
+/** 서버가 쓰는 WebSocket 받는 곳 (HTTP 서버의 업그레이드로만 받음, 앱이 보내는 글은 maxPayloadBytes까지) */
+export const liveSocketServer = () => new WebSocketServer({ noServer: true, maxPayload: LIVE.maxPayloadBytes });
 
 type Listener = (e: MeetingEnvelope) => void;
 
@@ -39,6 +44,11 @@ export class EventHub implements EventPublisher {
   /** 지금 열린 연결 수 (시험·확인용) */
   listening(tripId: string): number {
     return this.listeners.get(tripId)?.size ?? 0;
+  }
+
+  /** 메모리에 남은 여행·구성원 항목 수 (시험·확인용, 연결이 모두 닫히면 0) */
+  entries(): { trips: number; members: number } {
+    return { trips: this.listeners.size, members: this.sockets.size };
   }
 
   /** 구성원의 연결을 등록하고, perMember를 넘으면 가장 오래된 연결을 닫음. 돌려준 함수로 등록을 지움 */

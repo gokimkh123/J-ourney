@@ -370,12 +370,39 @@ describe('성향 질문·페르소나 API', () => {
     expect([await submit(), await submit(), await submit()]).toEqual(['rule', 'llm', 'rule']);
   });
 
-  it('같은 구성원이 동시에 여러 번 제출해도 AI 카드는 상한까지만 만듦', async () => {
+  it('같은 구성원이 같은 응답을 동시에 여러 번 내면 차례로 처리해 LLM은 한 번만 부름 (나머지는 앞 카드)', async () => {
     const llm = fakeLlm(() => draft());
     const { app, token } = await setup({ llm, llmCardsPerMember: 2 });
     const results = await Promise.all(Array.from({ length: 6 }, () => call(app, 'POST', '/me/persona', { answers: seoyeon() }, token)));
+    expect(results.map((r) => r.status)).toEqual(Array(6).fill(201));
+    expect(new Set(results.map((r) => r.body.persona.title)).size).toBe(1);
+    expect(results.every((r) => r.body.persona.source === 'llm')).toBe(true);
+    expect(llm.calls).toBe(1);
+  });
+
+  it('같은 구성원이 다른 응답을 동시에 여러 번 내도 AI 카드는 상한까지만 만듦', async () => {
+    const llm = fakeLlm(() => draft());
+    const { app, token } = await setup({ llm, llmCardsPerMember: 2 });
+    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => call(app, 'POST', '/me/persona', { answers: seoyeon(`바다 보고 싶음 ${i}`) }, token)));
     expect(results.filter((r) => r.body.persona.source === 'llm')).toHaveLength(2);
     expect(llm.calls).toBe(2);
+  });
+
+  it('카드를 만드는 사이 회의가 시작되면 저장하지 않고 MEETING_IN_PROGRESS(409)', async () => {
+    let db!: Awaited<ReturnType<typeof setup>>['db'];
+    let tripId = '';
+    // LLM이 답하는 사이 회의가 시작된 것처럼 여행 상태를 바꿈
+    const llm = fakeLlm(async () => {
+      await db.update(trips).set({ status: 'meeting' }).where(eq(trips.id, tripId));
+      return draft();
+    });
+    const t = await setup({ llm });
+    db = t.db;
+    tripId = t.host.body.trip.id;
+    const res = await call(t.app, 'POST', '/me/persona', { answers: seoyeon() }, t.token);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('MEETING_IN_PROGRESS');
+    expect(await db.select().from(personas)).toHaveLength(0);
   });
 
   it('회의가 시작된 여행에서는 MEETING_IN_PROGRESS(409)', async () => {
