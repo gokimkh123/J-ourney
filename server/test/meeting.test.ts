@@ -513,6 +513,64 @@ describe('후보 찾기 (2단계, 코드)', () => {
     expect(whole.outsideRules).toEqual([]);
     expect(whole.candidates.some((c) => c.outside)).toBe(false);
   });
+
+  describe('10/27 검증 뒤 고침 (사용자 결정)', () => {
+    const extra = (id: string, type: number, title: string, lcls3: string, o: { district?: string; lat?: number; lng?: number } = {}) => ({
+      contentId: id, contentTypeId: type, title, regionCode: '26', districtCode: o.district ?? '500', lcls1: lcls3.slice(0, 2), lcls3,
+      lat: o.lat ?? 35.153, lng: o.lng ?? 129.119, visible: true, listRaw: {}, introRaw: { restdate: '연중무휴' }, detailSyncedAt: new Date(),
+    });
+    const twoDays = { ...CONDITIONS, endDate: '2026-11-08' };
+    const mustOf = (r: Awaited<ReturnType<typeof retrieveCandidates>>, id: string, who: string) =>
+      [...r.candidates, ...r.lodgings].find((c) => c.id === id)?.marks[who]?.some((k) => k.kind === 'must') ?? false;
+
+    it('장소 이름 규칙: 이름이 같은 곳 중 관광지가 있으면 숙소·가게(이름에 같은 낱말이 든 펜션·매장)는 꼭 지킬 곳이 아님, 식당만 맞으면 그대로', async () => {
+      const { db } = await createTestApp();
+      await seedDb(db);
+      await db.insert(places).values([extra('shop1', 38, '앤더슨벨 광안리해수욕장 스토어', 'SH050200'), extra('pen1', 32, '광안리해수욕장 펜션', 'AC030100')]);
+      const fan: MemberInput = { ...MEMBERS[1], memberId: 'm7', mustKeep: [rule('include', '광안리해수욕장', '광안리 가기', 'place'), rule('include', '이재모피자', '이재모피자 가기', 'place')] };
+      const r = await retrieveCandidates(db, { conditions: twoDays, destination: DEST, members: [fan], crowdClient: null, today: '2026-11-01' });
+      expect(mustOf(r, 'p1', 'm7')).toBe(true);
+      expect(mustOf(r, 'shop1', 'm7')).toBe(false);
+      expect(mustOf(r, 'pen1', 'm7')).toBe(false); // 숙소 고르기는 꼭 지킬 숙소를 먼저 고르므로, 이름만 같은 펜션이 숙소로 뽑히지 않게
+      expect(mustOf(r, 'p14', 'm7')).toBe(true); // 이재모피자: 식당만 맞으면 그 식당이 꼭 지킬 곳
+    });
+
+    it('여행지로 가는 곳이 아닌 시설(사후면세점·도서관·골프장 등 공식 분류)은 후보에서 빼고, 누군가 꼭 지킬 것으로 고른 곳만 넣음', async () => {
+      const { db } = await createTestApp();
+      await seedDb(db);
+      await db.insert(places).values([extra('olive', 38, '체인화장품 광안점', 'SH040300'), extra('lib', 14, '수영구립도서관', 'VE090300'), extra('golf', 28, '바다골프클럽', 'LS010400')]);
+      const r = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: MEMBERS, crowdClient: null, today: '2026-11-01' });
+      for (const id of ['olive', 'lib', 'golf']) expect(r.candidates.some((c) => c.id === id)).toBe(false);
+      expect(r.excluded.find((e) => e.reason === '여행지로 가는 곳이 아닌 시설')?.count).toBe(3);
+      // 꼭 지킬 것으로 고른 종류는 넣음 (예: 도서관 가기)
+      const reader: MemberInput = { ...MEMBERS[1], memberId: 'm9', mustKeep: [rule('include', '도서관', '도서관 가기', 'category', ['VE090300'])] };
+      const kept = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [reader], crowdClient: null, today: '2026-11-01' });
+      expect(mustOf(kept, 'lib', 'm9')).toBe(true);
+      expect(kept.candidates.some((c) => c.id === 'golf')).toBe(false);
+    });
+
+    it('이름 맞추기(LLM)에 보여 주는 후보에서 숙소·가게는 뺌 (식당은 남김)', async () => {
+      const { db } = await createTestApp();
+      await seedDb(db);
+      await db.insert(places).values([
+        extra('xsky', 12, '부산엑스더스카이', 'VE010200', { district: '350', lat: 35.16, lng: 129.17 }),
+        extra('resi', 32, '엘시티 레지던스', 'AC020200', { district: '350' }),
+        extra('gift', 38, '엘시티 기념품점', 'SH050300', { district: '350' }),
+      ]);
+      const fan: MemberInput = { ...MEMBERS[1], memberId: 'm7', mustKeep: [rule('include', '엘시티 전망대', '엘시티 전망대 가기', 'place')] };
+      let shown: string[] = [];
+      const matchNames: NameMatcher = async (rules, list) => {
+        shown = list.map((p) => p.title);
+        return new Map([[rules[0].key, ['xsky']]]);
+      };
+      const r = await retrieveCandidates(db, { conditions: twoDays, destination: DEST, members: [fan], crowdClient: null, today: '2026-11-01', matchNames });
+      expect(shown).toContain('부산엑스더스카이');
+      expect(shown).toContain('이재모피자');
+      expect(shown).not.toContain('엘시티 레지던스');
+      expect(shown).not.toContain('엘시티 기념품점');
+      expect(mustOf(r, 'xsky', 'm7')).toBe(true);
+    });
+  });
 });
 
 describe('회의 조건 API와 시험 경로', () => {

@@ -194,6 +194,27 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     expect(shared).toHaveLength(2); // 꼭 지킬 곳 + A의 1순위
   });
 
+  it('그날 쉬는 곳은 그날에 넣지 않고 다음 순위 곳으로 채우며, 꼭 지킬 곳은 여는 날로 옮김 (10/27 결정)', async () => {
+    const db = await testDb();
+    // 2026-11-07 토요일 · 11-08 일요일
+    const spa = near('온천', 5, { code: 'EX050100', rest: '매주 일요일', marks: { mem_1: [{ kind: 'must', label: '온천' }] } });
+    const museum = near('미술관', 6, { code: 'VE070600', rest: '매주 토요일', marks: { mem_2: [{ kind: 'must', label: '미술관' }] } });
+    const sundayOff = Array.from({ length: 6 }, (_, i) => near(`일요일휴무${i}`, i, { rest: '매주 일요일', popularity: 100 }));
+    const others = Array.from({ length: 10 }, (_, i) => near(`관광지${i}`, i + 6));
+    const cands = [spa, museum, ...sundayOff, ...others];
+    const members = [member('mem_1', {}, [], [include('온천')]), member('mem_2', {}, [], [include('미술관')])];
+    const [A, B] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07', '2026-11-08'], [near('호텔', 2, { type: 32, code: 'AC010100' })]), boardOf(cands), members);
+    for (const plan of [A, B]) {
+      const day = (d: number) => new Set(plan.route[d].stops.map((s) => s.placeId));
+      for (const c of [spa, ...sundayOff]) expect(day(1).has(`plc_${c.id}`)).toBe(false); // 일요일에 일요일 휴무인 곳 없음
+      expect(day(0).has(`plc_${museum.id}`)).toBe(false); // 토요일에 토요일 휴무인 곳 없음
+      expect(day(0).has(`plc_${spa.id}`)).toBe(true); // 꼭 지킬 곳은 여는 날로
+      expect(day(1).has(`plc_${museum.id}`)).toBe(true);
+      expect(sights(plan, 0)).toHaveLength(4); // 빈자리는 다음 순위 곳으로 채움 (하루 관광지 수 그대로)
+      expect(sights(plan, 1)).toHaveLength(4);
+    }
+  });
+
   it('✕가 붙은 곳은 빼되 5단계에서 사람이 남기기로 한 곳은 넣고, 사람이 뺀 곳은 다시 넣지 않음', async () => {
     const db = await testDb();
     const cands = Array.from({ length: 6 }, (_, i) => near(`관광지${i}`, i));

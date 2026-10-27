@@ -12,7 +12,7 @@ import type { NameMatcher, NamePlace, NameRule } from './names.js';
 import { popularity } from './popularity.js';
 import { districtsNamed, shortRegionName } from './regions.js';
 import { centerOf, oneWayMinutes } from './travel.js';
-import { type RulePlace, dislikeMatches, dislikeText, likeMatches, likeText, ruleMatcher } from './rules.js';
+import { type RulePlace, dislikeMatches, dislikeText, isDietAvoid, likeMatches, likeText, ruleMatcher } from './rules.js';
 import type { ResolvedDestination, TripConditions } from './types.js';
 
 /** 후보 찾기 규칙 값 (모두 여기서만 바꿈) */
@@ -60,7 +60,22 @@ export const RETRIEVE = {
    * 참고: 한국관광공사(2022) 야간관광 실태조사 이동 1시간 미만 51.1%·2시간 미만 81.6%, Dijst·Vidakovic(2000) 여가 활동은 이동이 (이동+머무는 시간)의 20–30%
    */
   outsideMaxMinutes: 75,
+  /**
+   * 여행지로 가는 곳이 아닌 시설의 공식 분류 (10/27 사용자 결정, 검증27에서 일정에 들어간 엉뚱한 곳): 후보에 넣지 않음. 단 누군가 꼭 지킬 것(넣기)으로 고른 곳은 넣음
+   * 사후면세점(체인 매장)·대형마트 · 공연장·영화관(공연·상영이 없으면 볼 것이 없음) · 컨벤션센터 · 문화원·도서관·학교 · 경기장·수련시설 · 교통시설 · 골프장(예약제)
+   * 10/19에 좋아요 분류에서 뺀 곳과 같은 선. '기타' 분류(기타쇼핑시설·기타체험관광·기타행사)는 좋은 곳이 섞여 있어 넣지 않음
+   */
+  notDestinationCodes: ['SH0403', 'SH0301', 'VE0601', 'VE0602', 'VE070400', 'VE0901', 'VE0902', 'VE0903', 'VE0906', 'VE1001', 'VE1002', 'VE11', 'LS010400'],
+  /**
+   * 숙소·가게의 공식 분류 (10/27 사용자 결정): 장소 이름으로 찾는 꼭 지킬 것에서, 이름이 같은 곳 중 숙소·가게가 아닌 곳이 있으면 숙소·가게는 꼭 지킬 곳으로 보지 않음
+   * (예: 경복궁 → 앤더슨벨 경복궁 스토어, 경포대 → 경포대 산호 펜션). 숙소·가게만 맞으면(예: 이재모피자) 그대로 씀
+   * 숙박 · 음식점·카페 · 면세점·전문매장·기타쇼핑시설 (시장·백화점·쇼핑몰은 가는 곳으로 봄)
+   */
+  businessCodes: ['AC', 'FD', 'SH04', 'SH05', 'SH07'],
 } as const;
+
+/** 숙소·가게인지 (공식 분류 코드로만 봄) */
+export const isBusiness = (code: string | null) => !!code && RETRIEVE.businessCodes.some((c) => code.startsWith(c));
 
 export interface MemberInput {
   memberId: string;
@@ -224,8 +239,8 @@ export async function retrieveCandidates(
     .where(eq(regions.regionCode, destination.regionCode));
   const ctx = { regionWords, districtsOf: (word: string) => districtsNamed(word, regionDistricts) };
   const includes = new Map(members.map((m) => [m.memberId, m.mustKeep.filter((r) => r.type === 'include').map((r) => ({ rule: r, matches: ruleMatcher(r, ctx) }))]));
-  const avoids = members.flatMap((m) => m.mustKeep.filter((r) => r.type === 'avoid').map((r) => ruleMatcher(r, ctx)));
-  const viewOf = (p: (typeof rows)[number]): RulePlace => ({
+  const avoids = members.flatMap((m) => m.mustKeep.filter((r) => r.type === 'avoid' && !isDietAvoid(r)).map((r) => ruleMatcher(r, ctx)));
+  const viewOf =(p: (typeof rows)[number]): RulePlace => ({
     id: p.id,
     title: p.title,
     code: p.lcls3,
@@ -233,6 +248,16 @@ export async function retrieveCandidates(
     isFood: p.type === RETRIEVE.foodType,
     menu: [intro(p.introRaw, 'firstmenu'), intro(p.introRaw, 'treatmenu')].filter(Boolean).join(' ') || null,
   });
+
+  // 장소 이름 규칙은 숙소·가게가 아닌 곳으로 맞을 때만 그 지역에서 지킨 것으로 봄 (이름에 같은 낱말이 든 펜션·가게만 있으면 여행지 밖·이름 맞추기에서 더 찾음)
+  const metIn = (views: readonly RulePlace[], k: { rule: MustKeepRule; matches: (v: RulePlace) => boolean }) =>
+    views.some((v) => k.matches(v) && (k.rule.target !== 'place' || !isBusiness(v.code)));
+  const notDestination = (code: string | null) => !!code && RETRIEVE.notDestinationCodes.some((c) => code.startsWith(c));
+  // 제외 분류라도 누군가 꼭 지킬 것으로 고른 곳은 넣음 (장소 이름 규칙은 숙소·가게가 아닌 곳일 때만: 이름에 같은 낱말이 든 매장은 넣지 않음)
+  const wanted = (p: (typeof rows)[number]) => {
+    const v = [viewOf(p)];
+    return [...includes.values()].some((list) => list.some((k) => metIn(v, k)));
+  };
 
   // ① 거르기 (빼는 이유와 예시를 남김)
   const excluded = new Map<string, string[]>();
@@ -247,6 +272,7 @@ export async function retrieveCandidates(
     }
     if (dates.every((d) => closedOn(intro(p.introRaw, ...REST_KEYS), d) === 'closed')) return '여행 날짜가 휴무일';
     if (avoids.some((matches) => matches(viewOf(p)))) return '누군가 꼭 피할 것에 걸림';
+    if (notDestination(p.lcls3) && !wanted(p)) return '여행지로 가는 곳이 아닌 시설';
     return null;
   };
   const kept = rows.filter((p) => {
@@ -260,7 +286,7 @@ export async function retrieveCandidates(
   const districtName = new Map(regionDistricts.map((r) => [r.districtCode, r.districtName]));
   const keptViews = kept.map(viewOf);
   const unmet = destination.districtCodes.length
-    ? members.flatMap((m) => (includes.get(m.memberId) ?? []).filter((k) => !keptViews.some(k.matches)).map((k) => ({ memberId: m.memberId, k })))
+    ? members.flatMap((m) => (includes.get(m.memberId) ?? []).filter((k) => !metIn(keptViews, k)).map((k) => ({ memberId: m.memberId, k })))
     : [];
   const unmetPlaces = unmet.filter((u) => u.k.rule.target !== 'area');
   const outsideRows = unmetPlaces.length
@@ -284,15 +310,17 @@ export async function retrieveCandidates(
   // 이름 맞추기 (LLM, 10/19 사용자 결정): 장소·음식 넣기 규칙이 이름·메뉴 글자로 시·도 안(여행지 + 같은 시·도의 다른 구·군) 어디에서도 맞지 않으면
   // 코드가 후보를 줄이고(글자 겹침·인기 순) LLM이 같은 곳을 고름. 맞춘 곳은 그 규칙의 꼭 지킬 곳이 됨 (예: 엘시티 전망대 = 부산엑스더스카이)
   const inRegion = [...kept, ...outsideRows];
+  const inRegionViews = inRegion.map(viewOf);
   const nameRules = members.flatMap((m) =>
     (includes.get(m.memberId) ?? [])
-      .filter((k) => (k.rule.target === 'place' || k.rule.target === 'food') && !!k.rule.keyword?.trim() && !inRegion.some((p) => k.matches(viewOf(p))))
+      .filter((k) => (k.rule.target === 'place' || k.rule.target === 'food') && !!k.rule.keyword?.trim() && !metIn(inRegionViews, k))
       .map((k) => ({ memberId: m.memberId, k })),
   );
   const nameMatches: RetrieveResult['nameMatches'] = [];
   if (nameRules.length && opts.matchNames) {
     const regionPop = await popularity(db, { regionCode: destination.regionCode, tripMonth, places: inRegion.map(toMatchable), regionWords });
-    const namePlaces: NamePlace[] = inRegion.map((p) => {
+    // LLM에 보여 주는 후보에서 숙소·가게는 뺌 (음식점은 음식·식당 이름 규칙에 필요해 남김). 예: 엘시티 전망대 → 엘시티 레지던스(숙소)로 맞춘 일 (10/27 검증)
+    const namePlaces: NamePlace[] = inRegion.filter((p) => !isBusiness(p.lcls3) || p.type === RETRIEVE.foodType).map((p) => {
       const v = viewOf(p);
       const summary = p.overview ? p.overview.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : null;
       return { id: p.id, title: p.title, category: (p.lcls3 && codeNames.get(p.lcls3)) ?? null, district: (p.districtCode && districtName.get(p.districtCode)) ?? null, isFood: v.isFood, menu: v.menu, summary, popularity: regionPop.scores.get(p.id) ?? null };
@@ -308,6 +336,13 @@ export async function retrieveCandidates(
       nameMatches.push({ memberId: x.memberId, label: x.k.rule.label, keyword: x.k.rule.keyword!.trim(), places: [...ids].map((id) => titleOf.get(id)!), ids: [...ids] });
     }
   }
+  // 장소 이름 규칙: 이름이 같은 곳 중 숙소·가게가 아닌 곳이 있으면 숙소·가게는 꼭 지킬 곳으로 보지 않음 (10/27 사용자 결정, 이름 맞추기로 찾은 곳 포함)
+  for (const list of includes.values())
+    for (const k of list) {
+      if (k.rule.target !== 'place' || !metIn(inRegionViews, k)) continue;
+      const base = k.matches;
+      k.matches = (v) => base(v) && !isBusiness(v.code);
+    }
   // 이름 맞추기로 여행지 안에서 찾은 규칙은 여행지 밖에서 찾지 않음
   const outsideMatches = unmetPlaces
     .filter((u) => !keptViews.some(u.k.matches))

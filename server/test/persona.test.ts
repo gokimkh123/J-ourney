@@ -168,16 +168,21 @@ describe('성향 질문·페르소나 API', () => {
     expect(row.mustKeep[0]).toMatchObject({ keyword: '온천', target: 'category', codes: ['EX050100'] });
   });
 
-  it('LLM 카드: 재료·맛(taste)은 규칙이 아니라 바라는 점으로 옮김', async () => {
+  it('LLM 카드: 먹는 것의 제약(taste·피할 음식)은 규칙에도 바람에도 넣지 않음, 꼭 먹을 음식은 남김 (10/27 결정)', async () => {
+    const text = '해산물은 못 먹고 회도 빼 주세요, 돼지국밥은 꼭';
     const llm = fakeLlm(() => ({
       ...draft(),
-      mustKeep: grouped([{ type: 'avoid', label: '해산물 빼기', quote: '해산물은 못 먹어요', keyword: '해산물', target: 'taste', codes: [], start: '', end: '', amount: 0 }]),
+      mustKeep: grouped([
+        { type: 'avoid', label: '해산물 빼기', quote: '해산물은 못 먹고', keyword: '해산물', target: 'taste', codes: [], start: '', end: '', amount: 0 },
+        { type: 'avoid', label: '회 빼기', quote: '회도 빼 주세요', keyword: '회', target: 'food', codes: [], start: '', end: '', amount: 0 },
+        { type: 'include', label: '돼지국밥 먹기', quote: '돼지국밥은 꼭', keyword: '돼지국밥', target: 'food', codes: [], start: '', end: '', amount: 0 },
+      ]),
       wishes: [],
     }));
     const { app, token } = await setup({ llm });
-    const res = await call(app, 'POST', '/me/persona', { answers: seoyeon('해산물은 못 먹어요') }, token);
-    expect(res.body.persona.mustKeep).toEqual([]);
-    expect(res.body.persona.wishes).toEqual(['해산물 피하기']);
+    const res = await call(app, 'POST', '/me/persona', { answers: seoyeon(text) }, token);
+    expect(res.body.persona.mustKeep).toEqual([{ type: 'include', label: '돼지국밥 먹기' }]);
+    expect(res.body.persona.wishes).toEqual([]);
   });
 
   it('LLM 카드: 원문에 없는 인용의 조건은 버리고, 여행 상세에 유형명이 보임', async () => {
