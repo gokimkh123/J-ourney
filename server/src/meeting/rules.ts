@@ -62,6 +62,12 @@ export function sameName(name: string, title: string, regionWords: readonly stri
 }
 
 /**
+ * 먹는 것의 개인 제약 (피할 음식: 회·해산물·고기 등). 10/27 사용자 결정: 알레르기·식단은 끝이 없어 조건으로 받지 않고, 식당은 사람이 최종 선택(14단계)에서 바꿈
+ * 새 카드는 만들지 않으며, 예전 카드에 남은 규칙도 후보·식당·AI 반응에 쓰지 않음
+ */
+export const isDietAvoid = (rule: Pick<MustKeepRule, 'type' | 'target'>) => rule.type === 'avoid' && rule.target === 'food';
+
+/**
  * '꼭 지킬 것'의 include·avoid 규칙 하나가 장소를 가리키는지 정하는 함수를 만듦
  * category: 성향 LLM이 고른 공식 분류 코드 (온천 → EX050100이라 온천천시민공원·온천시장은 해당 없음)
  * food: 음식점의 메뉴 칸에 그 음식이 있거나 음식점 이름에 그 음식 이름이 있을 때

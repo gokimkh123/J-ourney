@@ -78,9 +78,11 @@ const bigrams = (s: string) => {
   for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2));
   return out;
 };
-const overlap = (a: Set<string>, b: Set<string>) => {
+const squeeze = (s: string) => s.replace(/\s+/g, '');
+/** key의 두 글자 묶음 중 text(띄어쓰기를 뺀 글)에 들어 있는 수 = bigrams(text)와 겹치는 수 (글마다 묶음을 만들지 않아 빠름) */
+const hits = (key: Set<string>, text: string) => {
   let n = 0;
-  for (const x of a) if (b.has(x)) n++;
+  for (const g of key) if (text.includes(g)) n++;
   return n;
 };
 
@@ -91,12 +93,17 @@ const overlap = (a: Set<string>, b: Set<string>) => {
 export function nameInput(rules: readonly NameRule[], places: readonly NamePlace[]) {
   const picked = new Map<string, NamePlace>();
   const keys = rules.map((r) => bigrams(r.keyword));
+  // 장소마다 띄어쓰기를 뺀 이름·이름+메뉴·소개글을 한 번만 만듦 (규칙마다 다시 만들지 않음)
+  const texts = new Map(places.map((p) => [p, { title: squeeze(p.title), food: squeeze(`${p.title} ${p.menu ?? ''}`), summary: squeeze(p.summary ?? '') }]));
   for (const [i, r] of rules.entries()) {
     const key = keys[i];
     // 이름(음식은 메뉴도)에서 겹친 글자는 2배로, 소개글에서 겹친 글자는 1배로 셈
     places
       .filter((p) => (r.target === 'food' ? p.isFood : true))
-      .map((p) => ({ p, n: 2 * overlap(key, bigrams(r.target === 'food' ? `${p.title} ${p.menu ?? ''}` : p.title)) + overlap(key, bigrams(p.summary ?? '')) }))
+      .map((p) => {
+        const t = texts.get(p)!;
+        return { p, n: 2 * hits(key, r.target === 'food' ? t.food : t.title) + hits(key, t.summary) };
+      })
       .filter((x) => x.n > 0)
       .sort((a, b) => b.n - a.n || (b.p.popularity ?? -1) - (a.p.popularity ?? -1) || a.p.id.localeCompare(b.p.id))
       .slice(0, NAME_MATCH.overlapPerRule)

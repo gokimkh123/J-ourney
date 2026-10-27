@@ -1,4 +1,4 @@
-# 개발 서버 실행 구성 (학교 VM 준비 전까지 김건한 PC에서 사용)
+# 개발·시연 서버 실행 구성 (학교 VM에서 실행, 서버는 한 번에 한 컴퓨터에서만 켬)
 # 실행: server 폴더에서 docker compose up -d --build
 # 비밀값은 같은 폴더의 .env(git 제외)에서만 읽으며, 이 파일에는 변수 이름만 둠
 name: j-ourney
@@ -10,7 +10,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://journey:${POSTGRES_PASSWORD:?server/.env에 POSTGRES_PASSWORD가 필요함}@db:5432/journey
-      DEV_UI: "true" # 백엔드 시험 화면 /dev/ 제공 (운영 VM에서는 켜지 않음)
+      DEV_UI: ${DEV_UI:-true} # 백엔드 시험 화면 /dev/ 제공 (.env의 DEV_UI, 운영 서버에서는 false)
     ports:
       - "127.0.0.1:3000:3000" # 이 PC에서만 접속, 외부 공유는 tunnel로만 함
     depends_on:

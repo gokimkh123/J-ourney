@@ -168,16 +168,21 @@ describe('성향 질문·페르소나 API', () => {
     expect(row.mustKeep[0]).toMatchObject({ keyword: '온천', target: 'category', codes: ['EX050100'] });
   });
 
-  it('LLM 카드: 재료·맛(taste)은 규칙이 아니라 바라는 점으로 옮김', async () => {
+  it('LLM 카드: 먹는 것의 제약(taste·피할 음식)은 규칙에도 바람에도 넣지 않음, 꼭 먹을 음식은 남김 (10/27 결정)', async () => {
+    const text = '해산물은 못 먹고 회도 빼 주세요, 돼지국밥은 꼭';
     const llm = fakeLlm(() => ({
       ...draft(),
-      mustKeep: grouped([{ type: 'avoid', label: '해산물 빼기', quote: '해산물은 못 먹어요', keyword: '해산물', target: 'taste', codes: [], start: '', end: '', amount: 0 }]),
+      mustKeep: grouped([
+        { type: 'avoid', label: '해산물 빼기', quote: '해산물은 못 먹고', keyword: '해산물', target: 'taste', codes: [], start: '', end: '', amount: 0 },
+        { type: 'avoid', label: '회 빼기', quote: '회도 빼 주세요', keyword: '회', target: 'food', codes: [], start: '', end: '', amount: 0 },
+        { type: 'include', label: '돼지국밥 먹기', quote: '돼지국밥은 꼭', keyword: '돼지국밥', target: 'food', codes: [], start: '', end: '', amount: 0 },
+      ]),
       wishes: [],
     }));
     const { app, token } = await setup({ llm });
-    const res = await call(app, 'POST', '/me/persona', { answers: seoyeon('해산물은 못 먹어요') }, token);
-    expect(res.body.persona.mustKeep).toEqual([]);
-    expect(res.body.persona.wishes).toEqual(['해산물 피하기']);
+    const res = await call(app, 'POST', '/me/persona', { answers: seoyeon(text) }, token);
+    expect(res.body.persona.mustKeep).toEqual([{ type: 'include', label: '돼지국밥 먹기' }]);
+    expect(res.body.persona.wishes).toEqual([]);
   });
 
   it('LLM 카드: 원문에 없는 인용의 조건은 버리고, 여행 상세에 유형명이 보임', async () => {
@@ -370,12 +375,39 @@ describe('성향 질문·페르소나 API', () => {
     expect([await submit(), await submit(), await submit()]).toEqual(['rule', 'llm', 'rule']);
   });
 
-  it('같은 구성원이 동시에 여러 번 제출해도 AI 카드는 상한까지만 만듦', async () => {
+  it('같은 구성원이 같은 응답을 동시에 여러 번 내면 차례로 처리해 LLM은 한 번만 부름 (나머지는 앞 카드)', async () => {
     const llm = fakeLlm(() => draft());
     const { app, token } = await setup({ llm, llmCardsPerMember: 2 });
     const results = await Promise.all(Array.from({ length: 6 }, () => call(app, 'POST', '/me/persona', { answers: seoyeon() }, token)));
+    expect(results.map((r) => r.status)).toEqual(Array(6).fill(201));
+    expect(new Set(results.map((r) => r.body.persona.title)).size).toBe(1);
+    expect(results.every((r) => r.body.persona.source === 'llm')).toBe(true);
+    expect(llm.calls).toBe(1);
+  });
+
+  it('같은 구성원이 다른 응답을 동시에 여러 번 내도 AI 카드는 상한까지만 만듦', async () => {
+    const llm = fakeLlm(() => draft());
+    const { app, token } = await setup({ llm, llmCardsPerMember: 2 });
+    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => call(app, 'POST', '/me/persona', { answers: seoyeon(`바다 보고 싶음 ${i}`) }, token)));
     expect(results.filter((r) => r.body.persona.source === 'llm')).toHaveLength(2);
     expect(llm.calls).toBe(2);
+  });
+
+  it('카드를 만드는 사이 회의가 시작되면 저장하지 않고 MEETING_IN_PROGRESS(409)', async () => {
+    let db!: Awaited<ReturnType<typeof setup>>['db'];
+    let tripId = '';
+    // LLM이 답하는 사이 회의가 시작된 것처럼 여행 상태를 바꿈
+    const llm = fakeLlm(async () => {
+      await db.update(trips).set({ status: 'meeting' }).where(eq(trips.id, tripId));
+      return draft();
+    });
+    const t = await setup({ llm });
+    db = t.db;
+    tripId = t.host.body.trip.id;
+    const res = await call(t.app, 'POST', '/me/persona', { answers: seoyeon() }, t.token);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('MEETING_IN_PROGRESS');
+    expect(await db.select().from(personas)).toHaveLength(0);
   });
 
   it('회의가 시작된 여행에서는 MEETING_IN_PROGRESS(409)', async () => {

@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
@@ -6,7 +6,9 @@ import { MAX_MEMBERS, members, personas, trips } from '../db/schema.js';
 import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken, newId, newInviteCode, newToken } from '../lib/ids.js';
+import { failureLimit } from '../lib/rate-limit.js';
 import { parseBody } from '../lib/validate.js';
+import { activeMeetingOf } from '../meeting/runs.js';
 import { DestinationError, resolveDestination } from '../meeting/regions.js';
 import { DEMO_SEEDS, seedPersona } from '../persona/seeds.js';
 import { todayKst } from '../lib/time.js';
@@ -15,6 +17,8 @@ import { memberView, tripView } from './views.js';
 /** 입력 길이 상한 (명세서 4.2) */
 const TITLE_MAX = 40;
 const NICKNAME_MAX = 20;
+/** IP 하나가 1분에 틀릴 수 있는 초대 코드 수 (넘으면 그 1분 동안 초대 조회·참여를 막음, 6자리 코드 맞추기 방지) */
+const INVITE_MISSES_PER_MINUTE = 20;
 
 const nickname = z.string().trim().min(1, '닉네임을 입력해야 함').max(NICKNAME_MAX, `닉네임은 ${NICKNAME_MAX}자 이하여야 함`);
 const createTripBody = z.object({
@@ -52,6 +56,7 @@ const conditionsBody = z
 export function tripRoutes(db: Db) {
   const r = new Hono<AuthEnv>();
   const auth = requireMember(db);
+  const inviteMisses = failureLimit(INVITE_MISSES_PER_MINUTE);
 
   // 구성원과 페르소나 유형명(없으면 null)을 참여 순서대로 가져옴
   const listMembers = async (tripId: string) =>
@@ -102,27 +107,34 @@ export function tripRoutes(db: Db) {
 
   // 초대 정보·준비 현황 (인증 불필요)
   r.get('/invites/:inviteCode', async (c) => {
+    inviteMisses.check(c);
     const [trip] = await db
       .select()
       .from(trips)
       .where(eq(trips.inviteCode, c.req.param('inviteCode').toUpperCase()))
       .limit(1);
-    if (!trip) throw new ApiError('NOT_FOUND', '초대 코드를 찾을 수 없음');
+    if (!trip) {
+      inviteMisses.fail(c);
+      throw new ApiError('NOT_FOUND', '초대 코드를 찾을 수 없음');
+    }
     return c.json({ trip: tripView(trip), members: await listMembers(trip.id) });
   });
 
-  // 여행 참여 (인증 불필요): 방장 포함 최대 4명
+  // 여행 참여 (인증 불필요): 방장 포함 최대 4명, 회의를 시작하기 전까지만
   r.post('/invites/:inviteCode/join', async (c) => {
+    inviteMisses.check(c);
     const body = await parseBody(c, joinBody);
     const token = newToken();
     const { trip, member } = await db.transaction(async (tx) => {
-      // 동시에 참여해도 인원 상한을 넘지 않도록 여행 행을 잠근 뒤 인원을 셈
+      // 동시에 참여해도 인원 상한을 넘지 않도록 여행 행을 잠근 뒤 인원을 셈 (회의 시작도 같은 행을 잠가 차례로 돎)
       const [trip] = await tx
         .select()
         .from(trips)
         .where(eq(trips.inviteCode, c.req.param('inviteCode').toUpperCase()))
         .for('update');
-      if (!trip) throw new ApiError('NOT_FOUND', '초대 코드를 찾을 수 없음');
+      if (!trip) return { trip: null, member: null };
+      // 회의를 시작한 뒤 들어온 사람은 회의·사람 확인(인원수)에 들어가지 않으므로 받지 않음 (시험 경로 회의는 여행 상태를 바꾸지 않아 진행 중인 회의도 봄)
+      if (trip.status !== 'preparing' || (await activeMeetingOf(tx, trip.id))) throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작된 여행에는 참여할 수 없음');
       const joined = await tx.select({ id: members.id }).from(members).where(eq(members.tripId, trip.id));
       if (joined.length >= MAX_MEMBERS) {
         throw new ApiError('TRIP_FULL', `참가 인원이 가득 참 (방장 포함 최대 ${MAX_MEMBERS}명)`);
@@ -133,6 +145,10 @@ export function tripRoutes(db: Db) {
         .returning();
       return { trip, member };
     });
+    if (!trip || !member) {
+      inviteMisses.fail(c);
+      throw new ApiError('NOT_FOUND', '초대 코드를 찾을 수 없음');
+    }
     return c.json({ trip: tripView(trip), member: memberView(member, null), token }, 201);
   });
 
@@ -161,7 +177,13 @@ export function tripRoutes(db: Db) {
       if (err instanceof DestinationError) throw new ApiError('VALIDATION_ERROR', err.message);
       throw err;
     }
-    await db.update(trips).set({ conditions: body, regionCode: destination.regionCode, districtCodes: destination.districtCodes }).where(eq(trips.id, trip.id));
+    // 목적지를 찾는 사이 회의가 시작됐으면 저장하지 않음 (회의 시작이 여행 행을 잠그고 상태를 바꾸므로 조건부로 저장)
+    const saved = await db
+      .update(trips)
+      .set({ conditions: body, regionCode: destination.regionCode, districtCodes: destination.districtCodes })
+      .where(and(eq(trips.id, trip.id), eq(trips.status, 'preparing')))
+      .returning({ id: trips.id });
+    if (!saved.length) throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작되어 조건을 바꿀 수 없음');
     return c.json({ conditions: body, destination: { regionCode: destination.regionCode, label: destination.label } });
   });
 

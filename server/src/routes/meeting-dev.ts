@@ -1,14 +1,14 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { MAX_MEMBERS, meetings, trips } from '../db/schema.js';
+import { MAX_MEMBERS, meetings } from '../db/schema.js';
 import { type AccessKey, requireGrant } from '../lib/access.js';
 import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { tunnelIp } from '../lib/rate-limit.js';
 import { parseBody } from '../lib/validate.js';
-import { type MeetingStateType, buildMeetingGraph, loadMeetingInput, meetingGraphShape } from '../meeting/graph.js';
+import { type MeetingStateType, buildMeetingGraph, meetingGraphShape } from '../meeting/graph.js';
 import type { EventHub } from '../meeting/live.js';
 import { REACT, reactionScore } from '../meeting/react.js';
 import { type MeetingLimits, eventsAfter } from '../meeting/runs.js';
@@ -162,10 +162,10 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
    * 시험 화면에서 다시 실행하면 사람 확인을 기다리던 이 여행의 이전 회의는 그만둠 (공식 경로는 진행 중이면 MEETING_IN_PROGRESS)
    */
   r.post('/dev/meeting/run', requireMember(db), async (c) => {
-    const tripId = c.get('member').tripId;
-    await loadMeetingInput(db, tripId); // 조건·성향이 준비되지 않았으면 그만두지 않고 오류
-    const abandoned = await db.update(meetings).set({ status: 'failed', finishedAt: new Date() }).where(and(eq(meetings.tripId, tripId), eq(meetings.status, 'reviewing'))).returning({ id: meetings.id });
-    if (abandoned.length) await db.update(trips).set({ status: 'preparing' }).where(and(eq(trips.id, tripId), eq(trips.status, 'meeting')));
+    const me = c.get('member');
+    if (!me.isHost) throw new ApiError('FORBIDDEN', '회의는 방장만 시작할 수 있음');
+    const tripId = me.tripId;
+    const access = requireGrant(c, accessKeys);
     const stream = ndjson();
     const started = Date.now();
     const observer: MeetingObserver = {
@@ -173,8 +173,10 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
       trace: (e) => stream.send({ kind: 'llm', type: e.type, data: e.data }),
       node: (node, ms) => stream.send({ kind: 'node', node, ms }),
     };
+    // 사람 확인을 기다리던 이전 회의는 새 회의를 열 수 있을 때만 그만둠 (조건·성향·횟수 확인을 먼저 함)
     const { meeting, done } = await service.start(tripId, {
-      access: requireGrant(c, accessKeys),
+      access,
+      replaceReviewing: true,
       observer,
       onStart: (m) => stream.send({ kind: 'meeting', meetingId: m.id, runNo: m.runNo, limit: limits.runsPerTrip }),
     });

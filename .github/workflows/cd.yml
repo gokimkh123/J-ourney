@@ -17,6 +17,8 @@ concurrency:
 jobs:
   image:
     name: 서버 이미지 빌드·GHCR 저장
+    # 수동 실행(workflow_dispatch)도 main에서만 저장함 (다른 브랜치 이미지가 latest를 덮지 않게)
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/j-ourney-server

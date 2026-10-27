@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src=".github/assets/banner.webp" alt="J-ourney 여행회의 — 여행 취향은 AI가 조율하고, 최종 일정은 사람이 결정함" width="100%">
+<img src=".github/assets/banner.webp" alt="J-ourney 여행회의 — 단체 여행 일정, 누가 다 짜고 있나요?" width="100%">
 
 <br>
 
-**구성원마다 성향을 담은 AI가 대신 회의하고, 사람은 갈린 안건과 최종안만 투표하는 단체 여행 플래너**
+**LangGraph 기반, 취향을 담은 페르소나 에이전트들이 회의해 짜는 단체 여행 일정**
 
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
@@ -30,34 +30,34 @@
 
 ## 1. 소개
 
-> **문제** 단체 여행은 한 명이 조사·조율을 떠안고, 취향이 달라 결정이 어려움<br>
-> **해결** LangGraph 멀티에이전트로 구성원마다 AI가 대신 회의하고, 갈린 안건과 최종안만 사람이 투표함
+> **문제** 장소 찾기부터 의견 모으기까지 한 사람이 다 맡고, 취향이 달라 정하기도 어려움<br>
+> **해결** 구성원별 페르소나 에이전트가 먼저 회의하고, 사람은 의견이 갈린 장소와 최종안만 고름
 
 <table>
   <tr>
-    <th width="25%">① 나를 대신하는 AI</th>
-    <th width="25%">② 동시에 조사하는 AI</th>
-    <th width="25%">③ AI끼리 협의·재평가</th>
+    <th width="25%">① 내 취향 반영 AI 페르소나</th>
+    <th width="25%">② 멀티에이전트 여행지 조사</th>
+    <th width="25%">③ 에이전트 간 협의·재평가</th>
     <th width="25%">④ 결정은 사람 투표</th>
   </tr>
   <tr>
-    <td align="center"><img src=".github/assets/screen-1-persona.webp" alt="성향 설문으로 만든 AI 캐릭터 카드 화면" width="200"></td>
-    <td align="center"><img src=".github/assets/screen-2-research.webp" alt="지도 위에서 AI 4명이 후보를 고르는 화면" width="200"></td>
-    <td align="center"><img src=".github/assets/screen-3-deliberate.webp" alt="AI 4명의 평균 만족도를 보고 고쳐서 다시 평가하는 화면" width="200"></td>
+    <td align="center"><img src=".github/assets/screen-1-persona.webp" alt="성향 설문으로 만든 페르소나 에이전트 카드 화면" width="200"></td>
+    <td align="center"><img src=".github/assets/screen-2-research.webp" alt="지도 위에서 에이전트 4개가 후보를 조사하는 화면" width="200"></td>
+    <td align="center"><img src=".github/assets/screen-3-deliberate.webp" alt="에이전트 4개의 평균 만족도를 보고 고쳐서 다시 평가하는 화면" width="200"></td>
     <td align="center"><img src=".github/assets/screen-4-vote.webp" alt="A안·B안 확정 투표 화면" width="200"></td>
   </tr>
   <tr>
-    <td>15문항 성향 설문으로 구성원마다 AI 1개 생성</td>
-    <td>지도 위 후보 40곳에서 AI마다 취향에 맞는 3곳 선정</td>
+    <td>15문항 성향 설문으로 구성원마다 페르소나 에이전트 생성</td>
+    <td>지도 위 후보 40곳에서 에이전트마다 취향에 맞는 3곳 선정</td>
     <td>AI 예상 만족도 평균 7점 미만이면 수정 후 재평가 (최대 5라운드)</td>
-    <td>AI가 합의한 일정안(A안·B안) 중 사람이 과반 투표로 확정</td>
+    <td>에이전트끼리 합의한 일정안(A안·B안) 중 사람이 과반 투표로 확정</td>
   </tr>
 </table>
 
-- 성향 설문(15문항) 응답으로 구성원별 캐릭터 카드(AI)를 만듦
-- 공공 관광 데이터(한국관광공사 TourAPI·관광 빅데이터)로 찾은 후보 장소를 AI가 동시에 고르고, 공용 후보 보드에서 👍·⚠·✕로 의견을 나눔
+- 성향 설문(15문항) 응답으로 구성원별 페르소나 에이전트(캐릭터 카드)를 만듦
+- 공공 관광 데이터(한국관광공사 TourAPI·관광 빅데이터)로 찾은 후보 장소를 에이전트들이 동시에 고르고, 공용 후보 보드에서 👍·⚠·✕로 의견을 나눔
 - 의견이 갈리는 장소는 사람이 남길지 뺄지 정함
-- 코드가 동선·식당·가는 길(카카오 길찾기)을 계산해 일정안 2개(A안·B안)를 짜고, AI가 평가와 수정을 반복함
+- 코드가 동선·식당·가는 길(카카오 길찾기)을 계산해 일정안 2개(A안·B안)를 짜고, 에이전트가 평가하면 코드가 고쳐 다시 평가함
 - 사람이 투표로 하나를 고르며(과반, 2:2면 방장), 추천 항목마다 선정 근거와 지도 링크를 제공함
 - 화면 속 수치는 설명용 예시임
 
@@ -73,20 +73,20 @@
 
 ```mermaid
 flowchart LR
-    subgraph S1["① 조사 · AI가 대신"]
+    subgraph S1["① 조사 · 페르소나 에이전트"]
         direction TB
         IN(["👥 구성원 2–4명<br/>여행 조건·성향 설문"]) --> FIND["후보 찾기<br/>TourAPI 후보 40곳"]
-        FIND -->|"Send × N"| PICK["AI 고르기 × N<br/>각자 취향에 맞는 3곳"]
+        FIND -->|"Send × N"| PICK["에이전트 고르기 × N<br/>각자 취향에 맞는 3곳"]
     end
-    subgraph S2["② 협의 · AI끼리"]
+    subgraph S2["② 협의 · 에이전트끼리"]
         direction TB
         BOARD["후보 보드<br/>👍 ⚠ ✕ 반응"] -->|"갈린 장소"| REVIEW{{"🙋 사람 확인<br/>interrupt"}}
         REVIEW --> PLAN["동선 짜기 A·B<br/>카카오 길찾기"]
-        BOARD -->|"안건 없음"| PLAN
+        BOARD -->|"갈린 장소 없음"| PLAN
     end
     subgraph S3["③ 결정 · 사람이"]
         direction TB
-        EVAL["AI 평가<br/>평균 7점 미만이면 수정 후 재평가"] -->|"통과"| VOTE{{"🗳️ 사람 투표<br/>과반 · 2:2면 방장"}}
+        EVAL["에이전트 평가<br/>평균 7점 미만이면 수정 후 재평가"] -->|"통과"| VOTE{{"🗳️ 사람 투표<br/>과반 · 2:2면 방장"}}
         VOTE --> DONE(["✅ 최종 일정<br/>날짜별 경로·선정 근거"])
     end
     S1 --> S2 --> S3
@@ -95,9 +95,9 @@ flowchart LR
 | LangGraph 기능 | 회의에서 하는 일 |
 | --- | --- |
 | StateGraph | 회의 단계를 하나의 그래프로 연결하고 흐름을 제어함 |
-| Send · Subgraph | 구성원 수(N)만큼 AI를 만들어 동시에 실행함 |
-| Reducer | AI별 결과를 공용 후보 보드로 합침 |
-| Conditional Edge | 갈린 안건이 있을 때만 사람 확인으로 보냄 |
+| Send · Subgraph | 구성원 수(N)만큼 페르소나 에이전트를 만들어 동시에 실행함 |
+| Reducer | 에이전트마다 추천한 후보를 합쳐 공용 후보 보드로 공유함 |
+| Conditional Edge | 의견이 갈린 장소가 있을 때만 사람 확인으로 보냄 |
 | Cycle | AI 예상 만족도 평균 7점 미만이면 수정 후 재평가함 (최대 5라운드) |
 | interrupt | 사람 확인·투표 동안 멈췄다가 결과를 받아 이어 감 |
 
@@ -109,7 +109,7 @@ flowchart LR
 
 - 회의 엔진은 LangGraph StateGraph로 만들며, 상태를 PostgreSQL 체크포인트에 저장해 사람 확인에서 멈춘 지점부터 이어 감
 - 회의 진행 이벤트는 WebSocket으로 앱 지도에 바로 보냄
-- 회의 엔진은 15단계로 설계했으며 단계마다 구현·검수함
+- 회의 엔진은 15단계로 설계했으며 단계마다 구현·검수함. 지금은 1–6단계(준비·후보 찾기·고르기·후보 보드·사람 확인·동선 짜기 A·B)를 구현했고 7단계(평가)부터 차례로 구현함
 
 ### 비용 설계
 
@@ -179,5 +179,6 @@ cp .env.example .env                      # API 키·POSTGRES_PASSWORD를 채움
 docker compose up -d --build              # 서버·PostgreSQL·터널 실행
 ```
 
+- 터널로 외부에 공개할 때는 `.env`의 `ACCESS_KEYS`로 접근 키를 정함 → 키(`X-Access-Key` 헤더)를 낸 요청만 회의 시작·AI 카드처럼 외부 API·LLM을 쓰는 기능을 씀
 - 실행 방법·API·회의 엔진의 자세한 설명은 [server/README.md](server/README.md)에 있음
 - 장소 정보 출처: ⓒ한국관광공사

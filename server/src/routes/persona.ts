@@ -6,7 +6,8 @@ import { personas, trips } from '../db/schema.js';
 import { type Access, type AccessKey, accessOf } from '../lib/access.js';
 import { type AuthEnv, type Member, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
-import { nowKst } from '../lib/time.js';
+import { laneQueue } from '../lib/lane.js';
+import { nowKst, todayKst } from '../lib/time.js';
 import { parseBody } from '../lib/validate.js';
 import type { LlmClient } from '../llm/client.js';
 import { tunnelIp } from '../lib/rate-limit.js';
@@ -86,10 +87,12 @@ async function makePersona(memberId: string, ip: string | null, answers: Persona
   const tunnelBlocked = ip !== null && !keyed && llmPerIpDaily === 0;
   // AI 카드 확인 순서: 구성원당 llmCardsPerMember회 → 터널 IP당 하루 llmPerIpDaily회 → 서버 전체 하루 상한 (하나라도 막히면 규칙 카드)
   if (llm && !tunnelBlocked && (await reserveLlmCard(db, memberId, llmCardsPerMember))) {
+    // 잡기·되돌리기가 같은 날짜 줄을 쓰도록 날짜를 한 번만 정함 (자정을 걸쳐 LLM을 기다려도 어긋나지 않게)
+    const day = todayKst();
     const key = ip === null || keyed ? null : ipKey(ip, ipHashSecret);
-    const ipReserved = key === null || (await reserveIpLlm(db, key, llmPerIpDaily));
+    const ipReserved = key === null || (await reserveIpLlm(db, key, llmPerIpDaily, day));
     let written = false;
-    if (ipReserved && (await tryConsumeLlmCall(db, llmDailyLimit))) {
+    if (ipReserved && (await tryConsumeLlmCall(db, llmDailyLimit, day))) {
       try {
         const draft = await llm.generateJson(req);
         await recorder?.record(req, draft);
@@ -102,7 +105,7 @@ async function makePersona(memberId: string, ip: string | null, answers: Persona
     // AI 카드를 못 만들었으면 앞에서 잡은 횟수를 되돌림 (실제로 만든 AI 카드만 셈)
     if (!written) {
       await releaseLlmCard(db, memberId);
-      if (ipReserved && key !== null) await releaseIpLlm(db, key);
+      if (ipReserved && key !== null) await releaseIpLlm(db, key, day);
     }
   }
   return done(card);
@@ -134,6 +137,8 @@ export function personaRoutes(deps: PersonaDeps) {
   const { db } = deps;
   const r = new Hono<AuthEnv>();
   const auth = requireMember(db);
+  // 같은 구성원의 제출은 차례로 처리함 (동시에 두 번 내도 LLM은 한 번만 부르고, 두 번째는 같은 응답이면 앞 카드를 그대로 씀)
+  const perMember = laneQueue();
 
   // 성향 문항 15개 (인증 불필요)
   r.get('/persona/questions', (c) => c.json({ questions: PUBLIC_QUESTIONS }));
@@ -142,19 +147,30 @@ export function personaRoutes(deps: PersonaDeps) {
   r.post('/me/persona', auth, async (c) => {
     const me = c.get('member');
     const answers = readAnswers((await parseBody(c, answersBody)).answers);
-    const [trip] = await db.select({ status: trips.status }).from(trips).where(eq(trips.id, me.tripId));
-    if (trip.status !== 'preparing') throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작되어 페르소나를 바꿀 수 없음');
-    // 같은 응답으로 다시 제출하면 이전 카드를 그대로 돌려줌 (LLM을 다시 부르지 않음)
-    const [prev] = await db.select().from(personas).where(eq(personas.memberId, me.id));
-    if (prev && sameAnswers(prev.answers, answers)) return c.json({ persona: personaView(me, prev) }, 201);
-    const keys = deps.accessKeys ?? [];
-    const made = await makePersona(me.id, tunnelIp(c), answers, keys.length ? accessOf(c, keys) : null, deps);
-    const [row] = await db
-      .insert(personas)
-      .values({ memberId: me.id, ...made })
-      .onConflictDoUpdate({ target: personas.memberId, set: { ...made, updatedAt: new Date() } })
-      .returning();
-    return c.json({ persona: personaView(me, row) }, 201);
+    const preparing = async (q: Pick<Db, 'select'>, lock = false) => {
+      const query = q.select({ status: trips.status }).from(trips).where(eq(trips.id, me.tripId));
+      const [trip] = lock ? await query.for('update') : await query;
+      if (trip.status !== 'preparing') throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작되어 페르소나를 바꿀 수 없음');
+    };
+    return perMember(me.id, async () => {
+      await preparing(db);
+      // 같은 응답으로 다시 제출하면 이전 카드를 그대로 돌려줌 (LLM을 다시 부르지 않음)
+      const [prev] = await db.select().from(personas).where(eq(personas.memberId, me.id));
+      if (prev && sameAnswers(prev.answers, answers)) return c.json({ persona: personaView(me, prev) }, 201);
+      const keys = deps.accessKeys ?? [];
+      const made = await makePersona(me.id, tunnelIp(c), answers, keys.length ? accessOf(c, keys) : null, deps);
+      // 카드를 만드는 사이 회의가 시작됐으면 저장하지 않음 (여행 행을 잠가 회의 시작과 차례로 돎)
+      const row = await db.transaction(async (tx) => {
+        await preparing(tx, true);
+        const [row] = await tx
+          .insert(personas)
+          .values({ memberId: me.id, ...made })
+          .onConflictDoUpdate({ target: personas.memberId, set: { ...made, updatedAt: new Date() } })
+          .returning();
+        return row;
+      });
+      return c.json({ persona: personaView(me, row) }, 201);
+    });
   });
 
   // 내 페르소나 조회

@@ -3,6 +3,7 @@ import { DISLIKE_OPTIONS, LIKE_OPTIONS } from '../persona/questions.js';
 import { FIELD_NAMES, cell, placeCells } from './pick.js';
 import { type AiReaction, REACT, REACTION_WEIGHT } from './react.js';
 import type { MemberInput, RetrieveResult } from './retrieve.js';
+import { isDietAvoid } from './rules.js';
 import { agentIdOf, placeIdOf } from './runs.js';
 import type { Board } from './types.js';
 
@@ -89,7 +90,7 @@ export function reactWishes(member: Pick<MemberInput, 'likes' | 'dislikes' | 'mu
   const all = [
     ...text(LIKE_OPTIONS, member.likes).map((t) => `${t} 좋아함`),
     ...text(DISLIKE_OPTIONS, member.dislikes).map((t) => `${t} 싫어함`),
-    ...member.mustKeep.filter((r) => r.type === 'include' || r.type === 'avoid').map((r) => r.label),
+    ...member.mustKeep.filter((r) => (r.type === 'include' || r.type === 'avoid') && !isDietAvoid(r)).map((r) => r.label),
     ...(member.wishes ?? []),
   ];
   return [...new Map(all.map((s) => [squash(s), s])).values()];
