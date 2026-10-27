@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq, lt, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { routeCache } from '../db/schema.js';
 import { tryConsumeTourCall } from '../tour/usage.js';
@@ -17,7 +17,22 @@ export const ROUTE = {
   perMeeting: 300,
   /** 자동차 길찾기에서 출발·도착 지점 주변 도로의 교통 장애(유고)로 경로를 못 찾은 결과 코드. 잠깐의 일이라 '경로 없음'으로 저장하지 않음 (10/23 확인: 106 '도착 지점 주변의 도로에 유고 정보가 있음') */
   carIncidentCodes: [105, 106],
+  /** 화면에 내보내는 길찾기 링크의 주소 (카카오가 준 링크라도 https의 이 주소가 아니면 버림, 10/26 저장분 95개 모두 map.kakao.com) */
+  linkHosts: ['map.kakao.com', 'm.map.kakao.com'],
 } as const;
+
+const DAY_MS = 86_400_000;
+
+/** 카카오가 준 길찾기 링크: https이고 ROUTE.linkHosts 주소일 때만 씀 (javascript: 같은 주소가 화면 링크로 들어가지 않게) */
+export function kakaoLink(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'https:' && (ROUTE.linkHosts as readonly string[]).includes(u.hostname) ? raw : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface TransitLeg {
   minutes: number;
@@ -97,14 +112,14 @@ export function kakaoRouter(opts: { restKey: string; mapBase: string; naviBase: 
         transfers: Number(p.transfers) || 0,
         type: String(p.type ?? ''),
         lines: [...lines].slice(0, 4),
-        url: typeof json.properties?.landingURL === 'string' ? json.properties.landingURL : null,
+        url: kakaoLink(json.properties?.landingURL),
       };
     },
     async walk(a, b) {
       const { json } = await get('kakao/walk', `${opts.mapBase}/v2/routing/walk?${query(a, b)}`);
       if (json.status !== 'OK' || !json.route) return null;
       const p = json.route.properties ?? {};
-      return { minutes: minutesOf(Number(p.totalTime) || 0), distanceM: Number(p.totalDistance) || 0, url: typeof p.landingUrl === 'string' ? p.landingUrl : null };
+      return { minutes: minutesOf(Number(p.totalTime) || 0), distanceM: Number(p.totalDistance) || 0, url: kakaoLink(p.landingUrl) };
     },
     async car(a, b) {
       const s = xy(a);
@@ -123,6 +138,15 @@ export function kakaoRouter(opts: { restKey: string; mapBase: string; naviBase: 
       };
     },
   };
+}
+
+/** 보관 날 수(ROUTE.cacheDays)가 지난 길찾기를 지움 (카카오 결과는 짧게만 보관, 매일 정리) */
+export async function pruneRouteCache(db: Db, now = new Date()): Promise<number> {
+  const rows = await db
+    .delete(routeCache)
+    .where(lt(routeCache.fetchedAt, new Date(now.getTime() - ROUTE.cacheDays * DAY_MS)))
+    .returning({ key: routeCache.key });
+  return rows.length;
 }
 
 /** 카카오 기능별 하루 호출 상한 (tour_api_usage 표에 기능 이름 kakao/…로 셈) */
@@ -150,11 +174,31 @@ export const newRouteMeter = (): RouteMeter => ({ calls: { transit: 0, walk: 0, 
 /**
  * 저장해 다시 쓰는 길찾기: ROUTE.cacheDays 안의 같은 구간은 카카오를 부르지 않음. 회의 한 번에 ROUTE.perMeeting번까지만 실제로 부름
  * inner가 null이면(키 없음) 저장된 결과만 쓰고 없으면 RouteUnavailable
+ * 회의 안에서 같은 구간은 한 번만 읽거나 부름 (A·B안이 같은 구간을 동시에 물어도 같은 결과를 기다림, 못 쓴 구간도 다시 부르지 않음)
  */
 export function cachedRouter(db: Db, inner: RouteClient | null, meter: RouteMeter, now: () => Date = () => new Date()): RouteClient {
-  const fresh = (fetchedAt: Date) => now().getTime() - fetchedAt.getTime() < ROUTE.cacheDays * 86400000;
-  async function through<T>(mode: 'transit' | 'walk' | 'car', a: Point, b: Point, ask: (r: RouteClient) => Promise<T | null>): Promise<T | null> {
+  const fresh = (fetchedAt: Date) => now().getTime() - fetchedAt.getTime() < ROUTE.cacheDays * DAY_MS;
+  const seen = new Map<string, { job: Promise<unknown>; at: Date }>();
+  function through<T>(mode: 'transit' | 'walk' | 'car', a: Point, b: Point, ask: (r: RouteClient) => Promise<T | null>): Promise<T | null> {
     const key = routeKey(mode, a, b);
+    const hit = seen.get(key);
+    // 다시 물으면 저장된 결과를 쓴 것으로 셈 (예전처럼 DB에서 다시 읽은 것과 같은 수)
+    if (hit && fresh(hit.at))
+      return hit.job.then(
+        (result) => {
+          meter.cached++;
+          return result as T | null;
+        },
+        (err) => {
+          meter.unavailable++;
+          throw err;
+        },
+      );
+    const job = lookup(key, mode, ask);
+    seen.set(key, { job, at: now() });
+    return job;
+  }
+  async function lookup<T>(key: string, mode: 'transit' | 'walk' | 'car', ask: (r: RouteClient) => Promise<T | null>): Promise<T | null> {
     const [row] = await db.select().from(routeCache).where(eq(routeCache.key, key)).limit(1);
     if (row && fresh(row.fetchedAt)) {
       meter.cached++;

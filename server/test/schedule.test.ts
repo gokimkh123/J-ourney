@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { categories, places, regions, routeCache } from '../src/db/schema.js';
 import type { MemberInput, Candidate, RetrieveResult } from '../src/meeting/retrieve.js';
-import { ROUTE, type RouteClient, RouteUnavailable, cachedRouter, kakaoRouter, newRouteMeter, routeKey } from '../src/meeting/route.js';
+import { ROUTE, type RouteClient, RouteUnavailable, cachedRouter, kakaoLink, kakaoRouter, newRouteMeter, routeKey } from '../src/meeting/route.js';
 import { SCHEDULE, type PlanProposal, duskKst, schedulePlans } from '../src/meeting/schedule.js';
 import { distanceKm } from '../src/meeting/travel.js';
 import type { Board, BoardCandidate, MoveMode, ReviewDecision } from '../src/meeting/types.js';
@@ -97,10 +97,8 @@ const poolOf = (candidates: Candidate[], dates: string[], lodgings: Candidate[] 
   destination: { regionCode: '26', regionName: '부산광역시', districtCodes: ['500'], label: '부산 수영구' },
   dates,
   candidates,
-  table: '',
   nights: dates.length - 1,
   lodgings,
-  lodgingTable: '',
   stages: [],
   excluded: [],
   popularity: { baseYm: null, matched: 0 },
@@ -194,6 +192,27 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     const shared = [...b].filter((id) => a.has(id));
     expect(shared).toContain(`plc_${cands[3].id}`); // A의 1순위 (고른 AI가 있는 곳)
     expect(shared).toHaveLength(2); // 꼭 지킬 곳 + A의 1순위
+  });
+
+  it('그날 쉬는 곳은 그날에 넣지 않고 다음 순위 곳으로 채우며, 꼭 지킬 곳은 여는 날로 옮김 (10/27 결정)', async () => {
+    const db = await testDb();
+    // 2026-11-07 토요일 · 11-08 일요일
+    const spa = near('온천', 5, { code: 'EX050100', rest: '매주 일요일', marks: { mem_1: [{ kind: 'must', label: '온천' }] } });
+    const museum = near('미술관', 6, { code: 'VE070600', rest: '매주 토요일', marks: { mem_2: [{ kind: 'must', label: '미술관' }] } });
+    const sundayOff = Array.from({ length: 6 }, (_, i) => near(`일요일휴무${i}`, i, { rest: '매주 일요일', popularity: 100 }));
+    const others = Array.from({ length: 10 }, (_, i) => near(`관광지${i}`, i + 6));
+    const cands = [spa, museum, ...sundayOff, ...others];
+    const members = [member('mem_1', {}, [], [include('온천')]), member('mem_2', {}, [], [include('미술관')])];
+    const [A, B] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07', '2026-11-08'], [near('호텔', 2, { type: 32, code: 'AC010100' })]), boardOf(cands), members);
+    for (const plan of [A, B]) {
+      const day = (d: number) => new Set(plan.route[d].stops.map((s) => s.placeId));
+      for (const c of [spa, ...sundayOff]) expect(day(1).has(`plc_${c.id}`)).toBe(false); // 일요일에 일요일 휴무인 곳 없음
+      expect(day(0).has(`plc_${museum.id}`)).toBe(false); // 토요일에 토요일 휴무인 곳 없음
+      expect(day(0).has(`plc_${spa.id}`)).toBe(true); // 꼭 지킬 곳은 여는 날로
+      expect(day(1).has(`plc_${museum.id}`)).toBe(true);
+      expect(sights(plan, 0)).toHaveLength(4); // 빈자리는 다음 순위 곳으로 채움 (하루 관광지 수 그대로)
+      expect(sights(plan, 1)).toHaveLength(4);
+    }
   });
 
   it('✕가 붙은 곳은 빼되 5단계에서 사람이 남기기로 한 곳은 넣고, 사람이 뺀 곳은 다시 넣지 않음', async () => {
@@ -381,6 +400,24 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
 describe('6단계 길찾기 저장·카카오 호출기', () => {
   const a = { lat: 35.15, lng: 129.1 };
   const b = { lat: 35.2, lng: 129.15 };
+
+  it('회의 안에서 같은 구간을 동시에 물어도 카카오는 한 번만 부름 (A·B안이 같은 구간을 함께 물을 때)', async () => {
+    const db = await testDb();
+    const { router, calls } = fakeRouter();
+    const meter = newRouteMeter();
+    const r = cachedRouter(db, router, meter);
+    await Promise.all([r.transit(a, b), r.transit(a, b), r.car(a, b), r.car(b, a)]);
+    expect(calls).toEqual({ transit: 1, walk: 0, car: 1 });
+    expect(meter).toMatchObject({ calls: { transit: 1, walk: 0, car: 1 }, cached: 2 });
+  });
+
+  it('카카오가 준 길찾기 링크는 https의 카카오맵 주소만 화면에 넘김', () => {
+    expect(kakaoLink('https://map.kakao.com/?sX=1&sY=2')).toBe('https://map.kakao.com/?sX=1&sY=2');
+    expect(kakaoLink('javascript:alert(1)')).toBeNull();
+    expect(kakaoLink('http://map.kakao.com/')).toBeNull();
+    expect(kakaoLink('https://map.kakao.com.evil.example/')).toBeNull();
+    expect(kakaoLink(42)).toBeNull();
+  });
 
   it('같은 구간은 7일 동안 저장해 다시 쓰고(자동차는 오가는 방향이 같은 구간), 회의당 상한을 넘으면 부르지 않음', async () => {
     const db = await testDb();

@@ -1,5 +1,5 @@
 import { Command } from '@langchain/langgraph';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { asc, desc, eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { meetingReviews, meetings, members, personas, trips } from '../db/schema.js';
 import type { AccessGrant } from '../lib/access.js';
@@ -11,7 +11,7 @@ import { type MeetingStateType, type SavedResults, type buildMeetingGraph, loadM
 import type { SavedNameMatch } from './names.js';
 import type { PickResult } from './pick.js';
 import { tallyReview } from './review.js';
-import { type EventPublisher, type MeetingEnvelope, type MeetingEventDraft, type MeetingLimits, eventRecorder, finishMeeting, isLlmTrace, startMeeting } from './runs.js';
+import { type EventPublisher, type MeetingEnvelope, type MeetingEventDraft, type MeetingLimits, eventRecorder, finishMeeting, isLlmTrace, reopenTrip, startMeeting } from './runs.js';
 import type { ReviewChoice, ReviewDecision, ReviewRequest, TripConditions } from './types.js';
 
 type MeetingGraph = ReturnType<typeof buildMeetingGraph>;
@@ -92,7 +92,7 @@ export function meetingService({ db, graph, limits, publisher, replay = false, l
       try {
         await finishMeeting(db, meeting.id, 'failed');
         // 공식 경로로 시작한 여행은 조건·성향을 고쳐 다시 시작할 수 있게 되돌림
-        await db.update(trips).set({ status: 'preparing' }).where(and(eq(trips.id, meeting.tripId), eq(trips.status, 'meeting')));
+        await reopenTrip(db, meeting.tripId);
       } catch (cleanupErr) {
         // 이 약속을 기다리는 곳이 없으므로 여기서 던지면 처리되지 않은 거절로 서버가 꺼짐
         console.error('회의 실패 정리 실패:', cleanupErr);
@@ -161,13 +161,16 @@ export function meetingService({ db, graph, limits, publisher, replay = false, l
 
   /**
    * 회의 시작: 조건·성향을 확인하고 회의 행을 만든 뒤 그래프를 뒤에서 돌림
-   * official: 공식 경로면 여행 상태를 meeting으로 바꿈 (회의 중에는 조건·성향을 바꾸지 않음) · onStart: 실행 전에 부름 (시험 화면이 회의 id를 먼저 보냄)
+   * official: 공식 경로면 회의 행을 만드는 거래에서 여행 상태를 meeting으로 바꿈 (회의 중에는 참여·조건·성향을 바꾸지 않음)
+   * replaceReviewing: 시험 경로에서 다시 실행하면 사람 확인을 기다리던 이전 회의를 그만둠 · onStart: 실행 전에 부름 (시험 화면이 회의 id를 먼저 보냄)
    */
-  async function start(tripId: string, opts: { observer?: MeetingObserver; official?: boolean; onStart?: (m: MeetingRow) => void; access?: AccessGrant } = {}) {
+  async function start(
+    tripId: string,
+    opts: { observer?: MeetingObserver; official?: boolean; replaceReviewing?: boolean; onStart?: (m: MeetingRow) => void; access?: AccessGrant } = {},
+  ) {
     await loadMeetingInput(db, tripId); // 조건·성향이 준비되지 않았으면 실행 횟수를 쓰기 전에 오류
     const saved = (opts.access && liveGraph ? liveReplay : replay) ? await savedResults(tripId) : null;
-    const meeting = await startMeeting(db, tripId, limits, opts.access);
-    if (opts.official) await db.update(trips).set({ status: 'meeting' }).where(eq(trips.id, tripId));
+    const meeting = await startMeeting(db, tripId, limits, { access: opts.access, official: opts.official, replaceReviewing: opts.replaceReviewing });
     opts.onStart?.(meeting);
     return { meeting, done: run(meeting, { tripId, meetingId: meeting.id, saved }, opts.observer) };
   }

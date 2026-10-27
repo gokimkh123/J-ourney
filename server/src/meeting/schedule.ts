@@ -4,9 +4,9 @@ import { categories, places, regions } from '../db/schema.js';
 import { type OpenHours, closedOn, hoursOn } from './hours.js';
 import { REACT, overlapMinutes, reactionOf, reactionScore } from './react.js';
 import { districtsNamed, shortRegionName } from './regions.js';
-import { type Candidate, HOURS_KEYS, type Mark, type MemberInput, REST_KEYS, RETRIEVE, type RetrieveResult, intro } from './retrieve.js';
+import { type Candidate, HOURS_KEYS, type Mark, type MemberInput, REST_KEYS, RETRIEVE, type RetrieveResult, intro, isBusiness } from './retrieve.js';
 import type { CarLeg, RouteClient, TransitLeg, WalkLeg } from './route.js';
-import { dislikeMatches, dislikeText, likeMatches, likeText, ruleMatcher } from './rules.js';
+import { dislikeMatches, dislikeText, isDietAvoid, likeMatches, likeText, ruleMatcher } from './rules.js';
 import { placeIdOf } from './runs.js';
 import { type Point, TRAVEL, centerOf, distanceKm } from './travel.js';
 import type { Board, MoveMode, ReviewDecision } from './types.js';
@@ -223,8 +223,19 @@ async function moreRestaurants(db: Db, pool: RetrieveResult, members: readonly M
     );
   const regionDistricts = await db.select({ districtCode: regions.districtCode, districtName: regions.districtName }).from(regions).where(eq(regions.regionCode, dest.regionCode));
   const ctx = { regionWords: [shortRegionName(dest.regionName)], districtsOf: (w: string) => districtsNamed(w, regionDistricts) };
-  const avoids = members.flatMap((m) => m.mustKeep.filter((r) => r.type === 'avoid').map((r) => ruleMatcher(r, ctx)));
-  const includes = new Map(members.map((m) => [m.memberId, m.mustKeep.filter((r) => r.type === 'include').map((r) => ({ label: r.label, matches: ruleMatcher(r, ctx) }))]));
+  const avoids = members.flatMap((m) => m.mustKeep.filter((r) => r.type === 'avoid' && !isDietAvoid(r)).map((r) => ruleMatcher(r, ctx)));
+  // 장소 이름 규칙은 후보에 숙소·가게가 아닌 꼭 지킬 곳이 있으면 식당에 붙이지 않음 (2단계와 같은 규칙, 10/27 사용자 결정)
+  const visitMust = new Set(
+    [...pool.candidates, ...pool.lodgings]
+      .filter((c) => !isBusiness(c.code ?? null))
+      .flatMap((c) => Object.entries(c.marks).flatMap(([memberId, ks]) => ks.filter((k) => k.kind === 'must').map((k) => `${memberId}\n${k.label}`))),
+  );
+  const includes = new Map(
+    members.map((m) => [
+      m.memberId,
+      m.mustKeep.filter((r) => r.type === 'include' && !(r.target === 'place' && visitMust.has(`${m.memberId}\n${r.label}`))).map((r) => ({ label: r.label, matches: ruleMatcher(r, ctx) })),
+    ]),
+  );
   const names = new Map((await db.select({ code: categories.code, name: categories.name3 }).from(categories)).map((r) => [r.code, r.name]));
   const month = Number(pool.dates[0].slice(5, 7));
   return rows.flatMap((p): Spot[] => {
@@ -337,26 +348,25 @@ function requiredPlaces(ctx: Ctx, avoid: ReadonlySet<string>): Spot[] {
  * 날마다 넣을 곳: 꼭 지킬 곳을 가까운 날에 먼저 놓고, 묶음 가운데에서 가깝고 점수가 큰 곳으로 하루 관광지 수까지 채움 (직선거리, 고르기에만 씀)
  * 1박 이상이면 날마다 숙소에서 나가거나 숙소로 돌아오므로 숙소도 묶음 가운데 계산에 넣음 (숙소에서 먼 곳으로 하루를 채우지 않게)
  * 좋아요가 하나도 안 들어간 사람이 있으면 그 사람이 좋아하는 곳 1곳을 넣음 (꼭 지킬 곳은 빼지 않음)
+ * 그날 쉬는 곳은 그날에 넣지 않음 (10/27 사용자 결정: 그날 쉬면 빼고 다른 곳(차선)을 넣음). 꼭 지킬 곳은 여는 날로 옮김 (여행 날짜가 모두 휴무인 곳은 2단계에서 이미 빠짐)
  */
 function pickSets(ctx: Ctx, avoid: ReadonlySet<string>, required: readonly Spot[]): Spot[][] {
   const D = ctx.dates.length;
   const sets: Spot[][] = Array.from({ length: D }, () => []);
   const attrCount = (d: number) => sets[d].filter((q) => !q.meal).length;
   const mealsPerDay = Number(ctx.lunch) + Number(ctx.dinner);
+  const openOn = (p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed';
   for (const p of byPrio(required)) {
-    let best = -1;
-    let bestDist = Infinity;
-    for (let d = 0; d < D; d++) {
-      const full = p.meal ? sets[d].filter((q) => q.meal).length >= mealsPerDay : attrCount(d) >= ctx.perDay + 1;
-      if (full) continue;
+    const open = Array.from({ length: D }, (_, d) => d).filter((d) => openOn(p, d));
+    const full = (d: number) => (p.meal ? sets[d].filter((q) => q.meal).length >= mealsPerDay : attrCount(d) >= ctx.perDay + 1);
+    const near = (d: number) => {
       const c = centerOf(sets[d]);
-      const dist = c ? distanceKm(c, p) : 0;
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = d;
-      }
-    }
-    if (best >= 0) sets[best].push(p);
+      return c ? distanceKm(c, p) : 0;
+    };
+    // 여는 날 중 자리가 있는 가장 가까운 날, 여는 날이 모두 찼으면 그중 가장 덜 찬 날 (꼭 지킬 곳이 휴무 때문에 사라지지 않게)
+    const roomy = open.filter((d) => !full(d)).sort((a, b) => near(a) - near(b) || a - b);
+    const best = roomy[0] ?? open.sort((a, b) => sets[a].length - sets[b].length || a - b)[0];
+    if (best !== undefined) sets[best].push(p);
   }
   const used = new Set(sets.flat().map((p) => p.id));
   const fresh = ctx.attractions.filter((p) => !avoid.has(p.id));
@@ -365,17 +375,19 @@ function pickSets(ctx: Ctx, avoid: ReadonlySet<string>, required: readonly Spot[
   const value = (p: Spot, c: Point | null, chosen: readonly Spot[]) =>
     p.prio - SCHEDULE.distPenaltyPerKm * (c ? distanceKm(c, p) : 0) - SCHEDULE.sameKindPenalty * chosen.filter((q) => q.id !== p.id && kindOf(q) !== null && kindOf(q) === kindOf(p)).length;
   const home = ctx.lodging ? [ctx.lodging] : [];
-  const grow = (set: Spot[], limit: number) => {
+  // d날에 채울 곳: 그날 쉬는 곳은 고르지 않음 (다음 순위 곳이 그 자리를 채움)
+  const grow = (set: Spot[], limit: number, d: number) => {
     const ids = new Set(set.map((p) => p.id));
     const out = set.slice();
     while (out.filter((q) => !q.meal).length < limit) {
       const c = centerOf([...out, ...home]);
       const chosen = [...sets.flat(), ...out];
+      const free = (p: Spot) => !used.has(p.id) && !ids.has(p.id) && openOn(p, d);
       const next =
         fresh
-          .filter((p) => !used.has(p.id) && !ids.has(p.id))
+          .filter(free)
           .map((p) => ({ p, v: value(p, c, chosen) }))
-          .sort((a, b) => b.v - a.v || a.p.id.localeCompare(b.p.id))[0]?.p ?? reuse.find((p) => !used.has(p.id) && !ids.has(p.id));
+          .sort((a, b) => b.v - a.v || a.p.id.localeCompare(b.p.id))[0]?.p ?? reuse.find(free);
       if (!next) break;
       out.push(next);
       ids.add(next.id);
@@ -385,16 +397,16 @@ function pickSets(ctx: Ctx, avoid: ReadonlySet<string>, required: readonly Spot[
   for (let d = 0; d < D; d++) {
     if (!sets[d].length) {
       // 빈 날: 점수 상위 몇 곳을 하나씩 가운데로 놓아 보고 묶음 값이 가장 큰 것
-      const anchors = byPrio(fresh.filter((p) => !used.has(p.id))).slice(0, SCHEDULE.anchors);
+      const anchors = byPrio(fresh.filter((p) => !used.has(p.id) && openOn(p, d))).slice(0, SCHEDULE.anchors);
       let best: { set: Spot[]; v: number } | null = null;
       for (const a of anchors) {
-        const set = grow([a], ctx.perDay);
+        const set = grow([a], ctx.perDay, d);
         const c = centerOf([...set, ...home]);
         const v = set.reduce((acc, p) => acc + value(p, c, [...sets.flat(), ...set]), 0);
         if (!best || v > best.v) best = { set, v };
       }
-      sets[d] = best?.set ?? grow([], ctx.perDay);
-    } else sets[d] = grow(sets[d], ctx.perDay);
+      sets[d] = best?.set ?? grow([], ctx.perDay, d);
+    } else sets[d] = grow(sets[d], ctx.perDay, d);
     sets[d].forEach((p) => used.add(p.id));
   }
   for (const m of ctx.members) {
@@ -402,8 +414,10 @@ function pickSets(ctx: Ctx, avoid: ReadonlySet<string>, required: readonly Spot[
     if (sets.flat().some(liked)) continue;
     const cand = byPrio([...fresh, ...reuse].filter((p) => !used.has(p.id) && liked(p) && !marksOf(p, m).some((k) => k.kind === 'dislike' || k.kind === 'crowd')))[0];
     if (!cand) continue;
-    // 가장 가까운 날에서 꼭 지킬 곳이 아니고 좋아하는 사람이 가장 적은, 점수가 가장 낮은 곳과 바꿈
-    const d = sets.map((x, i) => ({ i, v: x.length ? Math.min(...x.map((q) => distanceKm(q, cand))) : 0 })).sort((a, b) => a.v - b.v || a.i - b.i)[0].i;
+    // 그곳이 여는 날 중 가장 가까운 날에서 꼭 지킬 곳이 아니고 좋아하는 사람이 가장 적은, 점수가 가장 낮은 곳과 바꿈
+    const days = sets.map((x, i) => ({ i, v: x.length ? Math.min(...x.map((q) => distanceKm(q, cand))) : 0 })).filter((x) => openOn(cand, x.i));
+    if (!days.length) continue;
+    const d = days.sort((a, b) => a.v - b.v || a.i - b.i)[0].i;
     const fans = (q: Spot) => ctx.members.filter((o) => marksOf(q, o).some((k) => k.kind === 'like')).length;
     const out = sets[d].filter((q) => !q.meal && !q.must).sort((a, b) => fans(a) - fans(b) || a.prio - b.prio || a.id.localeCompare(b.id))[0];
     if (out && sets[d].filter((q) => !q.meal).length >= ctx.perDay) sets[d] = sets[d].filter((q) => q.id !== out.id);

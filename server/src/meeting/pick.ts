@@ -379,7 +379,8 @@ export function buildPickGraph(deps: PickDeps) {
     .addEdge(START, 'choose')
     .addConditionalEdges('choose', retryOrFinish, ['choose', 'finish'])
     .addEdge('finish', END)
-    .compile();
+    // 고르기 안에는 멈추는 곳(interrupt)이 없고 결과는 부모 그래프에 저장되므로 단계마다 따로 저장하지 않음 (회의당 체크포인트 약 0.9MB 줄임, 10/26 측정)
+    .compile({ checkpointer: false });
 }
 
 /** LLM_REPLAY: 지난 결과의 장소가 지금 후보(숙소는 숙소 후보)에 모두 있어야 다시 씀 (없으면 null → 규칙 고르기) */
