@@ -33,6 +33,7 @@ import { usePinStage } from "../components/map/usePinStage.ts";
 import { keepAgentsVisible, type Position } from "../lib/meeting/agentPositions.ts";
 import { latestRoute } from "../lib/meeting/reducer.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
+import { onlyMeeting, startedMeetingStore } from "../lib/meeting/startedMeeting.ts";
 import { meetingImmersive } from "../lib/meeting/stageStore.ts";
 import { config } from "../lib/config/index.ts";
 import { liveBanner, liveProgress } from "../lib/meeting/liveView.ts";
@@ -74,11 +75,14 @@ export default function MeetingScreen() {
   const mock = useMeetingPlayback(!live && conditions !== null, conditions);
   // 실서버는 폰에 조건이 없어도(앱을 다시 켰거나 방장이 아니어도) 서버의 회의를 그대로 따라간다.
   const real = useLiveMeeting(live, me);
+  // 이 폰에서 방금 시작한 회의가 있으면, 그 시작 이벤트가 올 때까지 옛 회의는 숨긴다.
+  const startedMeetings = useSyncExternalStore(startedMeetingStore.subscribe, startedMeetingStore.get, startedMeetingStore.get);
+  const liveState = onlyMeeting(real.state, me === null ? null : startedMeetings[me.tripId] ?? null);
   const play: MeetingPlayback = live
     ? {
-        state: real.state,
-        status: liveProgress(real.feedStatus, real.state.phase),
-        applied: real.state.lastSeq,
+        state: liveState,
+        status: liveProgress(real.feedStatus, liveState.phase),
+        applied: liveState.lastSeq,
         total: 0,
         canSkip: false,
         pause() {},

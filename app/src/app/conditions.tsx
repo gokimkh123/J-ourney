@@ -26,6 +26,7 @@ import {
   validateConditions,
 } from "../lib/trip/conditions.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
+import { rememberStartedMeeting } from "../lib/meeting/startedMeeting.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { addDays, dateLabel, nextSaturday, todayISO } from "../lib/trip/dateRange.ts";
 import { describeError, formatWon, nightsLabel } from "../lib/ui/format.ts";
@@ -118,7 +119,8 @@ export default function ConditionsScreen() {
       setStarting(true);
       try {
         await endpoints.saveConditions(me.tripId, result.body);
-        await endpoints.startMeeting(me.tripId);
+        const started = await endpoints.startMeeting(me.tripId);
+        rememberStartedMeeting(me.tripId, started.id);
       } catch (e) {
         setErrorText(describeError(e, "meeting"));
         setStarting(false);
