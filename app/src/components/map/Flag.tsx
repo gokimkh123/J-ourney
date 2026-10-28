@@ -2,7 +2,7 @@ import { memo } from "react";
 import Svg, { Circle, Ellipse, Path, Rect, Text as SvgText } from "react-native-svg";
 
 import type { MapArtPalette } from "../../theme/index.ts";
-import { shade } from "./busanArt.ts";
+import { shade } from "./regionArt.ts";
 
 export const FLAG_W = 34;
 export const FLAG_H = 40;

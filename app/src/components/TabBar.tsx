@@ -2,7 +2,7 @@ import { Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path, Rect } from "react-native-svg";
 
-import { pressedOpacity, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
+import { pressedOpacity, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Avatar, { type AvatarChip } from "./Avatar.tsx";
 
@@ -24,8 +24,10 @@ export type TabBarProps = {
   me?: { color: string; chips?: AvatarChip[]; name?: string };
 };
 
-/** 탭 한 칸의 높이(손가락으로 누르기 좋게 48 이상) */
-const ITEM_HEIGHT = 52;
+/** 탭 한 칸의 높이(손가락으로 누르기 좋게 48 이상). 눌리는 영역은 보이는 아이콘보다 훨씬 넓게 잡는다. */
+const ITEM_HEIGHT = 64;
+/** 눌리는 영역을 위로 더 넓힌다(탭바 위 경계 근처에서 눌러도 잡히게) */
+const TOUCH_TOP = 8;
 /** 켜진 탭의 둥근 바탕 지름 */
 const DOT = 40;
 const ICON = 24;
@@ -101,6 +103,7 @@ export default function TabBar({ items, me }: TabBarProps) {
             accessibilityRole="tab"
             accessibilityState={{ selected: item.focused }}
             accessibilityLabel={item.label}
+            hitSlop={{ top: TOUCH_TOP }}
             style={({ pressed }) => [styles.item, pressed && { opacity: pressedOpacity }]}
           >
             {item.focused ? (
@@ -128,8 +131,6 @@ const createStyles = (t: Theme) =>
       backgroundColor: t.colors.surface,
       borderTopWidth: 1,
       borderTopColor: t.colors.border,
-      paddingTop: 6,
-      paddingHorizontal: spacing.sm,
     },
     row: {
       flexDirection: "row",

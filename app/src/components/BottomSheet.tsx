@@ -7,8 +7,15 @@ import AppText from "./AppText.tsx";
 export type BottomSheetProps = {
   /** 시트 제목(예: "AI들이 장소를 조사하고 있어요") */
   title?: string;
-  /** 제목 오른쪽 요약(예: "4명 조사 중") */
+  /** 제목 오른쪽 요약(예: "4명 조사 중"). action이 있으면 제목 아래 줄로 내려간다. */
   meta?: string;
+  /** 제목 줄 오른쪽에 놓는 버튼(예: 일시정지). 시트가 접혀 있어도 보이고 눌린다. */
+  action?: ReactNode;
+  /**
+   * 시트 윗선 위로 끌 수 있는 투명한 띠의 높이. 손잡이를 정확히 짚지 않아도 시트 바로 위를 잡고 끌 수 있다.
+   * 부모가 시트 높이에 이 값을 더해 줘야 한다. 끌 수 있을 때(onCollapsedChange가 있을 때)만 쓴다.
+   */
+  dragExtra?: number;
   children?: ReactNode;
   /** 시트 맨 아래 고정 영역(주요 버튼) */
   footer?: ReactNode;
@@ -36,6 +43,8 @@ const SWIPE_MIN = 24;
 export default function BottomSheet({
   title,
   meta,
+  action,
+  dragExtra = 0,
   children,
   footer,
   collapsed = false,
@@ -78,7 +87,7 @@ export default function BottomSheet({
   const top = (
     <>
       <View style={styles.handle} accessibilityElementsHidden importantForAccessibility="no" />
-      {(title !== undefined || meta !== undefined) && (
+      {(title !== undefined || meta !== undefined) && action === undefined && (
         <View style={styles.header}>
           {title !== undefined && (
             <AppText variant="heading" style={styles.title} accessibilityRole="header">
@@ -95,9 +104,48 @@ export default function BottomSheet({
     </>
   );
 
-  return (
+  // 제목 줄 오른쪽 버튼은 시트를 끌고 접는 영역과 따로 둔다(버튼을 눌러도 시트가 접히지 않게).
+  // 손잡이와 제목 글자 쪽은 끌 수 있고, 읽어 주는 도구에는 "시트 접기/펴기" 버튼 하나로만 보인다.
+  const dragProps = toggleable ? pan.panHandlers : {};
+  const header =
+    action === undefined ? null : (
+      <View>
+        <View {...dragProps} style={styles.handleArea} accessibilityElementsHidden importantForAccessibility="no">
+          <View style={styles.handle} />
+        </View>
+        <View style={styles.headerAction}>
+          <View
+            {...dragProps}
+            style={styles.headerText}
+            accessible={toggleable}
+            accessibilityRole={toggleable ? "button" : undefined}
+            accessibilityLabel={
+              toggleable ? `${title ?? ""} ${meta ?? ""} ${collapsed ? "시트 펴기" : "시트 접기"}`.trim() : undefined
+            }
+            accessibilityState={toggleable ? { expanded: !collapsed } : undefined}
+            onAccessibilityTap={toggleable ? () => onCollapsedChange(!collapsed) : undefined}
+          >
+            {title !== undefined && (
+              <AppText variant="heading" accessibilityRole={toggleable ? undefined : "header"}>
+                {title}
+              </AppText>
+            )}
+            {meta !== undefined && (
+              <AppText variant="caption" tone="muted">
+                {meta}
+              </AppText>
+            )}
+          </View>
+          <View style={styles.actionSlot}>{action}</View>
+        </View>
+      </View>
+    );
+
+  const sheetView = (
     <View style={[styles.sheet, style]}>
-      {toggleable ? (
+      {header !== null ? (
+        header
+      ) : toggleable ? (
         <View
           {...pan.panHandlers}
           style={styles.top}
@@ -124,6 +172,21 @@ export default function BottomSheet({
       </View>
     </View>
   );
+
+  if (dragExtra > 0 && toggleable) {
+    return (
+      <View style={styles.extraRoot}>
+        <View
+          {...pan.panHandlers}
+          style={{ height: dragExtra }}
+          accessibilityElementsHidden
+          importantForAccessibility="no"
+        />
+        {sheetView}
+      </View>
+    );
+  }
+  return sheetView;
 }
 
 const createStyles = (t: Theme) => StyleSheet.create({
@@ -157,6 +220,26 @@ const createStyles = (t: Theme) => StyleSheet.create({
   },
   title: {
     flexShrink: 1,
+  },
+  extraRoot: {
+    flex: 1,
+  },
+  handleArea: {
+    // 손잡이를 잡기 쉽게 위아래 터치 영역을 넓힌다.
+    paddingVertical: spacing.xs,
+  },
+  headerAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
+  headerText: {
+    flexShrink: 1,
+    gap: spacing.xxs,
+  },
+  actionSlot: {
+    flexShrink: 0,
   },
   content: {
     flexShrink: 1,

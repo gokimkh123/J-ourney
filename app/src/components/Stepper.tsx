@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, View } from "react-native";
 
-import { pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
+import { hitSize, pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 
 export type StepperProps = {
@@ -78,8 +78,8 @@ const createStyles = (t: Theme) =>
     text: { flex: 1, gap: spacing.xxs },
     controls: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
     button: {
-      width: 40,
-      height: 40,
+      width: hitSize,
+      height: hitSize,
       borderRadius: radius.full,
       backgroundColor: t.colors.surfaceSunken,
       alignItems: "center",

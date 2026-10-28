@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, StyleSheet, View, type StyleProp, type Vi
 import { disabledOpacity, hitSize, pressedOpacity, radius, spacing, useTheme, type ThemeColors } from "../theme/index.ts";
 import AppText, { type TextTone } from "./AppText.tsx";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 export type ButtonSize = "sm" | "md" | "lg";
 
 export type ButtonProps = {
@@ -27,11 +27,13 @@ function variantColors(c: ThemeColors): Record<ButtonVariant, { bg: string; bord
     primary: { bg: c.accent, border: c.accent, text: "onAccent", spinner: c.onAccent },
     secondary: { bg: c.surfaceRaised, border: c.border, text: "default", spinner: c.text },
     ghost: { bg: "transparent", border: "transparent", text: "accent", spinner: c.accent },
+    // 되돌리기 어려운 동작(파티 나가기). 빨간 바탕에 흰 글자.
+    danger: { bg: c.danger, border: c.danger, text: "onColor", spinner: c.textOnColor },
   };
 }
 
 const SIZE: Record<ButtonSize, { height: number; padH: number; radius: number }> = {
-  sm: { height: 36, padH: spacing.md, radius: radius.md },
+  sm: { height: hitSize, padH: spacing.md, radius: radius.md },
   md: { height: hitSize, padH: spacing.lg, radius: radius.lg },
   lg: { height: 56, padH: spacing.lg, radius: radius.lg },
 };

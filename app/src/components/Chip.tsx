@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, View } from "react-native";
 
-import { disabledOpacity, pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
+import { disabledOpacity, hitSize, pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 
 export type ChipProps = {
@@ -66,7 +66,7 @@ const createStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   md: {
-    minHeight: 36,
+    minHeight: hitSize,
     justifyContent: "center",
     paddingVertical: spacing.xs + spacing.xxs,
     paddingHorizontal: spacing.md - spacing.xs,

@@ -57,7 +57,7 @@ export const lightColors: ThemeColors = {
   border: '#E5E8EB',
 
   text: '#191F28',
-  textMuted: '#8B95A1',
+  textMuted: '#667080',
   textBody: '#333D4B',
   textOnColor: '#FFFFFF',
   iconFaint: '#B0B8C1',

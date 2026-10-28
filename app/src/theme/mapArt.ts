@@ -15,6 +15,8 @@ export type MapArtPalette = {
   bridge: string;
   trailUnder: string;
   trail: string;
+  /** 조용한 지도(일정)에서 장소 스티커를 두르는 테두리색 */
+  calmCasing: string;
   label: string;
   labelStroke: string;
   shadow: string;
@@ -56,6 +58,7 @@ export const mapArtPalettes: Record<'light' | 'dark', MapArtPalette> = {
     bridge: '#FFFFFF',
     trailUnder: '#D9BC86',
     trail: '#FFFFFF',
+    calmCasing: '#FFFFFF',
     label: '#A88A5C',
     labelStroke: '#FFF7E6',
     shadow: 'rgba(90,60,20,0.2)',
@@ -81,6 +84,7 @@ export const mapArtPalettes: Record<'light' | 'dark', MapArtPalette> = {
     bridge: '#4A4F70',
     trailUnder: '#18151F',
     trail: '#FFE29A',
+    calmCasing: '#2B2840',
     label: '#BBAEDB',
     labelStroke: '#2B2840',
     shadow: 'rgba(0,0,0,0.4)',

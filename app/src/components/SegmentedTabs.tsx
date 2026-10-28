@@ -44,7 +44,7 @@ const createStyles = (t: Theme) => StyleSheet.create({
   },
   tab: {
     flex: 1,
-    minHeight: hitSize - spacing.sm,
+    minHeight: hitSize,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.md,
