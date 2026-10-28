@@ -104,8 +104,9 @@ export default function PlanChoice({ cards, selected, onSelect, dayTabs, day, on
 
 const createStyles = (t: Theme) =>
   StyleSheet.create({
-    root: { flex: 1, minHeight: 0 },
-    scroll: { flex: 1 },
+    // 시트 본문은 높이가 정해져 있지 않아서 flex: 1이면 폰(Yoga)에서 높이 0으로 접힌다. 남는 만큼만 차지하며 줄어들게 한다.
+    root: { flexShrink: 1, minHeight: 0 },
+    scroll: { flexShrink: 1 },
     content: { gap: spacing.sm + spacing.xs, paddingBottom: spacing.sm },
     cards: { flexDirection: "row", gap: spacing.sm },
     card: {

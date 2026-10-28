@@ -4,6 +4,7 @@ import { AppState } from 'react-native';
 import { endpoints } from '../api/index.ts';
 import { config } from '../config/index.ts';
 import type { Session } from '../session/session.ts';
+import { droppedEventNote } from './droppedEvent.ts';
 import { createLiveFeed } from './liveFeed.ts';
 import type { FeedStatus, LiveFeed } from './liveFeed.ts';
 import { initialMeetingState } from './reducer.ts';
@@ -35,7 +36,13 @@ export function useLiveMeeting(enabled: boolean, session: Session | null): LiveM
       openSocket(afterSeq, handlers) {
         const ws = new WebSocket(buildWsUrl({ baseUrl: config.apiBaseUrl, tripId, token, afterSeq }));
         ws.onopen = () => handlers.onOpen();
-        ws.onmessage = (e) => handlers.onMessage(typeof e.data === 'string' ? e.data : String(e.data));
+        ws.onmessage = (e) => {
+          const text = typeof e.data === 'string' ? e.data : String(e.data);
+          // 앱이 모르는 이벤트는 조용히 버려지므로 종류와 번호만 터미널(Metro)에 남긴다.
+          const dropped = droppedEventNote(text);
+          if (dropped !== null) console.log(`[live] ${dropped}`);
+          handlers.onMessage(text);
+        };
         // 닫히기 전에 오류가 나도 close가 뒤따라 온다.
         ws.onerror = () => {};
         ws.onclose = (e) => handlers.onClose(e.code, e.reason ?? '');
