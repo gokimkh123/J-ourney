@@ -16,6 +16,11 @@ export const MEETING_EVENT_TYPES = [
 
 export type MeetingEventType = (typeof MEETING_EVENT_TYPES)[number];
 
+/** 사람 확인(5단계) 이벤트. 옛 가짜 회의(부산 예시)에는 없고 실서버만 보낸다. */
+export const REVIEW_EVENT_TYPES = ['review.requested', 'review.cast', 'review.closed'] as const;
+
+export type ReviewEventType = (typeof REVIEW_EVENT_TYPES)[number];
+
 export type MeetingKind = 'meeting' | 'renegotiation';
 export type ResearchStage = 'planning' | 'searching' | 'picking' | 'done';
 export type ResearchTool = 'tourSearch' | 'tourRank' | 'crowd' | 'price' | 'distance';
@@ -55,7 +60,8 @@ export type BoardCandidate = {
   reactions: BoardReaction[];
 };
 
-export type AgendaItem = { placeId: string; text: string };
+/** placeId가 null인 안건은 장소가 아닌 메모(후보에 넣지 못한 꼭 지킬 것과 까닭) */
+export type AgendaItem = { placeId: string | null; text: string };
 
 export type Board = { candidates: BoardCandidate[]; agenda: AgendaItem[] };
 
@@ -67,8 +73,38 @@ export type PlaceInfo = {
   links: { kakaoMap: string; naverMap: string };
 };
 
-export type RouteStop = { itemId: string; name: string; lat: number; lng: number };
-export type RouteDay = { day: number; stops: RouteStop[] };
+/** 구간 이동(서버 moveFromPrev). 길찾기를 못 했으면 minutes가 null이고 직선거리만 있다. */
+export type MoveLeg = {
+  mode: 'walk' | 'bus' | 'subway' | 'train' | 'taxi' | 'car' | null;
+  minutes: number | null;
+  distanceM: number;
+  fareWon: number | null;
+  source: 'kakao_route' | 'estimate';
+  routeUrl: string | null;
+  note?: string;
+};
+
+/** itemId·name·lat·lng 말고는 서버(v1.8)만 채우는 칸이라 선택으로 둔다. */
+export type RouteStop = {
+  itemId: string;
+  name: string;
+  lat: number;
+  lng: number;
+  placeId?: string;
+  kind?: 'sight' | 'food' | 'lodging';
+  category?: string | null;
+  meal?: 'lunch' | 'dinner' | null;
+  night?: boolean;
+  mustFor?: string[];
+  likedBy?: string[];
+  moveFromPrev?: MoveLeg | null;
+};
+export type RouteDay = {
+  day: number;
+  stops: RouteStop[];
+  date?: string;
+  summary?: { moveMinutes: number; unknownLegs: number; spanMinutes: number; heavy: boolean };
+};
 
 export type MeetingAgreedData = {
   planId: string;
@@ -128,7 +164,16 @@ export type PlaceCheckedEvent = EventBase<
 
 export type PlanProposedEvent = EventBase<
   'plan.proposed',
-  { planId: string; version: number; route: RouteDay[] }
+  {
+    planId: string;
+    version: number;
+    route: RouteDay[];
+    /** 서버 v1.8: 두 안 A·B와 숙소·이동 수단·안내 */
+    label?: 'A' | 'B';
+    moveMode?: 'transit' | 'car';
+    lodging?: { placeId: string; name: string } | null;
+    notes?: string[];
+  }
 >;
 
 export type VoteCastEvent = EventBase<
@@ -170,6 +215,29 @@ export type MeetingEvent =
   | ConfirmCastEvent
   | PlanConfirmedEvent;
 
+export type ReviewItemData = { placeId: string; name: string; text: string; consequence: string | null };
+export type ReviewVoteData = { placeId: string; keep: number; drop: number; kept: boolean; tie: boolean };
+export type ReviewDecisionData = {
+  kept: string[];
+  dropped: string[];
+  votes: ReviewVoteData[];
+  responded: string[];
+  defaulted: string[];
+  closedBy: 'all' | 'host';
+};
+
+export type ReviewRequestedEvent = EventBase<
+  'review.requested',
+  { meetingId: string; items: ReviewItemData[]; memos: string[]; total: number }
+>;
+export type ReviewCastEvent = EventBase<
+  'review.cast',
+  { meetingId: string; memberId: string; answered: number; total: number }
+>;
+export type ReviewClosedEvent = EventBase<'review.closed', { meetingId: string } & ReviewDecisionData>;
+
+export type ReviewEvent = ReviewRequestedEvent | ReviewCastEvent | ReviewClosedEvent;
+
 export type PingEvent = {
   type: 'ping';
   tripId?: string;
@@ -178,11 +246,13 @@ export type PingEvent = {
   data?: undefined;
 };
 
-export type ServerEvent = MeetingEvent | PingEvent;
+export type ServerEvent = MeetingEvent | ReviewEvent | PingEvent;
 
 export type MeetingPhase =
   | 'idle'
   | 'researching'
+  | 'reviewing'
+  | 'proposed'
   | 'meeting'
   | 'agreed'
   | 'failed'
@@ -215,13 +285,36 @@ export type MeetingState = {
   round: number;
   maxRounds: number;
   timeline: TimelineItem[];
-  plans: Record<string, { version: number; route: RouteDay[] }>;
+  plans: Record<
+    string,
+    {
+      version: number;
+      route: RouteDay[];
+      label?: 'A' | 'B';
+      moveMode?: 'transit' | 'car';
+      lodging?: { placeId: string; name: string } | null;
+      notes?: string[];
+    }
+  >;
   latestPlanId: string | null;
   votes: Record<string, Record<string, { vote: AiVote; score: number }>>;
   agreement: MeetingAgreedData | null;
   failure: MeetingFailedEvent['data'] | null;
   confirmVotes: Record<string, ConfirmVoteStatus>;
   confirmedPlanId: string | null;
+  /** 사람 확인(5단계) 진행. 요청이 오기 전에는 null */
+  review: ReviewProgress | null;
+};
+
+export type ReviewProgress = {
+  items: ReviewItemData[];
+  memos: string[];
+  total: number;
+  /** 지금까지 응답한 사람 수 */
+  answered: number;
+  /** 응답한 구성원 memberId (같은 사람이 다시 내도 한 번만) */
+  answeredBy: string[];
+  decision: ReviewDecisionData | null;
 };
 
 export type ApplyResult =

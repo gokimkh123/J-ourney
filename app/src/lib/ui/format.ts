@@ -10,12 +10,26 @@ export function normalizeInviteCode(input: string): string {
 
 const UNKNOWN_ERROR = '알 수 없는 오류가 발생했어요';
 
-export function describeError(error: unknown): string {
+/** 같은 오류 코드라도 어디서 났는지에 따라 문구가 달라지는 경우: 참여할 때, 회의 조건·시작할 때 */
+export type ErrorContext = 'join' | 'meeting';
+
+export function describeError(error: unknown, context?: ErrorContext): string {
   if (!(error instanceof ApiError)) return UNKNOWN_ERROR;
   if (error.status === 404) return '서버에 아직 준비되지 않은 기능이에요';
   if (error.code === 'RATE_LIMITED') return '요청이 너무 많아요. 잠시 후 다시 시도해 주세요';
-  if (error.code === 'MEETING_IN_PROGRESS') return '회의가 시작되어 성향을 바꿀 수 없어요';
+  if (error.code === 'MEETING_IN_PROGRESS') {
+    if (context === 'join') return '이미 회의가 시작된 여행이라 참여할 수 없어요';
+    if (context === 'meeting') return '이미 회의가 진행 중이에요';
+    return '회의가 시작되어 성향을 바꿀 수 없어요';
+  }
   if (error.code === 'TRIP_FULL') return '여행 인원이 가득 찼어요';
+  if (error.code === 'ACCESS_KEY_REQUIRED') return '접근 키가 없거나 틀려서 회의를 시작할 수 없어요. 팀 키를 확인해 주세요';
+  if (error.code === 'ACCESS_QUOTA_EXCEEDED') return '이 접근 키로 시작할 수 있는 회의 횟수를 다 썼어요';
+  if (error.code === 'MEETING_LIMIT') return '이 여행에서 할 수 있는 회의 횟수를 다 썼어요';
+  if (error.code === 'NOT_ENOUGH_MEMBERS') return '회의는 방장 포함 2명 이상이 모여야 시작할 수 있어요';
+  if (error.code === 'PERSONA_REQUIRED') return '성향 검사를 아직 안 한 사람이 있어요';
+  if (error.code === 'REVIEW_CLOSED') return '사람 확인이 이미 끝났어요';
+  if (error.code === 'PAYLOAD_TOO_LARGE') return '보내는 내용이 너무 커요';
   return error.message;
 }
 

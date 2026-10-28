@@ -3,6 +3,7 @@ import type {
   ApplyResult,
   ConfirmVoteStatus,
   MeetingEvent,
+  ReviewEvent,
   MeetingState,
   RouteDay,
   ServerEvent,
@@ -32,6 +33,7 @@ export function initialMeetingState(): MeetingState {
     failure: null,
     confirmVotes: {},
     confirmedPlanId: null,
+    review: null,
   };
 }
 
@@ -61,6 +63,7 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
         failure: null,
         confirmVotes: {},
         confirmedPlanId: null,
+        review: null,
       };
       if (kind === 'renegotiation') return base;
       const research: Record<string, AgentResearch> = {};
@@ -114,10 +117,23 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
       };
     }
     case 'plan.proposed': {
-      const { planId, version, route } = event.data;
+      const { planId, version, route, label, moveMode, lodging, notes } = event.data;
+      // 실서버는 합의 없이 A·B 두 안을 낸 채 끝난다. 조사·사람 확인 중에 안이 오면 '안이 나온' 단계로 본다.
+      const phase = state.phase === 'researching' || state.phase === 'reviewing' ? 'proposed' : state.phase;
       return {
         ...state,
-        plans: { ...state.plans, [planId]: { version, route } },
+        phase,
+        plans: {
+          ...state.plans,
+          [planId]: {
+            version,
+            route,
+            ...(label !== undefined && { label }),
+            ...(moveMode !== undefined && { moveMode }),
+            ...(lodging !== undefined && { lodging }),
+            ...(notes !== undefined && { notes }),
+          },
+        },
         latestPlanId: planId,
         timeline: [...state.timeline, { kind: 'proposal', seq: event.seq, at: event.at, planId, version }],
       };
@@ -153,12 +169,37 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
   }
 }
 
+function reduceReview(state: MeetingState, event: ReviewEvent): MeetingState {
+  switch (event.type) {
+    case 'review.requested': {
+      const { items, memos, total } = event.data;
+      return { ...state, phase: 'reviewing', review: { items, memos, total, answered: 0, answeredBy: [], decision: null } };
+    }
+    case 'review.cast': {
+      if (state.review === null) return state;
+      const { memberId, answered, total } = event.data;
+      const answeredBy = state.review.answeredBy.includes(memberId) ? state.review.answeredBy : [...state.review.answeredBy, memberId];
+      return { ...state, review: { ...state.review, answered, total, answeredBy } };
+    }
+    case 'review.closed': {
+      if (state.review === null) return state;
+      const { meetingId: _meetingId, ...decision } = event.data;
+      // 사람 확인이 끝나면 서버가 동선(A·B)을 짠다
+      return { ...state, phase: 'researching', review: { ...state.review, decision } };
+    }
+  }
+}
+
 export function applyEvent(state: MeetingState, event: ServerEvent): ApplyResult {
   if (event.type === 'ping') return { state, gap: false };
   if (state.phase === 'confirmed') return { state, gap: false };
   if (event.seq <= state.lastSeq) return { state, gap: false };
   if (event.seq > state.lastSeq + 1) return { state, gap: true, afterSeq: state.lastSeq };
-  return { state: reduce({ ...state, lastSeq: event.seq }, event), gap: false };
+  const next = { ...state, lastSeq: event.seq };
+  if (event.type === 'review.requested' || event.type === 'review.cast' || event.type === 'review.closed') {
+    return { state: reduceReview(next, event), gap: false };
+  }
+  return { state: reduce(next, event), gap: false };
 }
 
 export function latestRoute(state: MeetingState): RouteDay[] {

@@ -23,6 +23,8 @@ export type ApiClientOptions = {
   baseUrl: string;
   fetchFn: FetchLike;
   getToken?: () => string | null | undefined | Promise<string | null | undefined>;
+  /** 접근 키. 값이 있으면 모든 요청에 X-Access-Key 헤더로 보낸다(서버가 터널 요청에만 확인함). */
+  getAccessKey?: () => string | undefined;
   timeoutMs?: number;
 };
 
@@ -47,6 +49,7 @@ export function createApiClient({
   baseUrl,
   fetchFn,
   getToken,
+  getAccessKey,
   timeoutMs = 10000,
 }: ApiClientOptions): ApiClient {
   async function request(
@@ -62,6 +65,8 @@ export function createApiClient({
       payload = JSON.stringify(body);
       headers['Content-Type'] = 'application/json';
     }
+    const accessKey = getAccessKey?.();
+    if (accessKey) headers['X-Access-Key'] = accessKey;
     if (auth && getToken) {
       const token = await getToken();
       if (token) headers.Authorization = `Bearer ${token}`;

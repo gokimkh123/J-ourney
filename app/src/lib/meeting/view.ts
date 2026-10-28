@@ -49,6 +49,10 @@ export function phaseLabel(state: MeetingState): string {
       return '대기 중';
     case 'researching':
       return 'AI들이 장소를 조사하고 있어요';
+    case 'reviewing':
+      return `사람 확인을 기다리고 있어요 (${state.review?.answered ?? 0}/${state.review?.total ?? 0})`;
+    case 'proposed':
+      return '일정안 두 가지가 나왔어요';
     case 'meeting':
       return `${state.round}/${state.maxRounds}라운드 회의 중`;
     case 'agreed':
