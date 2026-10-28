@@ -16,8 +16,8 @@ export type ScheduleItemProps = {
   title: string;
   /** "식사", "산책" 등 */
   category: string;
-  /** "9,000원", "무료" — 화면이 포맷해서 넘긴다 */
-  costLabel: string;
+  /** "9,000원", "무료" — 화면이 포맷해서 넘긴다. 서버 일정처럼 비용을 모르면 생략 */
+  costLabel?: string;
   /** false면 "지도 확인 필요" 라벨 */
   verified: boolean;
   /** forMembers: 누구를 위한 장소인지 */
@@ -59,7 +59,7 @@ export default function ScheduleItem({
         onPress={onPress}
         disabled={!onPress}
         accessibilityRole={onPress ? "button" : undefined}
-        accessibilityLabel={`${time} ${title}, ${category}, ${costLabel}${verified ? "" : ", 지도 확인 필요"}`}
+        accessibilityLabel={`${time} ${title}, ${category}${costLabel === undefined ? "" : `, ${costLabel}`}${verified ? "" : ", 지도 확인 필요"}`}
         accessibilityHint={onPress ? "고른 이유와 장소 정보를 봅니다" : undefined}
         style={({ pressed }) => [styles.row, pressed && { opacity: pressedOpacity }]}
       >
@@ -73,7 +73,7 @@ export default function ScheduleItem({
           </AppText>
           <View style={styles.sub}>
             <AppText variant="caption" tone="muted" numberOfLines={1} style={styles.subText}>
-              {category} · {costLabel}
+              {costLabel === undefined ? category : `${category} · ${costLabel}`}
             </AppText>
             {!verified && <StatusPill label="지도 확인 필요" tone="warning" />}
           </View>
