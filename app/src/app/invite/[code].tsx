@@ -6,9 +6,9 @@ import { AppText, AvatarStack, Banner, Button, MemberBand, StateView, TextField 
 import { endpoints } from "../../lib/api/index.ts";
 import { ApiError } from "../../lib/api/errors.ts";
 import type { InviteInfo } from "../../lib/persona/types.ts";
-import { session } from "../../lib/session/index.ts";
+import { partyActions } from "../../lib/session/index.ts";
 import { fromSessionResponse } from "../../lib/session/session.ts";
-import type { Session } from "../../lib/session/session.ts";
+import { useParties } from "../../lib/session/useParties.ts";
 import { spacing, useStyles, type Theme } from "../../theme/index.ts";
 import { describeError, normalizeInviteCode } from "../../lib/ui/format.ts";
 
@@ -31,9 +31,10 @@ export default function InviteScreen() {
   const rawCode = Array.isArray(params.code) ? params.code[0] : params.code;
   const code = normalizeInviteCode(rawCode ?? "");
 
-  const [loading, setLoading] = useState(true);
-  const [current, setCurrent] = useState<Session | null>(null);
-  const [nickname, setNickname] = useState("");
+  const list = useParties();
+  const joined = list.find((p) => p.inviteCode === code);
+  // 다른 파티에서 쓰던 닉네임을 기본으로 채운다.
+  const [nickname, setNickname] = useState(() => list[0]?.nickname ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview>({ kind: "loading" });
@@ -42,17 +43,6 @@ export default function InviteScreen() {
 
   useEffect(() => {
     alive.current = true;
-    void (async () => {
-      let loaded: Session | null = null;
-      try {
-        loaded = await session.load();
-      } catch {
-        // 저장소를 읽지 못하면 세션이 없는 것으로 본다.
-      }
-      if (!alive.current) return;
-      setCurrent(loaded);
-      setLoading(false);
-    })();
     return () => {
       alive.current = false;
     };
@@ -89,7 +79,7 @@ export default function InviteScreen() {
     setError(null);
     try {
       const next = fromSessionResponse(await endpoints.joinInvite(code, name));
-      await session.save(next);
+      await partyActions.join(next);
       if (alive.current) goHome();
     } catch (e) {
       if (alive.current) setError(describeJoinError(e));
@@ -99,15 +89,17 @@ export default function InviteScreen() {
     }
   }
 
-  if (loading) return <StateView loading title="불러오는 중이에요" />;
-
-  if (current !== null) {
+  // 이미 들어가 있는 파티의 초대 링크면 새로 참여하지 않고 그 파티를 연다.
+  if (joined !== undefined) {
     return (
       <StateView
-        title="이미 여행에 참여 중이에요"
-        text="다른 여행에 들어가려면 설정에서 지금 여행을 먼저 나가 주세요."
-        actionLabel="홈으로 이동"
-        onAction={goHome}
+        title="이미 들어가 있는 파티예요"
+        text="이 초대 코드의 파티에는 이미 참여하고 있어요."
+        actionLabel="파티 열기"
+        onAction={() => {
+          void partyActions.enter(joined.tripId);
+          goHome();
+        }}
       />
     );
   }
@@ -136,7 +128,7 @@ export default function InviteScreen() {
         : `${host.nickname} 님이 기다리고 있어요`;
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+    <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       {members.length > 0 && <MemberBand members={members.map((m) => ({ id: m.id, name: m.nickname, color: m.color }))} />}
       <View style={styles.body}>
         <View style={styles.intro}>

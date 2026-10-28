@@ -1,6 +1,6 @@
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Animated, ScrollView, StyleSheet, View, type LayoutChangeEvent } from "react-native";
+import { Animated, Pressable, ScrollView, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { useReducedMotion } from "react-native-reanimated";
 
 import {
@@ -10,6 +10,8 @@ import {
   Button,
   CandidateRow,
   MeetingMap,
+  PlayButton,
+  ProgressBar,
   SegmentedTabs,
   SpeechRow,
   boundsAround,
@@ -24,20 +26,27 @@ import {
   phaseLabel,
   speechFeed,
 } from "../lib/meeting/view.ts";
+import { usePinStage } from "../components/map/usePinStage.ts";
 import { keepAgentsVisible, type Position } from "../lib/meeting/agentPositions.ts";
 import { latestRoute } from "../lib/meeting/reducer.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
+import { meetingImmersive } from "../lib/meeting/stageStore.ts";
 import { useMeetingPlayback } from "../lib/meeting/usePlayback.ts";
-import { clampSheetHeight, settleCollapsed } from "../lib/ui/sheetSnap.ts";
+import { clampSheetHeight } from "../lib/ui/sheetSnap.ts";
+import { settleLevel } from "../lib/ui/sheetLevels.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { conditionsDates, conditionsSummary } from "../lib/trip/conditionsSummary.ts";
 import { spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
 type Tab = "ai" | "board" | "talk";
 
-// 시트가 접히면 손잡이·제목 줄만 남는다. 펼치면 보이는 영역의 절반 가까이를 차지한다.
-const SHEET_COLLAPSED = 78;
-const SHEET_EXPANDED_RATIO = 0.5;
+// 시트는 세 단계다. 접힘(손잡이·제목 줄만), 중간(처음 모습, 지도를 넓게 보여 줌), 펼침(목록을 길게 봄).
+const SHEET_COLLAPSED = 96;
+const SHEET_MID_RATIO = 0.34;
+const SHEET_FULL_RATIO = 0.62;
+const LEVEL_MID = 1;
+// 시트 윗선 위로 끌 수 있는 투명한 띠의 높이(손잡이를 정확히 짚지 않아도 잡히게)
+const SHEET_DRAG_EXTRA = 28;
 const SHEET_OVERLAP = 22; // 시트 둥근 윗부분이 지도를 덮는 높이
 
 /** B2 회의 진행: 지도 위 AI들이 움직이고, 아래 시트에서 조사·후보·대화를 본다. 지금은 가짜 회의(부산)를 재생한다. */
@@ -49,20 +58,22 @@ export default function MeetingScreen() {
   const play = useMeetingPlayback(conditions !== null, conditions);
   const [tab, setTab] = useState<Tab>("ai");
   const [openCandidate, setOpenCandidate] = useState<string | null>(null);
-  const [sheetCollapsed, setSheetCollapsed] = useState(false);
+  const [level, setLevel] = useState(LEVEL_MID);
   const [areaHeight, setAreaHeight] = useState(0);
   const onAreaLayout = (e: LayoutChangeEvent) => setAreaHeight(Math.round(e.nativeEvent.layout.height));
   const reduceMotion = useReducedMotion();
   // 시트 높이는 값으로 두고 부드럽게 바꾼다. 지도는 항상 전체 크기로 깔려 있어서 시트가 움직여도 그림은 그대로다.
   // 높이는 레이아웃 값이라 기본 Animated(네이티브 드라이버 없이)로 움직인다.
   const sheetHeight = useRef(new Animated.Value(0)).current;
+  const sheetWrapHeight = useRef(Animated.add(sheetHeight, SHEET_DRAG_EXTRA)).current;
   const sheetShown = useRef(false);
   const sheetAnim = useRef<Animated.CompositeAnimation | null>(null);
   const sheetNow = useRef(0); // 지금 시트 높이(끄는 도중에도 알 수 있게 값 변화를 따라간다)
   const dragBase = useRef(0);
   const releaseVelocity = useRef(0);
   const agentMemory = useRef(new Map<string, Position>());
-  const expandedHeight = Math.round(areaHeight * SHEET_EXPANDED_RATIO);
+  const midHeight = Math.round(areaHeight * SHEET_MID_RATIO);
+  const fullHeight = Math.round(areaHeight * SHEET_FULL_RATIO);
   useEffect(() => {
     const id = sheetHeight.addListener(({ value }) => {
       sheetNow.current = value;
@@ -95,7 +106,7 @@ export default function MeetingScreen() {
 
   useEffect(() => {
     if (areaHeight <= 0) return;
-    const target = sheetCollapsed ? SHEET_COLLAPSED : expandedHeight;
+    const target = [SHEET_COLLAPSED, midHeight, fullHeight][level];
     const velocity = releaseVelocity.current;
     releaseVelocity.current = 0;
     // 처음 자리 잡을 때는 애니메이션 없이 바로 맞춘다.
@@ -106,7 +117,7 @@ export default function MeetingScreen() {
     }
     animateSheetTo(target, velocity);
     return () => sheetAnim.current?.stop();
-  }, [areaHeight, sheetCollapsed, expandedHeight, animateSheetTo, sheetHeight]);
+  }, [areaHeight, level, midHeight, fullHeight, animateSheetTo, sheetHeight]);
 
   const onSheetDragStart = useCallback(() => {
     sheetAnim.current?.stop();
@@ -115,22 +126,22 @@ export default function MeetingScreen() {
   const onSheetDragMove = useCallback(
     (dy: number) => {
       // 엄지를 따라 위아래로 움직이되, 접힌 높이와 펼친 높이를 벗어나지 않는다.
-      sheetHeight.setValue(clampSheetHeight(dragBase.current - dy, SHEET_COLLAPSED, expandedHeight));
+      sheetHeight.setValue(clampSheetHeight(dragBase.current - dy, SHEET_COLLAPSED, fullHeight));
     },
-    [expandedHeight, sheetHeight],
+    [fullHeight, sheetHeight],
   );
   const onSheetDragEnd = useCallback(
     (_dy: number, vy: number) => {
-      const next = settleCollapsed({ height: sheetNow.current, min: SHEET_COLLAPSED, max: expandedHeight, vy });
-      const target = next ? SHEET_COLLAPSED : expandedHeight;
+      const heights = [SHEET_COLLAPSED, midHeight, fullHeight];
+      const next = settleLevel({ height: sheetNow.current, levels: heights, vy });
       // 위로 올리면 높이가 커지므로 손가락 속도(아래가 +)의 부호를 뒤집어 넘긴다. px/ms → px/ms 그대로.
-      if (next === sheetCollapsed) animateSheetTo(target, -vy);
+      if (next === level) animateSheetTo(heights[next], -vy);
       else {
         releaseVelocity.current = -vy;
-        setSheetCollapsed(next);
+        setLevel(next);
       }
     },
-    [animateSheetTo, expandedHeight, sheetCollapsed],
+    [animateSheetTo, fullHeight, level, midHeight],
   );
 
   // 회의가 시작되면 대화 탭으로 옮겨 준다(그 뒤로는 사용자가 고른 탭을 그대로 둔다).
@@ -142,10 +153,31 @@ export default function MeetingScreen() {
     }
   }, [play.state.phase]);
 
+  // 회의가 재생되는 동안만 탭바를 숨긴다. 일시정지·종료하거나 다른 화면으로 가면 다시 나온다.
+  const [focused, setFocused] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setFocused(true);
+      return () => setFocused(false);
+    }, []),
+  );
+  const immersive = focused && play.status === "playing";
+  useEffect(() => {
+    meetingImmersive.set(immersive);
+    return () => meetingImmersive.set(false);
+  }, [immersive]);
+
   // 합의가 나오면 B3 화면이 읽을 수 있게 최종 상태를 내놓는다.
   useEffect(() => {
     if (play.status === "finished" && play.state.phase === "agreed") meetingResultStore.set(play.state);
   }, [play.status, play.state]);
+
+  // 조사 단계에서는 AI가 새 후보로 걸어가 핀을 꽂는다. 훅이라 아래 조기 반환보다 먼저 부른다.
+  const pinStage = usePinStage({
+    candidates: play.state.board.candidates,
+    agents: keepAgentsVisible(mapAgents(play.state), play.state.agents, agentMemory.current),
+    animate: play.state.phase === "researching",
+  });
 
   if (conditions === null) {
     return (
@@ -156,7 +188,7 @@ export default function MeetingScreen() {
         <AppText variant="small" tone="muted" align="center">
           날짜와 예산을 정하면 AI들이 모여 회의를 시작해요.
         </AppText>
-        <Button label="회의 조건 정하기" onPress={() => router.push("/conditions")} />
+        <Button label="회의 조건 정하기" onPress={() => router.push("/conditions")} style={styles.emptyAction} />
       </View>
     );
   }
@@ -168,7 +200,35 @@ export default function MeetingScreen() {
   const route = latestRoute(state);
   const playing = play.status === "playing";
   const done = play.status === "finished" || play.status === "error";
-  const mapAgentList = keepAgentsVisible(mapAgents(state), state.agents, agentMemory.current);
+
+  // 시트 제목 줄 오른쪽 버튼: 재생 중에는 건너뛰기·일시정지, 끝나면 다시 보기·합의안 보기.
+  const action = done ? (
+    <View style={styles.actions}>
+      <Pressable onPress={play.restart} accessibilityRole="button" style={styles.textAction}>
+        <AppText variant="smallStrong" tone="accent">
+          다시 보기
+        </AppText>
+      </Pressable>
+      {state.phase === "agreed" && <Button label="합의안 보기" onPress={() => router.push("/agreement")} />}
+    </View>
+  ) : (
+    <View style={styles.actions}>
+      {play.canSkip && (
+        <Pressable
+          onPress={play.skipToEnd}
+          accessibilityRole="button"
+          accessibilityLabel="건너뛰기"
+          accessibilityHint="회의를 끝까지 넘겨 합의안을 봐요"
+          style={styles.textAction}
+        >
+          <AppText variant="smallStrong" tone="accent">
+            건너뛰기
+          </AppText>
+        </Pressable>
+      )}
+      <PlayButton playing={playing} onPress={playing ? play.pause : play.resume} />
+    </View>
+  );
 
   return (
     <View style={styles.screen}>
@@ -179,37 +239,33 @@ export default function MeetingScreen() {
               art="busan"
               artView="full"
               bounds={boundsAround(mapPoints(state))}
-              agents={mapAgentList}
-              pins={mapPins(state)}
+              agents={pinStage.agents}
+              pins={mapPins(state).filter((pin) => pinStage.isVisible(pin.id))}
               routes={route.map((day) => ({ color: colors.accent, points: day.stops }))}
               bubble={currentBubble(state)}
               height={areaHeight}
-              viewHeight={areaHeight - expandedHeight + SHEET_OVERLAP}
+              viewHeight={areaHeight - midHeight + SHEET_OVERLAP}
               accessibilityLabel={phaseLabel(state)}
             />
-            <Animated.View style={[styles.sheetWrap, { height: sheetHeight }]}>
+            <Animated.View style={[styles.sheetWrap, { height: sheetWrapHeight }]}>
             <BottomSheet
               title={phaseLabel(state)}
-              meta={`${play.applied}/${play.total}`}
-              collapsed={sheetCollapsed}
-              onCollapsedChange={setSheetCollapsed}
+              meta={`${play.applied}/${play.total} · 후보 ${candidates.length} · 대화 ${feed.length}`}
+              action={action}
+              dragExtra={SHEET_DRAG_EXTRA}
+              collapsed={level === 0}
+              onCollapsedChange={(collapsed) => setLevel(collapsed ? 0 : LEVEL_MID)}
               onDragStart={onSheetDragStart}
               onDragMove={onSheetDragMove}
               onDragEnd={onSheetDragEnd}
               style={styles.sheet}
             >
-              <ScrollView nestedScrollEnabled style={styles.sheetScroll} contentContainerStyle={styles.sheetContent}>
-                <View>
-                  <AppText variant="caption" tone="muted">
-                    {conditionsDates(conditions)}
-                  </AppText>
-                  <AppText variant="caption" tone="muted">
-                    {conditionsSummary(conditions)}
-                  </AppText>
-                  <AppText variant="caption" tone="muted">
-                    지금은 예시 회의(부산)를 보여 줘요. 서버가 연결되면 이 조건으로 회의해요.
-                  </AppText>
-                </View>
+              <ProgressBar
+                value={play.total > 0 ? play.applied / play.total : 0}
+                size="sm"
+                accessibilityLabel={`회의 진행 ${play.applied}/${play.total}`}
+              />
+              <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.sheetScroll} contentContainerStyle={styles.sheetContent}>
                 <SegmentedTabs<Tab>
                   options={[
                     { key: "ai", label: "AI" },
@@ -263,30 +319,17 @@ export default function MeetingScreen() {
                       ))
                     ))}
                 </View>
+                <View>
+                  <AppText variant="caption" tone="muted">
+                    {conditionsDates(conditions)} · {conditionsSummary(conditions)}
+                  </AppText>
+                  <AppText variant="caption" tone="muted">
+                    지금은 예시 회의(부산)를 보여 줘요. 서버가 연결되면 이 조건으로 회의해요.
+                  </AppText>
+                </View>
               </ScrollView>
             </BottomSheet>
             </Animated.View>
-          </>
-        )}
-      </View>
-
-      <View style={styles.controls}>
-        {done ? (
-          <>
-            <Button label="다시 보기" variant="secondary" onPress={play.restart} style={styles.half} />
-            {state.phase === "agreed" && (
-              <Button label="합의안 보기" onPress={() => router.push("/agreement")} style={styles.half} />
-            )}
-          </>
-        ) : (
-          <>
-            <Button
-              label={playing ? "일시정지" : "계속"}
-              variant="secondary"
-              onPress={playing ? play.pause : play.resume}
-              style={styles.half}
-            />
-            <Button label="건너뛰기" onPress={play.skipToEnd} style={styles.half} />
           </>
         )}
       </View>
@@ -303,15 +346,9 @@ const createStyles = (t: Theme) =>
     sheetScroll: { flexShrink: 1 },
     sheetContent: { gap: spacing.sm + spacing.xs, paddingBottom: spacing.sm },
     list: { gap: spacing.sm },
-    controls: {
-      flexDirection: "row",
-      gap: spacing.sm,
-      padding: spacing.md,
-      backgroundColor: t.colors.surface,
-      borderTopWidth: 1,
-      borderTopColor: t.colors.border,
-    },
-    half: { flex: 1 },
+    actions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+    textAction: { minHeight: 48, paddingHorizontal: spacing.sm, alignItems: "center", justifyContent: "center" },
+    emptyAction: { alignSelf: "center" },
     empty: {
       flex: 1,
       backgroundColor: t.colors.background,

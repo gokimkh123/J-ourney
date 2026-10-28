@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 
 import { AppText, MeetingMap, ScheduleItem, SegmentedTabs, StatusPill, boundsAround } from "../components/index.ts";
@@ -27,7 +27,9 @@ export default function PlanScreen() {
   const plan = currentPlan;
   const tabs = useMemo(() => dayTabs(plan), [plan]);
   const [tab, setTab] = useState(tabs[0]?.key ?? "");
-  const planDay = plan.days.find((d) => `day-${d.day}` === tab) ?? plan.days[0];
+  // 일차 버튼은 바로 바뀌고, 무거운 지도·목록은 한 박자 뒤에 바꾼다(누르자마자 반응하는 느낌을 위해).
+  const shownTab = useDeferredValue(tab);
+  const planDay = plan.days.find((d) => `day-${d.day}` === shownTab) ?? plan.days[0];
   const summary = planSummary(plan);
 
   if (planDay === undefined) {
@@ -47,10 +49,11 @@ export default function PlanScreen() {
   const points = planDay.items.map((item) => ({ lat: item.place.lat, lng: item.place.lng }));
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.scroll}>
+    <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
       <MeetingMap
         art="busan"
         artView="fit"
+        calm
         bounds={boundsAround(points)}
         pins={planDay.items.map((item, i) => ({
           id: item.id,
@@ -59,6 +62,7 @@ export default function PlanScreen() {
           lng: item.place.lng,
           color: currentMembers.find((m) => m.memberId === item.forMembers[0])?.color ?? colors.accent,
           label: String(i + 1),
+          kind: placeKindOf(item.category),
         }))}
         routes={[{ color: colors.accent, points }]}
         height={MAP_HEIGHT}

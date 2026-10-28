@@ -33,7 +33,7 @@ export default function AgreementScreen() {
         <AppText variant="small" tone="muted" align="center">
           AI 회의가 끝나면 여기에서 결과를 볼 수 있어요.
         </AppText>
-        <Button label="AI 회의로 가기" onPress={() => router.replace("/meeting")} />
+        <Button label="AI 회의로 가기" onPress={() => router.replace("/meeting")} style={styles.emptyAction} />
       </View>
     );
   }
@@ -43,7 +43,7 @@ export default function AgreementScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
         <MemberBand members={state.agents.map((a) => ({ id: a.agentId, name: a.nickname, color: a.color, chips: a.chips }))} />
 
         <View style={styles.body}>
@@ -110,6 +110,7 @@ const createStyles = (t: Theme) =>
       borderTopColor: t.colors.border,
     },
     half: { flex: 1 },
+    emptyAction: { alignSelf: "center" },
     empty: {
       flex: 1,
       backgroundColor: t.colors.background,

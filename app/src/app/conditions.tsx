@@ -117,7 +117,7 @@ export default function ConditionsScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {errorText !== null && <Banner tone="danger" text={errorText} />}
 
         <View style={styles.section}>

@@ -7,7 +7,8 @@ import { AppText, Banner, Button, Card, SegmentedTabs } from "../components/inde
 import { api } from "../lib/api/index.ts";
 import { checkHealth } from "../lib/api/health.ts";
 import { config } from "../lib/config/index.ts";
-import { session } from "../lib/session/index.ts";
+import { partyActions } from "../lib/session/index.ts";
+import { forgetPartyInfo } from "../lib/session/partyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { themeMode } from "../lib/settings/index.ts";
 import { useThemeMode } from "../lib/settings/useThemeMode.ts";
@@ -49,12 +50,15 @@ export default function SettingsScreen() {
   };
 
   const doLeave = async () => {
-    await session.clear().catch(() => undefined);
+    if (me !== null) {
+      forgetPartyInfo(me.tripId);
+      await partyActions.leave(me.tripId).catch(() => undefined);
+    }
     router.replace("/");
   };
 
   const onLeave = () => {
-    Alert.alert("여행에서 나갈까요?", "이 휴대폰에서 이 여행 정보가 지워져요. 같은 초대 코드로 다시 들어오면 새 구성원으로 참여해요.", [
+    Alert.alert("파티에서 나갈까요?", "이 휴대폰에서 이 파티 정보가 지워져요. 같은 초대 코드로 다시 들어오면 새 구성원으로 참여해요.", [
       { text: "취소", style: "cancel" },
       { text: "나가기", style: "destructive", onPress: () => void doLeave() },
     ]);
@@ -68,7 +72,7 @@ export default function SettingsScreen() {
   };
 
   return (
-    <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+    <ScrollView showsVerticalScrollIndicator={false} style={styles.scroll} contentContainerStyle={styles.content}>
       {saveFailed && <Banner tone="warning" text="설정을 저장하지 못했어요. 이번 실행 동안만 적용돼요." />}
 
       <Card title="화면 모드">
@@ -81,13 +85,13 @@ export default function SettingsScreen() {
       <Card title="내 정보">
         {me === null ? (
           <AppText variant="small" tone="muted">
-            아직 참여한 여행이 없어요. 홈에서 여행을 만들거나 초대 코드로 들어와 보세요.
+            지금 들어가 있는 파티가 없어요. 홈에서 파티를 만들거나 초대 코드로 들어와 보세요.
           </AppText>
         ) : (
           <>
             <InfoRow label="닉네임" value={me.nickname} />
             <InfoRow label="초대 코드" value={me.inviteCode} />
-            <Button label="여행에서 나가기" variant="secondary" onPress={onLeave} block />
+            <Button label="파티에서 나가기" variant="secondary" onPress={onLeave} block />
           </>
         )}
       </Card>

@@ -23,7 +23,7 @@ export default function PlaceScreen() {
         <AppText variant="title" align="center">
           장소를 찾지 못했어요
         </AppText>
-        <Button label="일정으로 돌아가기" onPress={() => router.replace("/plan")} />
+        <Button label="일정으로 돌아가기" onPress={() => router.replace("/plan")} style={styles.emptyAction} />
       </View>
     );
   }
@@ -35,7 +35,7 @@ export default function PlaceScreen() {
   };
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.scroll}>
+    <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
       <Stack.Screen options={{ title: detail.title }} />
       <View style={styles.head}>
         <PlaceSticker kind={placeKindOf(item.category)} size={48} />
@@ -93,6 +93,7 @@ const createStyles = (t: Theme) =>
     section: { gap: spacing.md },
     links: { flexDirection: "row", gap: spacing.sm },
     half: { flex: 1 },
+    emptyAction: { alignSelf: "center" },
     empty: {
       flex: 1,
       backgroundColor: t.colors.background,
