@@ -12,6 +12,8 @@ export type Session = {
   inviteCode: string;
   memberId: string;
   nickname: string;
+  /** 시연 모드로 만든 파티(내가 방장). 서버는 알려 주지 않아 만들 때 폰에 적어 둔다. */
+  demo?: boolean;
 };
 
 export type SessionStore = {
@@ -40,7 +42,7 @@ export function toSession(value: unknown): Session | null {
   ) {
     return null;
   }
-  return { token, tripId, inviteCode, memberId, nickname };
+  return { token, tripId, inviteCode, memberId, nickname, ...(o.demo === true && { demo: true }) };
 }
 
 function parseSession(raw: string | null): Session | null {
