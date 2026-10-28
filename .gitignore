@@ -5,3 +5,18 @@
 .env
 .env.*
 !.env.example
+
+# 접근 키·터널 주소·SSH 키: 올리면 안 됨 (실제 값은 .env 또는 아래 이름의 파일에만 둠)
+.ssh/
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.pem
+*.key
+*.ppk
+journey-team-key*
+*team-key*
+*.secret
+*.secret.*
+비밀값*
+.cloudflared/
