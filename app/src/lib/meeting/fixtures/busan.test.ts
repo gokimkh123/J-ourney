@@ -68,32 +68,55 @@ test('AI마다 research 4단계 순서, searching에는 tool과 focus', () => {
   }
 });
 
-test('board.updated: 후보 8개 좌표와 첫 반응, 3회 이상, 조사 뒤 첫 보드', () => {
+test('조사 중 board.updated: 후보가 하나씩 늘어난다(핀이 하나씩 꽂힘), 반응은 아직 없다', () => {
   const boards = of('board.updated');
-  assert.ok(boards.length >= 3);
-  const firstBoard = must(boards[0]);
+  const partials = boards.slice(0, 12);
+  assert.deepEqual(
+    partials.map((b) => b.data.candidates.length),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+  );
+  for (const b of partials) assert.ok(b.data.candidates.every((c) => c.reactions.length === 0));
+  // 앞 보드의 후보는 다음 보드에 그대로 이어진다.
+  for (let i = 1; i < partials.length; i += 1) {
+    const before = must(partials[i - 1]).data.candidates.map((c) => c.placeId);
+    const after = must(partials[i]).data.candidates.map((c) => c.placeId);
+    assert.ok(before.every((id) => after.includes(id)));
+  }
+  // 조사 끝(done)은 후보가 다 올라온 뒤에 온다.
+  const firstDone = busanEvents.findIndex((e) => e.type === 'research.progress' && e.data.stage === 'done');
+  assert.ok(firstDone > busanEvents.indexOf(must(partials[11])));
+});
+
+test('board.updated: 후보 12개 좌표(부산 전역)와 첫 반응, 조사 뒤 첫 완성 보드', () => {
+  const boards = of('board.updated');
+  assert.ok(boards.length >= 15);
+  const firstBoard = must(boards[12]);
   assert.deepEqual(
     firstBoard.data.candidates.map((c) => [c.placeId, c.name, c.lat, c.lng]),
     [
-      ['plc_01', '○○ 돼지국밥', 35.1262, 129.034],
+      ['plc_01', '국제시장·깡통시장', 35.1007, 129.0285],
       ['plc_02', '자갈치시장', 35.0967, 129.0305],
-      ['plc_03', '광안리 회센터', 35.1555, 129.1345],
+      ['plc_03', '광안리 해변과 야경', 35.1532, 129.1186],
       ['plc_04', '흰여울문화마을', 35.0786, 129.0446],
-      ['plc_05', '○○ 카페', 35.07, 129.066],
-      ['plc_06', '해운대 해돋이', 35.1592, 129.159],
-      ['plc_07', '○○ 온천', 35.219, 129.089],
+      ['plc_05', '청사포 다릿돌전망대', 35.1595, 129.192],
+      ['plc_06', '해운대 해수욕장', 35.1587, 129.1604],
+      ['plc_07', '다대포 꿈의낙조분수', 35.0472, 128.9658],
       ['plc_08', '감천문화마을', 35.0975, 129.0106],
+      ['plc_09', '대변항', 35.2263, 129.2272],
+      ['plc_10', '해동용궁사', 35.1883, 129.2233],
+      ['plc_11', '송도해상케이블카', 35.0763, 129.0176],
+      ['plc_12', '범어사', 35.2823, 129.0679],
     ],
   );
   const reactions = firstBoard.data.candidates.flatMap((c) =>
     c.reactions.map((r) => [c.name, r.agentId, r.kind]),
   );
   assert.deepEqual(reactions, [
+    ['국제시장·깡통시장', 'agt_03', 'like'],
     ['자갈치시장', 'agt_03', 'warn'],
-    ['광안리 회센터', 'agt_03', 'like'],
+    ['광안리 해변과 야경', 'agt_02', 'like'],
     ['흰여울문화마을', 'agt_04', 'like'],
-    ['해운대 해돋이', 'agt_01', 'block'],
-    ['○○ 온천', 'agt_02', 'like'],
+    ['다대포 꿈의낙조분수', 'agt_01', 'block'],
   ]);
   const lastDone = busanEvents.findLastIndex((e) => e.type === 'research.progress');
   assert.equal(busanEvents.indexOf(firstBoard), lastDone + 1);
@@ -112,7 +135,7 @@ test('라운드, 제안, 라운드별 투표 점수와 찬반', () => {
     proposals.map((e) => [e.data.planId, e.data.version]),
     [['pln_01', 1], ['pln_02', 2], ['pln_03', 3], ['pln_04', 4]],
   );
-  const candidates = must(of('board.updated')[0]).data.candidates;
+  const candidates = must(of('board.updated')[12]).data.candidates;
   for (const proposal of proposals) {
     assert.equal(proposal.data.route.length, 2);
     for (const stop of proposal.data.route.flatMap((d) => d.stops)) {
@@ -124,7 +147,7 @@ test('라운드, 제안, 라운드별 투표 점수와 찬반', () => {
       .filter((e) => e.data.planId === planId)
       .map((e) => [e.data.agentId, e.data.vote, e.data.score]);
   assert.deepEqual(votes('pln_01'), [['agt_01', 'yes', 8], ['agt_02', 'yes', 7], ['agt_03', 'no', 5], ['agt_04', 'no', 4]]);
-  assert.deepEqual(votes('pln_02'), [['agt_01', 'yes', 8], ['agt_02', 'yes', 8], ['agt_03', 'yes', 7], ['agt_04', 'no', 5]]);
+  assert.deepEqual(votes('pln_02'), [['agt_01', 'yes', 8], ['agt_02', 'no', 5], ['agt_03', 'yes', 8], ['agt_04', 'yes', 7]]);
   assert.deepEqual(votes('pln_03'), [['agt_01', 'yes', 8], ['agt_02', 'yes', 8], ['agt_03', 'yes', 7], ['agt_04', 'yes', 9]]);
   assert.ok(votes('pln_03').every(([, , score]) => Number(score) >= 7));
   assert.deepEqual(votes('pln_04'), [['agt_01', 'yes', 8], ['agt_02', 'yes', 9], ['agt_03', 'yes', 8], ['agt_04', 'yes', 9]]);

@@ -1,4 +1,4 @@
-import type { MeetingEvent, MeetingEventType } from './types.ts';
+import type { MeetingEvent, MeetingEventType, MeetingState } from './types.ts';
 
 export function planPlayback(
   events: MeetingEvent[],
@@ -25,7 +25,12 @@ const EVENT_DELAY_MS: Record<MeetingEventType, number> = {
   'plan.confirmed': 800,
 };
 
-export function eventDelayMs(event: MeetingEvent): number {
+// 조사 중에 후보가 하나씩 올라올 때는 핀이 연달아 꽂히도록 짧게 쉰다.
+const RESEARCH_BOARD_DELAY_MS = 900;
+
+/** event를 적용한 직후 상태(state)를 주면, 조사 중 후보 보드는 더 짧게 쉰다. */
+export function eventDelayMs(event: MeetingEvent, state?: MeetingState): number {
+  if (event.type === 'board.updated' && state?.phase === 'researching') return RESEARCH_BOARD_DELAY_MS;
   return EVENT_DELAY_MS[event.type];
 }
 

@@ -14,6 +14,10 @@ export type Playback = {
   getStatus(): PlaybackStatus;
   getAppliedCount(): number;
   getTotalCount(): number;
+  /** 서버가 합의안을 만들어 보냈는가(meeting.agreed 수신). 건너뛰기는 이게 참이어야 한다. */
+  isAgreementReady(): boolean;
+  /** 지금 건너뛰기를 누를 수 있는가. 재생 중이고 합의안이 도착했을 때만 참(합의안 도착을 따지지 않는 설정이면 재생 중일 때). */
+  canSkip(): boolean;
   start(): void;
   pause(): void;
   resume(): void;
@@ -26,7 +30,13 @@ export type Playback = {
 export function createPlayback(options: {
   events: MeetingEvent[];
   clock: PlaybackClock;
-  delayFor?: (event: MeetingEvent) => number;
+  delayFor?: (event: MeetingEvent, state: MeetingState) => number;
+  /**
+   * 주면 "서버가 합의안을 만드는 데 걸리는 시간"을 흉내 낸다. 이 시간이 지나면(또는 화면이 합의 이벤트까지 재생하면)
+   * 합의안이 도착한 것으로 보고, 그 전에는 건너뛰기를 막는다. 생략하면 건너뛰기를 막지 않는다.
+   * 실서버에서는 이 값 대신 meeting.agreed 이벤트를 받았을 때 도착으로 바꾼다.
+   */
+  serverAgreementDelayMs?: number;
 }): Playback {
   const events = [...options.events].sort((a, b) => a.seq - b.seq);
   const clock = options.clock;
@@ -38,7 +48,35 @@ export function createPlayback(options: {
   let applied = 0;
   let delay = 0;
   let timer: { handle: unknown } | null = null;
+  let serverTimer: { handle: unknown } | null = null;
+  let agreementReady = false;
+  let everAgreed = false;
   let disposed = false;
+  const gated = options.serverAgreementDelayMs !== undefined;
+
+  function markAgreementReady(): void {
+    agreementReady = true;
+    everAgreed = true;
+  }
+
+  function cancelServer(): void {
+    if (serverTimer === null) return;
+    clock.clearTimeout(serverTimer.handle);
+    serverTimer = null;
+  }
+
+  // 모의 서버가 합의안을 보내 오는 시각을 예약한다. 이미 도착했으면 하지 않는다.
+  function scheduleServer(): void {
+    if (!gated || agreementReady || serverTimer !== null) return;
+    const entry: { handle: unknown } = { handle: null };
+    serverTimer = entry;
+    entry.handle = clock.setTimeout(() => {
+      if (serverTimer !== entry) return;
+      serverTimer = null;
+      markAgreementReady();
+      notify();
+    }, options.serverAgreementDelayMs ?? 0);
+  }
 
   // 스냅샷을 돌므로 구독자 안에서 해제·메서드 호출을 해도 안전하다.
   function notify(): void {
@@ -81,8 +119,9 @@ export function createPlayback(options: {
       index += 1;
       if (result.state === state) continue;
       state = result.state;
+      if (event.type === 'meeting.agreed') markAgreementReady();
       applied += 1;
-      delay = delayFor(event);
+      delay = delayFor(event, state);
       return true;
     }
     return false;
@@ -112,6 +151,7 @@ export function createPlayback(options: {
   function start(): void {
     if (disposed || status !== 'idle') return;
     status = 'playing';
+    scheduleServer();
     advance();
     notify();
   }
@@ -121,6 +161,8 @@ export function createPlayback(options: {
     getStatus: () => status,
     getAppliedCount: () => applied,
     getTotalCount: () => events.length,
+    isAgreementReady: () => agreementReady,
+    canSkip: () => (status === 'playing' || status === 'paused') && (!gated || agreementReady),
     start,
     pause() {
       if (disposed || status !== 'playing') return;
@@ -136,6 +178,8 @@ export function createPlayback(options: {
     },
     skipToEnd() {
       if (disposed || status === 'finished' || status === 'error') return;
+      // 서버가 합의안을 보내기 전에는 건너뛸 끝이 없다.
+      if (gated && !agreementReady) return;
       cancel();
       while (applyNext()) {}
       finishUnlessError();
@@ -144,6 +188,9 @@ export function createPlayback(options: {
     restart() {
       if (disposed) return;
       cancel();
+      cancelServer();
+      // 이미 합의안을 받은 회의를 다시 보는 것이면 처음부터 건너뛸 수 있다.
+      agreementReady = everAgreed;
       state = initialMeetingState();
       status = 'idle';
       index = 0;
@@ -161,6 +208,7 @@ export function createPlayback(options: {
       if (disposed) return;
       disposed = true;
       cancel();
+      cancelServer();
       listeners.clear();
     },
   };

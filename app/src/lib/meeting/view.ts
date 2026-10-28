@@ -118,6 +118,7 @@ export function agentRows(state: MeetingState): {
   });
 }
 
+/** AI가 말하며 확인한 마지막 장소(후보)의 좌표. 없으면 undefined. */
 function lastVisitedCandidate(
   state: MeetingState,
   messages: MessageItem[],
@@ -135,6 +136,12 @@ function lastVisitedCandidate(
   return undefined;
 }
 
+/**
+ * 지금 "알려진 위치"가 있는 AI만 돌려준다. 위치는 단계와 상관없이 이어진다.
+ * 조사 중에는 서버가 보낸 focus 좌표, 그 뒤에는 AI가 마지막으로 확인한 장소다.
+ * 둘 다 없으면 이 함수는 싣지 않고, 화면용 keepAgentsVisible이 직전 위치(없으면 출발점)에 세운다.
+ * 예전처럼 "자기 후보의 평균점" 같은 임의의 점으로 옮기지 않는다.
+ */
 export function mapAgents(state: MeetingState): {
   id: string;
   name: string;
@@ -148,29 +155,15 @@ export function mapAgents(state: MeetingState): {
   const messages = messagesOf(state);
   for (const agent of state.agents) {
     const research = state.research[agent.agentId];
-    let lat: number;
-    let lng: number;
-    // 회의 중에는 AI가 마지막으로 확인한 장소 후보에 계속 머문다. 다른 AI가 말해도 제자리로 돌아가지 않는다.
-    const visited = state.phase === 'meeting' ? lastVisitedCandidate(state, messages, agent.agentId) : undefined;
-    if (visited !== undefined && !research?.focus) {
-      lat = visited.lat;
-      lng = visited.lng;
-    } else if (research?.focus) {
-      lat = research.focus.lat;
-      lng = research.focus.lng;
-    } else {
-      const own = state.board.candidates.filter((c) => c.proposedBy.includes(agent.agentId));
-      if (own.length === 0) continue;
-      lat = own.reduce((sum, c) => sum + c.lat, 0) / own.length;
-      lng = own.reduce((sum, c) => sum + c.lng, 0) / own.length;
-    }
+    const spot = research?.focus ?? lastVisitedCandidate(state, messages, agent.agentId);
+    if (spot === undefined) continue;
     result.push({
       id: agent.agentId,
       name: agent.nickname,
       color: agent.color,
       chips: agent.chips,
-      lat,
-      lng,
+      lat: spot.lat,
+      lng: spot.lng,
       searching: state.phase === 'researching' && research?.stage !== 'done',
     });
   }
@@ -247,14 +240,14 @@ export function speechFeed(state: MeetingState): {
       chips: agent.chips,
       text: m.text,
       round: m.round,
-      meta: `${m.round}라운드`,
+      meta: m.round === 0 ? '조사 중' : `${m.round}라운드`,
     });
   }
   return rows;
 }
 
 export function currentBubble(state: MeetingState): { agentId: string; text: string } | null {
-  if (state.phase !== 'meeting') return null;
+  if (state.phase !== 'meeting' && state.phase !== 'researching') return null;
   const last = lastMessage(state);
   return last === undefined ? null : { agentId: last.agentId, text: last.text };
 }

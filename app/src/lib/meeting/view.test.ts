@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { busanEvents } from './fixtures/busan.ts';
+import { keepAgentsVisible } from './agentPositions.ts';
 import { eventsUntilFirstAgreed } from './player.ts';
 import { applyEvent, initialMeetingState } from './reducer.ts';
 import type { MeetingEvent, MeetingState } from './types.ts';
@@ -66,11 +67,8 @@ test('조사 중 모든 시점: 행 수, 상태 문구, 위치 불변식', () =>
       assert.ok(state.agents.some((x) => x.agentId === a.id));
       assert.equal(a.searching, state.research[a.id]?.stage !== 'done');
     }
-    const located = state.agents.filter(
-      (x) =>
-        state.research[x.agentId]?.focus != null ||
-        state.board.candidates.some((c) => c.proposedBy.includes(x.agentId)),
-    );
+    // 조사 중에 위치가 알려진 AI는 서버가 focus를 보낸 AI뿐이다(나머지는 화면이 출발점에 세운다).
+    const located = state.agents.filter((x) => state.research[x.agentId]?.focus != null);
     assert.equal(agents.length, located.length);
   }
   assert.ok(checked > 0);
@@ -268,4 +266,49 @@ test('다른 AI가 말해도 이미 장소로 간 AI는 제자리로 돌아가�
   }
   assert.ok(moved.size > 0);
   assert.ok(checked > 0);
+});
+
+test('조사가 끝나고 회의가 끝나도 AI는 후보 평균점 같은 임의의 점으로 옮겨지지 않는다', () => {
+  let state = initialMeetingState();
+  const memory = new Map<string, { lat: number; lng: number }>();
+  const spots = new Map<string, { lat: number; lng: number }>(); // 각 AI가 마지막으로 "알려진" 위치
+  let steps = 0;
+  for (const event of eventsUntilFirstAgreed(busanEvents)) {
+    state = applyEvent(state, event).state;
+    const shown = keepAgentsVisible(mapAgents(state), state.agents, memory);
+    for (const a of shown) {
+      const before = spots.get(a.id);
+      const known = mapAgents(state).find((x) => x.id === a.id);
+      if (known === undefined && before !== undefined) {
+        // 새 위치가 알려지지 않은 동안에는 직전 위치 그대로다.
+        assert.deepEqual({ lat: a.lat, lng: a.lng }, before);
+        steps += 1;
+      }
+      spots.set(a.id, { lat: a.lat, lng: a.lng });
+    }
+  }
+  assert.ok(steps > 20);
+  assert.equal(state.phase, 'agreed');
+});
+
+test('조사 중 대사: 말풍선에 나오고 꼬리표는 조사 중, 회의 대사는 N라운드', () => {
+  const state = stateAt((e) => e.type === 'agent.message' && e.data.round === 0);
+  assert.equal(state.phase, 'researching');
+  const bubble = currentBubble(state);
+  assert.ok(bubble !== null);
+  assert.equal(bubble.text, speechFeed(state).at(-1)?.text);
+  assert.deepEqual([...new Set(speechFeed(state).map((f) => f.meta))], ['조사 중']);
+  const later = stateAt((e) => e.type === 'agent.message' && e.data.round === 1);
+  assert.deepEqual(
+    [...new Set(speechFeed(later).map((f) => f.meta))].sort(),
+    ['1라운드', '조사 중'],
+  );
+});
+
+test('조사 중 대사는 모든 AI가 한 번 이상 한다', () => {
+  const spoken = new Set(busanEvents.flatMap((e) => (e.type === 'agent.message' && e.data.round === 0 ? [e.data.agentId] : [])));
+  assert.deepEqual([...spoken].sort(), ['agt_01', 'agt_02', 'agt_03', 'agt_04']);
+  const firstRound = busanEvents.findIndex((e) => e.type === 'round.started');
+  const lastResearchSay = busanEvents.findLastIndex((e) => e.type === 'agent.message' && e.data.round === 0);
+  assert.ok(lastResearchSay < firstRound);
 });

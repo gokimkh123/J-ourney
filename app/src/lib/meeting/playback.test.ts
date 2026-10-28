@@ -327,3 +327,61 @@ test('(l) 입력 events 배열이 바뀌지 않고 뒤섞인 입력도 seq 순�
   assert.equal(input.length, snapshot.length);
   input.forEach((e, i) => assert.equal(e, snapshot[i]));
 });
+
+test('서버 합의안이 도착하기 전에는 건너뛰기를 막고, 도착하면 허용한다', () => {
+  const fake = fakeClock();
+  const playback = createPlayback({ events: agreedEvents, clock: fake.clock, serverAgreementDelayMs: 5000 });
+  playback.start();
+  assert.equal(playback.isAgreementReady(), false);
+  assert.equal(playback.canSkip(), false);
+  playback.skipToEnd();
+  assert.equal(playback.getStatus(), 'playing');
+  assert.ok(playback.getAppliedCount() < agreedEvents.length);
+  fake.tick(5000);
+  assert.equal(playback.isAgreementReady(), true);
+  assert.equal(playback.canSkip(), true);
+  playback.skipToEnd();
+  assert.equal(playback.getStatus(), 'finished');
+  assert.equal(json(playback.getState()), finalJson);
+  playback.dispose();
+});
+
+test('일시정지해도 서버 시계는 흐르고, 재생이 합의까지 가면 합의안 도착으로 본다', () => {
+  const fake = fakeClock();
+  const slow = createPlayback({ events: agreedEvents, clock: fake.clock, serverAgreementDelayMs: 3000 });
+  slow.start();
+  slow.pause();
+  fake.tick(3000);
+  assert.equal(slow.isAgreementReady(), true);
+  assert.equal(slow.canSkip(), true);
+  slow.dispose();
+
+  const late = createPlayback({ events: agreedEvents, clock: fake.clock, serverAgreementDelayMs: FOREVER });
+  late.start();
+  fake.tick(FOREVER / 10);
+  assert.equal(late.getStatus(), 'finished');
+  assert.equal(late.isAgreementReady(), true);
+  late.dispose();
+});
+
+test('합의안을 한 번 받은 회의를 다시 보면 처음부터 건너뛸 수 있다', () => {
+  const fake = fakeClock();
+  const playback = createPlayback({ events: agreedEvents, clock: fake.clock, serverAgreementDelayMs: 2000 });
+  playback.start();
+  fake.tick(2000);
+  playback.skipToEnd();
+  playback.restart();
+  assert.equal(playback.getStatus(), 'playing');
+  assert.equal(playback.canSkip(), true);
+  playback.dispose();
+});
+
+test('서버 합의 시각을 주지 않으면 예전처럼 언제든 건너뛸 수 있다', () => {
+  const fake = fakeClock();
+  const playback = createPlayback({ events: agreedEvents, clock: fake.clock });
+  playback.start();
+  assert.equal(playback.canSkip(), true);
+  playback.skipToEnd();
+  assert.equal(playback.getStatus(), 'finished');
+  playback.dispose();
+});

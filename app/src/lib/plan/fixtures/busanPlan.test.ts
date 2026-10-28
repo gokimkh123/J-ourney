@@ -26,16 +26,16 @@ test('id는 busanEvents 최종 planId, 상태 confirmed', () => {
 });
 
 test('날짜, 항목 수, 헬퍼', () => {
-  assert.deepEqual(busanPlan.days.map((d) => [d.day, d.date, d.items.length]), [[1, '2026-11-14', 3], [2, '2026-11-15', 3]]);
-  assert.equal(totalItems(busanPlan), 6);
-  assert.deepEqual(items.filter(needsMapCheck).map((i) => i.id), ['itm_05', 'itm_07']);
+  assert.deepEqual(busanPlan.days.map((d) => [d.day, d.date, d.items.length]), [[1, '2026-11-14', 6], [2, '2026-11-15', 4]]);
+  assert.equal(totalItems(busanPlan), 10);
+  assert.deepEqual(items.filter(needsMapCheck).map((i) => i.id), ['itm_07', 'itm_05']);
   assert.deepEqual(memberReasons(items[0]!, 'mem_01'), ['든든하게 시작하는 첫 일정으로 시간표에 딱 맞아요.']);
   assert.deepEqual(memberReasons(items[0]!, 'mem_04'), []);
 });
 
 test('비용 합계와 예산', () => {
   const sum = items.reduce((s, i) => s + i.costPerPerson, 0);
-  assert.equal(sum, 105000);
+  assert.equal(sum, 150000);
   assert.equal(busanPlan.costPerPerson, sum);
   assert.ok(sum < busanPlan.budgetPerPerson);
 });
@@ -95,5 +95,5 @@ test('pln_04 route와 itemId·이름·좌표 일치', () => {
       routeDay.stops.map((s) => [s.itemId, s.name, s.lat, s.lng]),
     );
   });
-  assert.deepEqual(route.flatMap((d) => d.stops.map((s) => s.itemId)), ['itm_01', 'itm_04', 'itm_02', 'itm_05', 'itm_07', 'itm_03']);
+  assert.deepEqual(route.flatMap((d) => d.stops.map((s) => s.itemId)), ['itm_01', 'itm_02', 'itm_04', 'itm_08', 'itm_07', 'itm_03', 'itm_06', 'itm_05', 'itm_09', 'itm_10']);
 });

@@ -26,8 +26,8 @@ test('dayTabs: 개수·키·라벨', () => {
 
 test('scheduleRows: 항목 수, verified, moveLabel', () => {
   const expectedMoves = [
-    [undefined, '버스 35분 · 1,550원', '버스 20분 · 1,550원'],
-    [undefined, '지하철 40분 · 1,650원', '지하철 45분 · 1,750원'],
+    [undefined, '도보 8분', '버스 15분 · 1,550원', '버스 20분 · 1,550원', '버스 30분 · 1,550원', '지하철 65분 · 1,750원'],
+    [undefined, '버스 20분 · 1,550원', '버스 35분 · 1,750원', '택시 10분 · 6,500원'],
   ];
   busanPlan.days.forEach((day, d) => {
     const rows = scheduleRows(busanPlan, day.day, members);
@@ -68,7 +68,7 @@ test('없는 day·itemId', () => {
 test('placeDetail: rows 순서, 메뉴 생략, 정보 없음, reasons', () => {
   const detail = placeDetail(busanPlan, 'itm_01', members)!;
   assert.deepEqual(detail.rows.map((r) => r.label), ['주소', '영업시간', '메뉴', '인기도', '혼잡도']);
-  assert.deepEqual(detail.rows[0], { label: '주소', value: '부산 동래구 온천장로 1' });
+  assert.deepEqual(detail.rows[0], { label: '주소', value: '부산 중구 신창동4가' });
   assert.deepEqual(detail.rows[3], { label: '인기도', value: '82/100' });
   assert.deepEqual(detail.rows[4], { label: '혼잡도', value: '보통' });
   assert.deepEqual(detail.reasons.map((r) => [r.name, r.color]), [
@@ -85,10 +85,10 @@ test('placeDetail: rows 순서, 메뉴 생략, 정보 없음, reasons', () => {
 
 test('planSummary: 합계와 overBudget', () => {
   assert.deepEqual(planSummary(busanPlan), {
-    costLabel: '105,000원',
+    costLabel: '150,000원',
     budgetLabel: '예산 250,000원',
     overBudget: false,
-    itemCount: 6,
+    itemCount: 10,
     dayCount: 2,
   });
   const low = copy();

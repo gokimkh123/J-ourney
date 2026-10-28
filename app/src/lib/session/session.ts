@@ -26,14 +26,8 @@ export type SessionStore = {
 
 const STORAGE_KEY = 'journey.session.v1';
 
-function parseSession(raw: string | null): Session | null {
-  if (raw === null) return null;
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return null;
-  }
+/** 저장된 값 하나가 세션 모양이면 세션으로, 아니면 null. 여분 필드는 버린다. */
+export function toSession(value: unknown): Session | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const o = value as Record<string, unknown>;
   const { token, tripId, inviteCode, memberId, nickname } = o;
@@ -47,6 +41,17 @@ function parseSession(raw: string | null): Session | null {
     return null;
   }
   return { token, tripId, inviteCode, memberId, nickname };
+}
+
+function parseSession(raw: string | null): Session | null {
+  if (raw === null) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  return toSession(value);
 }
 
 export function createSessionStore(kv: KeyValueStore): SessionStore {
