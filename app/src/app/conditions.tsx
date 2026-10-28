@@ -14,6 +14,7 @@ import {
   Stepper,
 } from "../components/index.ts";
 import { endpoints } from "../lib/api/index.ts";
+import { config } from "../lib/config/index.ts";
 import type { InviteInfo } from "../lib/persona/types.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { DEFAULT_BUDGET } from "../lib/trip/budget.ts";
@@ -56,6 +57,7 @@ export default function ConditionsScreen() {
   const [maxRounds, setMaxRounds] = useState(saved?.rules.maxRounds ?? DEFAULT_MAX_ROUNDS);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
 
   const [info, setInfo] = useState<InviteInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
@@ -91,7 +93,8 @@ export default function ConditionsScreen() {
         ? `${members.length}명 모두 준비됐어요`
         : `${waiting.map((m) => m.nickname).join(", ")} 님이 성향 검사를 아직 안 했어요`;
 
-  function onStart() {
+  async function onStart() {
+    if (starting) return;
     const result = validateConditions(
       {
         destination: "부산",
@@ -109,6 +112,20 @@ export default function ConditionsScreen() {
       return;
     }
     setErrorText(null);
+    // 실서버에서는 조건을 저장하고 회의를 시작해야 이벤트가 흐른다. 가짜 서버는 회의 화면이 예시 회의를 재생한다.
+    if (!config.useMock) {
+      if (me === null) return;
+      setStarting(true);
+      try {
+        await endpoints.saveConditions(me.tripId, result.body);
+        await endpoints.startMeeting(me.tripId);
+      } catch (e) {
+        setErrorText(describeError(e, "meeting"));
+        setStarting(false);
+        return;
+      }
+      setStarting(false);
+    }
     // 새 조건으로 회의를 다시 하므로 이전 합의안은 지운다.
     meetingResultStore.set(null);
     conditionsStore.set(result.body);
@@ -214,7 +231,7 @@ export default function ConditionsScreen() {
             {readyText}
           </AppText>
         </View>
-        <Button label="회의 시작" size="lg" block disabled={!ready} onPress={onStart} />
+        <Button label="회의 시작" size="lg" block disabled={!ready} loading={starting} onPress={() => void onStart()} />
       </View>
 
       <DateRangeCalendar

@@ -6,12 +6,15 @@ import { useReducedMotion } from "react-native-reanimated";
 import {
   AgentStatusRow,
   AppText,
+  Banner,
   BottomSheet,
   Button,
   CandidateRow,
   MeetingMap,
   PlayButton,
   ProgressBar,
+  ReviewPanel,
+  ReviewWaiting,
   SegmentedTabs,
   SpeechRow,
   boundsAround,
@@ -31,7 +34,14 @@ import { keepAgentsVisible, type Position } from "../lib/meeting/agentPositions.
 import { latestRoute } from "../lib/meeting/reducer.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { meetingImmersive } from "../lib/meeting/stageStore.ts";
-import { useMeetingPlayback } from "../lib/meeting/usePlayback.ts";
+import { config } from "../lib/config/index.ts";
+import { liveBanner, liveProgress } from "../lib/meeting/liveView.ts";
+import { answeredLabel, itemNumber, reviewPeople, reviewPins, pickedCountLabel } from "../lib/meeting/reviewView.ts";
+import { useLiveMeeting } from "../lib/meeting/useLiveMeeting.ts";
+import { useMeetingPlayback, type MeetingPlayback } from "../lib/meeting/usePlayback.ts";
+import { useReview } from "../lib/meeting/useReview.ts";
+import { usePartyInfos } from "../lib/session/usePartyInfo.ts";
+import { useSession } from "../lib/session/useSession.ts";
 import { clampSheetHeight } from "../lib/ui/sheetSnap.ts";
 import { settleLevel } from "../lib/ui/sheetLevels.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
@@ -45,6 +55,7 @@ const SHEET_COLLAPSED = 96;
 const SHEET_MID_RATIO = 0.34;
 const SHEET_FULL_RATIO = 0.62;
 const LEVEL_MID = 1;
+const LEVEL_FULL = 2;
 // 시트 윗선 위로 끌 수 있는 투명한 띠의 높이(손잡이를 정확히 짚지 않아도 잡히게)
 const SHEET_DRAG_EXTRA = 28;
 const SHEET_OVERLAP = 22; // 시트 둥근 윗부분이 지도를 덮는 높이
@@ -55,7 +66,29 @@ export default function MeetingScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const conditions = useSyncExternalStore(conditionsStore.subscribe, conditionsStore.get, conditionsStore.get);
-  const play = useMeetingPlayback(conditions !== null, conditions);
+  // 실서버면 서버가 보내는 이벤트를, 가짜 서버면 예시 회의(부산)를 재생한다.
+  const live = !config.useMock;
+  const me = useSession();
+  const infos = usePartyInfos();
+  const isHost = me !== null && (me.demo === true || infos[me.tripId]?.members.find((m) => m.id === me.memberId)?.isHost === true);
+  const mock = useMeetingPlayback(!live && conditions !== null, conditions);
+  // 실서버는 폰에 조건이 없어도(앱을 다시 켰거나 방장이 아니어도) 서버의 회의를 그대로 따라간다.
+  const real = useLiveMeeting(live, me);
+  const play: MeetingPlayback = live
+    ? {
+        state: real.state,
+        status: liveProgress(real.feedStatus, real.state.phase),
+        applied: real.state.lastSeq,
+        total: 0,
+        canSkip: false,
+        pause() {},
+        resume() {},
+        skipToEnd() {},
+        restart() {},
+      }
+    : mock;
+  const connectionNotice = live ? liveBanner(real.feedStatus) : null;
+  const review = useReview(play.state, me, isHost);
   const [tab, setTab] = useState<Tab>("ai");
   const [openCandidate, setOpenCandidate] = useState<string | null>(null);
   const [level, setLevel] = useState(LEVEL_MID);
@@ -149,6 +182,8 @@ export default function MeetingScreen() {
   useEffect(() => {
     if (lastPhase.current !== play.state.phase) {
       if (play.state.phase === "meeting") setTab("talk");
+      // 사람 확인은 안건을 읽고 골라야 해서 시트를 높게 펼친다.
+      if (play.state.phase === "reviewing") setLevel(LEVEL_FULL);
       lastPhase.current = play.state.phase;
     }
   }, [play.state.phase]);
@@ -161,7 +196,7 @@ export default function MeetingScreen() {
       return () => setFocused(false);
     }, []),
   );
-  const immersive = focused && play.status === "playing";
+  const immersive = focused && play.status === "playing" && play.state.phase !== "reviewing";
   useEffect(() => {
     meetingImmersive.set(immersive);
     return () => meetingImmersive.set(false);
@@ -169,8 +204,8 @@ export default function MeetingScreen() {
 
   // 합의가 나오면 B3 화면이 읽을 수 있게 최종 상태를 내놓는다.
   useEffect(() => {
-    if (play.status === "finished" && play.state.phase === "agreed") meetingResultStore.set(play.state);
-  }, [play.status, play.state]);
+    if (!live && play.status === "finished" && play.state.phase === "agreed") meetingResultStore.set(play.state);
+  }, [live, play.status, play.state]);
 
   // 조사 단계에서는 AI가 새 후보로 걸어가 핀을 꽂는다. 훅이라 아래 조기 반환보다 먼저 부른다.
   const pinStage = usePinStage({
@@ -179,7 +214,7 @@ export default function MeetingScreen() {
     animate: play.state.phase === "researching",
   });
 
-  if (conditions === null) {
+  if (!live && conditions === null) {
     return (
       <View style={styles.empty}>
         <AppText variant="title" align="center">
@@ -200,9 +235,13 @@ export default function MeetingScreen() {
   const route = latestRoute(state);
   const playing = play.status === "playing";
   const done = play.status === "finished" || play.status === "error";
+  const reviewing = live && state.phase === "reviewing" && state.review !== null;
+  const reviewItems = state.review?.items ?? [];
+  const visiblePins = mapPins(state).filter((pin) => pinStage.isVisible(pin.id));
+  const pins = reviewing ? reviewPins(visiblePins, reviewItems) : visiblePins;
 
   // 시트 제목 줄 오른쪽 버튼: 재생 중에는 건너뛰기·일시정지, 끝나면 다시 보기·합의안 보기.
-  const action = done ? (
+  const action = live ? undefined : done ? (
     <View style={styles.actions}>
       <Pressable onPress={play.restart} accessibilityRole="button" style={styles.textAction}>
         <AppText variant="smallStrong" tone="accent">
@@ -240,7 +279,7 @@ export default function MeetingScreen() {
               artView="full"
               bounds={boundsAround(mapPoints(state))}
               agents={pinStage.agents}
-              pins={mapPins(state).filter((pin) => pinStage.isVisible(pin.id))}
+              pins={pins}
               routes={route.map((day) => ({ color: colors.accent, points: day.stops }))}
               bubble={currentBubble(state)}
               height={areaHeight}
@@ -250,7 +289,7 @@ export default function MeetingScreen() {
             <Animated.View style={[styles.sheetWrap, { height: sheetWrapHeight }]}>
             <BottomSheet
               title={phaseLabel(state)}
-              meta={`${play.applied}/${play.total} · 후보 ${candidates.length} · 대화 ${feed.length}`}
+              meta={live ? `후보 ${candidates.length} · 대화 ${feed.length}` : `${play.applied}/${play.total} · 후보 ${candidates.length} · 대화 ${feed.length}`}
               action={action}
               dragExtra={SHEET_DRAG_EXTRA}
               collapsed={level === 0}
@@ -260,12 +299,41 @@ export default function MeetingScreen() {
               onDragEnd={onSheetDragEnd}
               style={styles.sheet}
             >
-              <ProgressBar
-                value={play.total > 0 ? play.applied / play.total : 0}
-                size="sm"
-                accessibilityLabel={`회의 진행 ${play.applied}/${play.total}`}
-              />
-              <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.sheetScroll} contentContainerStyle={styles.sheetContent}>
+              {connectionNotice !== null && <Banner tone="warning" text={connectionNotice} />}
+              {!live && (
+                <ProgressBar
+                  value={play.total > 0 ? play.applied / play.total : 0}
+                  size="sm"
+                  accessibilityLabel={`회의 진행 ${play.applied}/${play.total}`}
+                />
+              )}
+              {reviewing && !review.sent && (
+                <ReviewPanel
+                  items={reviewItems}
+                  memos={state.review?.memos ?? []}
+                  picks={review.picks}
+                  onPick={review.pick}
+                  countLabel={pickedCountLabel(reviewItems, review.picks)}
+                  sendLabel={review.sendLabel}
+                  canSend={review.canSend}
+                  sending={review.submitting}
+                  onSubmit={review.submit}
+                  error={review.error}
+                />
+              )}
+              {reviewing && review.sent && (
+                <ReviewWaiting
+                  countLabel={answeredLabel(state).short}
+                  spokenCount={answeredLabel(state).spoken}
+                  progress={(state.review?.total ?? 0) > 0 ? (state.review?.answered ?? 0) / (state.review?.total ?? 1) : 0}
+                  people={reviewPeople(state)}
+                  mine={reviewItems.map((item) => ({ number: itemNumber(reviewItems, item.placeId), name: item.name, keep: review.picks[item.placeId] === true }))}
+                  onProceed={isHost ? review.proceed : undefined}
+                  proceeding={review.proceeding}
+                  error={review.error}
+                />
+              )}
+              {!reviewing && <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.sheetScroll} contentContainerStyle={styles.sheetContent}>
                 <SegmentedTabs<Tab>
                   options={[
                     { key: "ai", label: "AI" },
@@ -320,14 +388,18 @@ export default function MeetingScreen() {
                     ))}
                 </View>
                 <View>
-                  <AppText variant="caption" tone="muted">
-                    {conditionsDates(conditions)} · {conditionsSummary(conditions)}
-                  </AppText>
-                  <AppText variant="caption" tone="muted">
-                    지금은 예시 회의(부산)를 보여 줘요. 서버가 연결되면 이 조건으로 회의해요.
-                  </AppText>
+                  {conditions !== null && (
+                    <AppText variant="caption" tone="muted">
+                      {conditionsDates(conditions)} · {conditionsSummary(conditions)}
+                    </AppText>
+                  )}
+                  {!live && (
+                    <AppText variant="caption" tone="muted">
+                      지금은 예시 회의(부산)를 보여 줘요. 서버가 연결되면 이 조건으로 회의해요.
+                    </AppText>
+                  )}
                 </View>
-              </ScrollView>
+              </ScrollView>}
             </BottomSheet>
             </Animated.View>
           </>

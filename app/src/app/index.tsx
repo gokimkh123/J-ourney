@@ -65,18 +65,19 @@ function PartyList() {
   }, [list, refreshOne]);
   usePolling(refreshAll, POLL_MS * 2, list.length > 0, ids);
 
-  async function submit(request: () => Promise<SessionResponse>) {
+  async function submit(request: () => Promise<SessionResponse>, demoParty = false) {
     if (inFlight.current) return;
     inFlight.current = true;
     setSubmitting(true);
     setError(null);
     try {
       // 목록에 넣고 그 파티로 들어가면 홈이 파티 안 화면으로 바뀐다.
-      await partyActions.join(fromSessionResponse(await request()));
+      const joined = fromSessionResponse(await request());
+      await partyActions.join(demoParty ? { ...joined, demo: true } : joined);
       setCode("");
       setCreating(false);
     } catch (e) {
-      setError(describeError(e));
+      setError(describeError(e, "join"));
     } finally {
       inFlight.current = false;
       setSubmitting(false);
@@ -177,7 +178,7 @@ function PartyList() {
             </View>
             <View style={styles.actionRow}>
               <Button label="취소" variant="secondary" onPress={() => setCreating(false)} disabled={submitting} style={styles.half} />
-              <Button label="파티 만들기" onPress={() => void submit(() => endpoints.createTrip(title.trim(), name, demo))} disabled={!canCreate} loading={submitting && creating} style={styles.half} />
+              <Button label="파티 만들기" onPress={() => void submit(() => endpoints.createTrip(title.trim(), name, demo), demo)} disabled={!canCreate} loading={submitting && creating} style={styles.half} />
             </View>
           </View>
         )}

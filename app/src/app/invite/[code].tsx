@@ -14,7 +14,7 @@ import { describeError, normalizeInviteCode } from "../../lib/ui/format.ts";
 
 function describeJoinError(error: unknown): string {
   if (error instanceof ApiError && error.status === 404) return "초대 코드를 찾을 수 없어요";
-  return describeError(error);
+  return describeError(error, "join");
 }
 
 type Preview =
