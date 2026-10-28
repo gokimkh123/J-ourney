@@ -1,14 +1,16 @@
 import { useRouter } from "expo-router";
-import { useDeferredValue, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { useDeferredValue, useMemo, useState, useSyncExternalStore } from "react";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 
 import { AppText, MeetingMap, ScheduleItem, SegmentedTabs, StatusPill, boundsAround } from "../components/index.ts";
+import { config } from "../lib/config/index.ts";
+import { chosenPlanStore, dayOfKey, dayRows, routeDayTabs } from "../lib/plan/chosenPlan.ts";
 import type { PlanStatus } from "../lib/plan/types.ts";
 import { currentMembers, currentPlan } from "../lib/plan/current.ts";
 import { placeKindOf } from "../lib/plan/placeKind.ts";
 import { dayTabs, planSummary, scheduleRows } from "../lib/plan/view.ts";
 import { dateLabel } from "../lib/trip/dateRange.ts";
-import { spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
+import { hitSize, pressedOpacity, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
 // 하루 일정이 동래~영도처럼 위아래로 길게 퍼져도 다 들어오는 높이
 const MAP_HEIGHT = 360;
@@ -20,7 +22,7 @@ const STATUS: Record<PlanStatus, { label: string; tone: "warning" | "accent" | "
 };
 
 /** C1 합의 일정: 날짜별 지도와 시간표. 항목을 누르면 C2 근거 보기. 지금은 가짜 일정(부산)이다. */
-export default function PlanScreen() {
+function MockPlanScreen() {
   const styles = useStyles(createStyles);
   const { colors } = useTheme();
   const router = useRouter();
@@ -112,8 +114,99 @@ export default function PlanScreen() {
   );
 }
 
+/** 실서버: 회의에서 사람이 고른 A·B 안의 날짜별 지도와 시간표. 시각은 앱이 이동 시간을 이어 붙여 짐작한 값이다. */
+function LivePlanScreen() {
+  const styles = useStyles(createStyles);
+  const { colors } = useTheme();
+  const router = useRouter();
+  const chosen = useSyncExternalStore(chosenPlanStore.subscribe, chosenPlanStore.get, chosenPlanStore.get);
+  const tabs = useMemo(() => (chosen === null ? [] : routeDayTabs(chosen.route)), [chosen]);
+  const [tab, setTab] = useState("");
+
+  if (chosen === null || tabs.length === 0) {
+    return (
+      <View style={styles.empty}>
+        <AppText variant="title" align="center">
+          아직 정한 일정이 없어요
+        </AppText>
+        <AppText variant="small" tone="muted" align="center">
+          AI 회의에서 일정안을 고르면 여기에 나와요.
+        </AppText>
+      </View>
+    );
+  }
+
+  const day = tabs.find((t) => t.key === tab)?.key ?? tabs[0]!.key;
+  const rows = dayRows(chosen, dayOfKey(day), colors.accent);
+  const date = chosen.route.find((d) => d.day === dayOfKey(day))?.date;
+  const points = rows.map((r) => ({ lat: r.lat, lng: r.lng }));
+
+  return (
+    <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
+      <MeetingMap
+        art="busan"
+        artView="fit"
+        calm
+        bounds={boundsAround(points)}
+        pins={rows.map((r, i) => ({ id: r.itemId, name: r.title, lat: r.lat, lng: r.lng, color: r.color, label: String(i + 1), kind: r.kind }))}
+        routes={[{ color: colors.accent, points }]}
+        height={MAP_HEIGHT}
+        accessibilityLabel={`${dayOfKey(day)}일차 장소 ${rows.length}곳 지도`}
+      />
+
+      <View style={styles.body}>
+        <View style={styles.titleRow}>
+          <AppText variant="display" accessibilityRole="header">
+            부산 {tabs.length}일
+          </AppText>
+          <Pressable
+            onPress={() => {
+              chosenPlanStore.set(null);
+              router.navigate("/meeting");
+            }}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.reselect, pressed && { opacity: pressedOpacity }]}
+          >
+            <AppText variant="smallStrong" tone="muted">
+              안 다시 고르기
+            </AppText>
+          </Pressable>
+        </View>
+
+        <SegmentedTabs options={tabs} value={day} onChange={setTab} accessibilityLabel="날짜 고르기" />
+        {date !== undefined && (
+          <AppText variant="caption" tone="muted">
+            {dateLabel(date)}
+          </AppText>
+        )}
+
+        <View style={styles.list}>
+          {rows.map((row) => (
+            <ScheduleItem
+              key={row.itemId}
+              time={row.time}
+              title={row.title}
+              category={row.category}
+              verified
+              forMembers={row.forMembers}
+              kind={row.kind}
+              {...(row.moveLabel !== undefined && { moveLabel: row.moveLabel })}
+            />
+          ))}
+        </View>
+      </View>
+    </ScrollView>
+  );
+}
+
+export default function PlanScreen() {
+  return config.useMock ? <MockPlanScreen /> : <LivePlanScreen />;
+}
+
 const createStyles = (t: Theme) =>
   StyleSheet.create({
+    titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+    reselect: { minHeight: hitSize, justifyContent: "center", paddingLeft: spacing.sm },
     screen: { flex: 1, backgroundColor: t.colors.background },
     scroll: { paddingBottom: spacing.lg },
     body: { padding: spacing.md, gap: spacing.md },

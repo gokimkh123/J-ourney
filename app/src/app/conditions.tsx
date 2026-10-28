@@ -27,6 +27,7 @@ import {
 } from "../lib/trip/conditions.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { rememberStartedMeeting } from "../lib/meeting/startedMeeting.ts";
+import { chosenPlanStore } from "../lib/plan/chosenPlan.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { addDays, dateLabel, nextSaturday, todayISO } from "../lib/trip/dateRange.ts";
 import { describeError, formatWon, nightsLabel } from "../lib/ui/format.ts";
@@ -130,6 +131,7 @@ export default function ConditionsScreen() {
     }
     // 새 조건으로 회의를 다시 하므로 이전 합의안은 지운다.
     meetingResultStore.set(null);
+    chosenPlanStore.set(null);
     conditionsStore.set(result.body);
     router.replace("/meeting");
   }

@@ -11,6 +11,7 @@ import {
   Button,
   CandidateRow,
   MeetingMap,
+  PlanChoice,
   PlayButton,
   ProgressBar,
   ReviewPanel,
@@ -41,6 +42,7 @@ import { answeredLabel, itemNumber, reviewPeople, reviewPins, pickedCountLabel }
 import { useLiveMeeting } from "../lib/meeting/useLiveMeeting.ts";
 import { useMeetingPlayback, type MeetingPlayback } from "../lib/meeting/usePlayback.ts";
 import { useReview } from "../lib/meeting/useReview.ts";
+import { usePlanChoice } from "../lib/plan/usePlanChoice.ts";
 import { usePartyInfos } from "../lib/session/usePartyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { clampSheetHeight } from "../lib/ui/sheetSnap.ts";
@@ -93,6 +95,8 @@ export default function MeetingScreen() {
     : mock;
   const connectionNotice = live ? liveBanner(real.feedStatus) : null;
   const review = useReview(play.state, me, isHost);
+  // 서버가 A·B 일정안을 보내면(실서버 전용) 시트가 바로 고르기 화면이 된다.
+  const choice = usePlanChoice(play.state, live && play.state.phase === "proposed", colors.accent);
   const [tab, setTab] = useState<Tab>("ai");
   const [openCandidate, setOpenCandidate] = useState<string | null>(null);
   const [level, setLevel] = useState(LEVEL_MID);
@@ -187,7 +191,7 @@ export default function MeetingScreen() {
     if (lastPhase.current !== play.state.phase) {
       if (play.state.phase === "meeting") setTab("talk");
       // 사람 확인은 안건을 읽고 골라야 해서 시트를 높게 펼친다.
-      if (play.state.phase === "reviewing") setLevel(LEVEL_FULL);
+      if (play.state.phase === "reviewing" || play.state.phase === "proposed") setLevel(LEVEL_FULL);
       lastPhase.current = play.state.phase;
     }
   }, [play.state.phase]);
@@ -236,7 +240,7 @@ export default function MeetingScreen() {
   const agents = agentRows(state);
   const candidates = candidateRows(state);
   const feed = [...speechFeed(state)].reverse();
-  const route = latestRoute(state);
+  const route = choice?.route ?? latestRoute(state);
   const playing = play.status === "playing";
   const done = play.status === "finished" || play.status === "error";
   const reviewing = live && state.phase === "reviewing" && state.review !== null;
@@ -337,7 +341,24 @@ export default function MeetingScreen() {
                   error={review.error}
                 />
               )}
-              {!reviewing && <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.sheetScroll} contentContainerStyle={styles.sheetContent}>
+              {choice !== null && (
+                <PlanChoice
+                  cards={choice.cards}
+                  selected={choice.selected}
+                  onSelect={choice.select}
+                  dayTabs={choice.dayTabs}
+                  day={choice.day}
+                  onDay={choice.setDay}
+                  notice={choice.notice}
+                  stops={choice.stops}
+                  confirmLabel={`${choice.selected}안으로 정하기`}
+                  onConfirm={() => {
+                    choice.confirm();
+                    router.navigate("/plan");
+                  }}
+                />
+              )}
+              {!reviewing && choice === null && <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.sheetScroll} contentContainerStyle={styles.sheetContent}>
                 <SegmentedTabs<Tab>
                   options={[
                     { key: "ai", label: "AI" },
