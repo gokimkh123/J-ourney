@@ -11,6 +11,7 @@ import {
   StatGroup,
   StatusPill,
 } from "../components/index.ts";
+import { config } from "../lib/config/index.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { agreementView } from "../lib/meeting/view.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
@@ -50,7 +51,7 @@ export default function AgreementScreen() {
           <View style={styles.titleBlock}>
             <View style={styles.pills}>
               <StatusPill label="사람 확정 전" tone="warning" />
-              <StatusPill label="예시 데이터" />
+              {config.useMock && <StatusPill label="예시 데이터" />}
             </View>
             <AppText variant="title" accessibilityRole="header">
               AI가 제안한 일정이에요

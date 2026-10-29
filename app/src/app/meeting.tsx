@@ -210,9 +210,9 @@ export default function MeetingScreen() {
     return () => meetingImmersive.set(false);
   }, [immersive]);
 
-  // 합의가 나오면 B3 화면이 읽을 수 있게 최종 상태를 내놓는다.
+  // 합의가 나오면 B3 화면이 읽을 수 있게 최종 상태를 내놓는다. 실서버는 재생 끝이 없어 meeting.agreed를 받은 뒤부터 내놓는다.
   useEffect(() => {
-    if (!live && play.status === "finished" && play.state.phase === "agreed") meetingResultStore.set(play.state);
+    if (live ? play.state.agreement !== null : play.status === "finished" && play.state.phase === "agreed") meetingResultStore.set(play.state);
   }, [live, play.status, play.state]);
 
   // 조사 단계에서는 AI가 새 후보로 걸어가 핀을 꽂는다. 훅이라 아래 조기 반환보다 먼저 부른다.
