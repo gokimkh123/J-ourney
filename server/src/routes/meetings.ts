@@ -10,6 +10,7 @@ import { ApiError } from '../lib/errors.js';
 import { hashToken } from '../lib/ids.js';
 import { parseBody } from '../lib/validate.js';
 import { type EventHub, LIVE, streamTrip } from '../meeting/live.js';
+import type { Monitor } from '../lib/monitor.js';
 import { REACT } from '../meeting/react.js';
 import { eventsAfter } from '../meeting/runs.js';
 import type { MeetingService } from '../meeting/service.js';
@@ -34,13 +35,15 @@ export interface MeetingRouteDeps {
   pingMs?: number;
   /** 접근 키 (ACCESS_KEYS): 있으면 터널 요청은 맞는 키를 낸 경우만 회의를 시작함 */
   accessKeys?: readonly AccessKey[];
+  /** 관리자 디버깅 화면(/dev/monitor)에 WebSocket 열림·닫힘을 남김 (시험 화면을 켠 서버만) */
+  monitor?: Monitor | null;
 }
 
 /**
  * 회의 API (명세서 4.5·5장): 회의 시작 · 상태 · 사람 확인(5단계) · 놓친 이벤트 · 실시간 연결(WebSocket)
  * 앱 → 서버는 일반 요청(REST), 서버 → 앱은 WebSocket으로 기록한 이벤트를 바로 보냄
  */
-export function meetingRoutes({ db, service, hub, pingMs, accessKeys = [] }: MeetingRouteDeps) {
+export function meetingRoutes({ db, service, hub, pingMs, accessKeys = [], monitor = null }: MeetingRouteDeps) {
   const r = new Hono<AuthEnv>();
   const auth = requireMember(db);
 
@@ -108,11 +111,14 @@ export function meetingRoutes({ db, service, hub, pingMs, accessKeys = [] }: Mee
       const afterSeq = afterSeqOf(c.req.query('afterSeq'));
       let stop = () => {};
       let unregister = () => {};
+      let watched: ReturnType<Monitor['socketOpened']> | null = null;
       return {
         onOpen(_e, ws) {
+          watched = monitor?.socketOpened(c, { tripId: member.tripId, memberId: member.id, afterSeq }) ?? null;
           const send = (text: string) => {
             try {
               ws.send(text);
+              watched?.sent();
             } catch {
               stop(); // 닫히는 중이면 보내기만 멈춤
             }
@@ -129,9 +135,10 @@ export function meetingRoutes({ db, service, hub, pingMs, accessKeys = [] }: Mee
             },
           });
         },
-        onClose() {
+        onClose(e) {
           stop();
           unregister();
+          watched?.closed(e.code, e.reason);
         },
       };
     }),
