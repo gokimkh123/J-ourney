@@ -10,6 +10,8 @@ import {
   BottomSheet,
   Button,
   CandidateRow,
+  ChoiceResult,
+  ChoiceWaiting,
   MeetingMap,
   PlanChoice,
   PlayButton,
@@ -42,7 +44,7 @@ import { answeredLabel, itemNumber, reviewPeople, reviewPins, pickedCountLabel }
 import { useLiveMeeting } from "../lib/meeting/useLiveMeeting.ts";
 import { useMeetingPlayback, type MeetingPlayback } from "../lib/meeting/usePlayback.ts";
 import { useReview } from "../lib/meeting/useReview.ts";
-import { usePlanChoice } from "../lib/plan/usePlanChoice.ts";
+import { useServerChoice } from "../lib/plan/useServerChoice.ts";
 import { usePartyInfos } from "../lib/session/usePartyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { clampSheetHeight } from "../lib/ui/sheetSnap.ts";
@@ -95,8 +97,9 @@ export default function MeetingScreen() {
     : mock;
   const connectionNotice = live ? liveBanner(real.feedStatus) : null;
   const review = useReview(play.state, me, isHost);
-  // 서버가 A·B 일정안을 보내면(실서버 전용) 시트가 바로 고르기 화면이 된다.
-  const choice = usePlanChoice(play.state, live && play.state.phase === "proposed", colors.accent);
+  const hostMemberId = me === null ? null : me.demo === true ? me.memberId : (infos[me.tripId]?.members.find((m) => m.isHost)?.id ?? null);
+  // 회의가 끝나면(실서버 전용, meeting.agreed) 시트가 바로 A·B 고르기 화면이 된다. 고르기·정하기는 서버 일정 표로 한다.
+  const { view: choice } = useServerChoice(play.state, live && play.state.agreement !== null, me, isHost, hostMemberId, colors.accent);
   const [tab, setTab] = useState<Tab>("ai");
   const [openCandidate, setOpenCandidate] = useState<string | null>(null);
   const [level, setLevel] = useState(LEVEL_MID);
@@ -190,8 +193,8 @@ export default function MeetingScreen() {
   useEffect(() => {
     if (lastPhase.current !== play.state.phase) {
       if (play.state.phase === "meeting") setTab("talk");
-      // 사람 확인은 안건을 읽고 골라야 해서 시트를 높게 펼친다.
-      if (play.state.phase === "reviewing" || play.state.phase === "proposed") setLevel(LEVEL_FULL);
+      // 사람 확인·A·B 고르기는 읽고 골라야 해서 시트를 높게 펼친다.
+      if (play.state.phase === "reviewing" || (live && play.state.phase === "agreed")) setLevel(LEVEL_FULL);
       lastPhase.current = play.state.phase;
     }
   }, [play.state.phase]);
@@ -341,21 +344,40 @@ export default function MeetingScreen() {
                   error={review.error}
                 />
               )}
-              {choice !== null && (
+              {choice?.stage === "choose" && (
                 <PlanChoice
                   cards={choice.cards}
                   selected={choice.selected}
                   onSelect={choice.select}
+                  people={choice.people}
                   dayTabs={choice.dayTabs}
                   day={choice.day}
                   onDay={choice.setDay}
                   notice={choice.notice}
                   stops={choice.stops}
-                  confirmLabel={`${choice.selected}안으로 정하기`}
-                  onConfirm={() => {
-                    choice.confirm();
-                    router.navigate("/plan");
-                  }}
+                  onConfirm={choice.confirm}
+                  sending={choice.sending}
+                  error={choice.error}
+                />
+              )}
+              {choice?.stage === "waiting" && (
+                <ChoiceWaiting
+                  cards={choice.cards}
+                  mine={choice.mine}
+                  onChange={choice.change}
+                  people={choice.people}
+                  onDecide={choice.decide}
+                  sending={choice.sending}
+                  error={choice.error}
+                />
+              )}
+              {choice?.stage === "decided" && (
+                <ChoiceResult
+                  head={choice.result.head}
+                  title={choice.result.title}
+                  rows={choice.result.rows}
+                  hostPick={choice.result.hostPick}
+                  onNext={() => router.navigate("/plan")}
                 />
               )}
               {!reviewing && choice === null && <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.sheetScroll} contentContainerStyle={styles.sheetContent}>

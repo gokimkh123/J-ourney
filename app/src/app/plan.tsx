@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
 import { useDeferredValue, useMemo, useState, useSyncExternalStore } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
 
 import { AppText, MeetingMap, ScheduleItem, SegmentedTabs, StatusPill, boundsAround } from "../components/index.ts";
 import { config } from "../lib/config/index.ts";
@@ -10,7 +10,7 @@ import { currentMembers, currentPlan } from "../lib/plan/current.ts";
 import { placeKindOf } from "../lib/plan/placeKind.ts";
 import { dayTabs, planSummary, scheduleRows } from "../lib/plan/view.ts";
 import { dateLabel } from "../lib/trip/dateRange.ts";
-import { hitSize, pressedOpacity, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
+import { spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
 // 하루 일정이 동래~영도처럼 위아래로 길게 퍼져도 다 들어오는 높이
 const MAP_HEIGHT = 360;
@@ -118,7 +118,6 @@ function MockPlanScreen() {
 function LivePlanScreen() {
   const styles = useStyles(createStyles);
   const { colors } = useTheme();
-  const router = useRouter();
   const chosen = useSyncExternalStore(chosenPlanStore.subscribe, chosenPlanStore.get, chosenPlanStore.get);
   const tabs = useMemo(() => (chosen === null ? [] : routeDayTabs(chosen.route)), [chosen]);
   const [tab, setTab] = useState("");
@@ -159,18 +158,6 @@ function LivePlanScreen() {
           <AppText variant="display" accessibilityRole="header">
             부산 {tabs.length}일
           </AppText>
-          <Pressable
-            onPress={() => {
-              chosenPlanStore.set(null);
-              router.navigate("/meeting");
-            }}
-            accessibilityRole="button"
-            style={({ pressed }) => [styles.reselect, pressed && { opacity: pressedOpacity }]}
-          >
-            <AppText variant="smallStrong" tone="muted">
-              안 다시 고르기
-            </AppText>
-          </Pressable>
         </View>
 
         <SegmentedTabs options={tabs} value={day} onChange={setTab} accessibilityLabel="날짜 고르기" />
@@ -206,7 +193,6 @@ export default function PlanScreen() {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-    reselect: { minHeight: hitSize, justifyContent: "center", paddingLeft: spacing.sm },
     screen: { flex: 1, backgroundColor: t.colors.background },
     scroll: { paddingBottom: spacing.lg },
     body: { padding: spacing.md, gap: spacing.md },

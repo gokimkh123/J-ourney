@@ -72,7 +72,11 @@ function representativeNames(plan: ProposedPlan, others: ProposedPlan[]): string
 }
 
 export function planChoices(state: MeetingState): PlanChoice[] {
-  const plans = proposedPlans(state);
+  return choicesOf(proposedPlans(state));
+}
+
+/** 두 안의 카드 요약(이동 시간·대표 장소). 일정 표(GET /plan)의 안에도 쓴다. */
+export function choicesOf(plans: ProposedPlan[]): PlanChoice[] {
   return plans.map((plan) => {
     const { minutes, approx } = moveMinutesOf(plan.route);
     return {
