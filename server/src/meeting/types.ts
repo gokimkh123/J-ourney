@@ -37,7 +37,7 @@ export interface BoardCandidate {
   reactions: Reaction[];
 }
 /**
- * 후보 보드 (명세서 board.updated의 data). agenda는 ⚠·✕가 붙은 곳·여행지 밖에서 넣은 곳·이름이 달라 AI가 맞춘 꼭 지킬 곳으로 만든 회의 안건 (이벤트 data로 그대로 보내려고 type으로 둠)
+ * 후보 보드 (명세서 board.updated의 data). agenda는 ⚠·✕가 붙은 곳·여행지 밖에서 넣은 곳으로 만든 회의 안건과 메모(장소 없음: AI 이름 맞추기·찾지 못한 꼭 지킬 것 등) (이벤트 data로 그대로 보내려고 type으로 둠)
  * placeId가 있는 안건은 5단계에서 사람이 남김·뺌을 고르고, null인 안건은 장소가 아닌 메모 (후보에 넣지 못한 꼭 지킬 것과 까닭)
  */
 export type Board = {

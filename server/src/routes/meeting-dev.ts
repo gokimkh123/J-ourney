@@ -12,6 +12,7 @@ import { type MeetingStateType, buildMeetingGraph, meetingGraphShape } from '../
 import type { EventHub } from '../meeting/live.js';
 import { REACT, reactionScore } from '../meeting/react.js';
 import { type MeetingLimits, eventsAfter } from '../meeting/runs.js';
+import { ID_MAX } from './meetings.js';
 import type { MeetingObserver, MeetingService, RunOutcome } from '../meeting/service.js';
 import type { TourClient } from '../tour/client.js';
 
@@ -30,10 +31,10 @@ export interface MeetingDevDeps {
 }
 
 const devReviewBody = z.object({
-  meetingId: z.string().min(1).max(40),
+  meetingId: z.string().min(1).max(ID_MAX),
   /** 구성원마다 안건별 남김·뺌 (응답하지 않은 사람은 빼고 보냄) */
   responses: z
-    .array(z.object({ memberId: z.string().min(1).max(40), choices: z.array(z.object({ placeId: z.string().min(1).max(40), keep: z.boolean() })).max(REACT.agendaMax) }))
+    .array(z.object({ memberId: z.string().min(1).max(ID_MAX), choices: z.array(z.object({ placeId: z.string().min(1).max(ID_MAX), keep: z.boolean() })).max(REACT.agendaMax) }))
     .max(MAX_MEMBERS),
   /** true면 방장 '진행'으로 마감 (응답하지 않은 사람은 남김) */
   close: z.boolean().default(false),
@@ -138,7 +139,7 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
       members: s.members.map((m) => ({ memberId: m.memberId, nickname: m.nickname, title: m.title, color: m.color })),
       picks: s.picks,
       board: s.board,
-      scores: s.board!.candidates.map((c) => ({ placeId: c.placeId, ...reactionScore(c) })),
+      scores: (s.board?.candidates ?? []).map((c) => ({ placeId: c.placeId, ...reactionScore(c) })),
       retrieve: s.pool,
       review: out.status === 'reviewing' ? s.reviewRequest : null,
       reviewDecision: s.reviewDecision ?? null,
@@ -146,6 +147,8 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
       plans: s.plans?.plans ?? null,
       /** 6단계에서 카카오를 실제로 부른 수(기능별)·저장된 구간을 쓴 수·못 쓴 수 */
       kakao: s.plans?.kakao ?? null,
+      /** 7단계 평가 1라운드 (사람마다 입장·이유·한마디·요청·만족도·코드가 고친 것, 사람 확인을 기다리면 null) */
+      evaluation: s.evaluation ?? null,
       /** LLM_REPLAY로 실행함 (고른 결과마다 savedFrom이 있으면 지난 AI 결과, 없으면 규칙) */
       replay: !!s.saved,
     };

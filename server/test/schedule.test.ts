@@ -145,7 +145,7 @@ const restaurant = (id: string, title: string, lat: number, lng: number, intro: 
   detailSyncedAt: new Date(),
 });
 const run = (db: TestDb, router: RouteClient, pool: RetrieveResult, board: Board, members: MemberInput[], o: { decision?: ReviewDecision | null; moveMode?: MoveMode } = {}) =>
-  schedulePlans(db, router, { meetingId: 'mtg_test1', pool, board, members, decision: o.decision ?? null, moveMode: o.moveMode ?? 'transit' });
+  schedulePlans(db, router, { meetingId: 'mtg_test1', pool, board, members, decision: o.decision ?? null, moveMode: o.moveMode ?? 'transit' }).then((r) => r.plans);
 
 // 시험마다 PGlite DB를 새로 만들어(같은 구간 저장분이 다음 결과를 바꾸지 않게) 느린 CI에서는 5초를 넘음 → 이 묶음만 20초
 describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { timeout: 20_000 }, () => {
@@ -304,6 +304,79 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     for (const bad of ['토요휴무식당', '디비카페', '보드 카페']) expect(meals).not.toContain(bad);
     expect(stops[lunch].name).not.toBe('저녁만식당');
     expect(stops.find((s) => s.name === '보드 카페')).toMatchObject({ kind: 'sight' }); // 카페는 관광지처럼
+  });
+
+  it('꼭 지킬 식당은 한 번만: 다른 날에 넣어 둔 꼭 지킬 식당을 그날 끼니로 다시 쓰지 않음 (10/28 점검: 1일째 점심·2일째 저녁에 같은 식당)', async () => {
+    const db = await testDb();
+    const spa = near('온천', 5, { code: 'EX050100', marks: { mem_1: [{ kind: 'must', label: '온천' }] } });
+    // 꼭 지킬 식당이 관광지 묶음 바로 옆에 있어 1일째 끼니로도 가장 좋아 보임
+    const gukbap = near('국밥집', 6, { type: 39, code: 'FD010100', marks: { mem_1: [{ kind: 'must', label: '돼지국밥' }] } });
+    const cands = [spa, gukbap, ...Array.from({ length: 10 }, (_, i) => near(`관광지${i}`, i))];
+    await db.insert(places).values([
+      restaurant('r_far1', '먼식당1', 35.2, 129.16, { restdatefood: '연중무휴', opentimefood: '11:00~21:00' }),
+      restaurant('r_far2', '먼식당2', 35.21, 129.17, { restdatefood: '연중무휴', opentimefood: '11:00~21:00' }),
+      restaurant('r_far3', '먼식당3', 35.22, 129.18, { restdatefood: '연중무휴', opentimefood: '11:00~21:00' }),
+    ]);
+    const members = [member('mem_1', {}, [], [include('온천'), include('돼지국밥')]), member('mem_2')];
+    const hotel = near('호텔', 2, { type: 32, code: 'AC010100' });
+    const [A, B] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07', '2026-11-08'], [hotel]), boardOf(cands), members);
+    for (const plan of [A, B]) expect(plan.route.flatMap((d) => d.stops).filter((x) => x.placeId === `plc_${gukbap.id}`)).toHaveLength(1);
+  });
+
+  it("꼭 먹을 음식·꼭 피할 곳의 이름 규칙은 2단계 AI가 고른 식당 id로만 맞춤 (코드는 이름·메뉴 글자로 찾지 않음, 10/29 '가')", async () => {
+    const db = await testDb();
+    const cands = Array.from({ length: 8 }, (_, i) => near(`관광지${i}`, i));
+    await db.insert(places).values([
+      restaurant('r_text', '돼지국밥집', 35.158, 129.1, { restdatefood: '연중무휴', opentimefood: '11:00~21:00', firstmenu: '돼지국밥' }),
+      restaurant('r_ai', '초량식당', 35.16, 129.11, { restdatefood: '연중무휴', opentimefood: '11:00~21:00' }),
+      restaurant('r_avoid', '바로옆식당', 35.159, 129.105, { restdatefood: '연중무휴', opentimefood: '11:00~21:00' }),
+    ]);
+    const gukbap: MustKeepRule = { type: 'include', label: '돼지국밥 먹기', quote: '돼지국밥은 꼭', keyword: '돼지국밥', target: 'food', codes: [], start: null, end: null, amount: null };
+    const nope: MustKeepRule = { type: 'avoid', label: '바로옆식당 빼기', quote: '바로옆식당은 싫어요', keyword: '바로옆식당', target: 'place', codes: [], start: null, end: null, amount: null };
+    const members = [member('mem_1', {}, [], [gukbap]), member('mem_2', {}, [], [nope])];
+    const pool: RetrieveResult = {
+      ...poolOf(cands, ['2026-11-07']),
+      nameMatches: [
+        { memberId: 'mem_1', type: 'include', label: '돼지국밥 먹기', keyword: '돼지국밥', places: ['초량식당'], ids: ['r_ai'] },
+        { memberId: 'mem_2', type: 'avoid', label: '바로옆식당 빼기', keyword: '바로옆식당', places: ['바로옆식당'], ids: ['r_avoid'] },
+      ],
+    };
+    const [A, B] = await run(db, fakeRouter().router, pool, boardOf(cands), members);
+    for (const plan of [A, B]) {
+      const food = plan.route.flatMap((d) => d.stops).filter((x) => x.kind === 'food');
+      expect(food.find((x) => x.placeId === 'plc_r_ai')?.mustFor).toEqual(['mem_1']);
+      expect(food.find((x) => x.placeId === 'plc_r_text')?.mustFor ?? []).toEqual([]);
+      expect(food.some((x) => x.placeId === 'plc_r_avoid')).toBe(false);
+    }
+    // AI 답이 없으면(빈 기록) 꼭 먹을 식당 표시도, 피할 곳 거르기도 하지 않음
+    const [plain] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07']), boardOf(cands), members);
+    expect(plain.route.flatMap((d) => d.stops).some((x) => x.mustFor.length > 0)).toBe(false);
+  });
+
+  it('지역 넣기 규칙은 DB에서 보충하는 식당에 꼭 지킬 표시를 붙이지 않음 (그 구·군의 식당이 모두 꼭 지킬 곳이 되지 않게)', async () => {
+    const db = await testDb();
+    const cands = Array.from({ length: 8 }, (_, i) => near(`관광지${i}`, i));
+    await db.insert(places).values([
+      restaurant('r_a', '수영식당1', 35.158, 129.1, { restdatefood: '연중무휴', opentimefood: '11:00~21:00' }),
+      restaurant('r_b', '수영식당2', 35.16, 129.11, { restdatefood: '연중무휴', opentimefood: '11:00~21:00' }),
+    ]);
+    const area: MustKeepRule = { type: 'include', label: '수영 쪽 위주로', quote: '수영 쪽 위주로', keyword: '수영', target: 'area', codes: [], start: null, end: null, amount: null };
+    const members = [member('mem_1', {}, [], [area]), member('mem_2')];
+    const [A, B] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07']), boardOf(cands), members);
+    for (const plan of [A, B]) for (const x of plan.route.flatMap((d) => d.stops).filter((s) => s.kind === 'food')) expect(x.mustFor).toEqual([]);
+  });
+
+  it('하루 관광지가 많아도(꼭 지킬 곳 10곳) 모든 순서를 만들지 않고 빨리 짬 (10/28 점검: 10곳의 모든 순서는 363만 가지라 서버가 멈춤)', async () => {
+    const db = await testDb();
+    const musts = Array.from({ length: 10 }, (_, i) => near(`꼭${i}`, i, { marks: { mem_1: [{ kind: 'must', label: `규칙${i}` }] } }));
+    const cands = [...musts, ...Array.from({ length: 4 }, (_, i) => near(`관광지${i}`, 10 + i))];
+    const members = [member('mem_1', {}, [], musts.map((_, i) => include(`규칙${i}`))), member('mem_2')];
+    const started = Date.now();
+    const [A] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07']), boardOf(cands), members);
+    expect(Date.now() - started).toBeLessThan(5000);
+    const inPlan = new Set(sights(A).map((x) => x.placeId));
+    for (const p of musts) expect(inPlan.has(`plc_${p.id}`)).toBe(true);
+    expect(SCHEDULE.orderAllMax).toBeLessThan(musts.length);
   });
 
   it('식당이 모자라면 일정은 그대로 짜고 메모로 알림', async () => {

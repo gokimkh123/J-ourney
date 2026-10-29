@@ -36,8 +36,13 @@ export const config = {
   meetingRunsPerTrip: count('MEETING_RUNS_PER_TRIP', 3),
   /** 회의 LLM의 모델 하나당 응답 대기 시간: 회의는 실시간 전송이라 화면 요청 제한(10초)과 무관해 성향 카드보다 길게 둠 */
   meetingLlmTimeoutMs: num('MEETING_LLM_TIMEOUT_MS', 15000),
-  /** 회의 실행 1회에서 부를 수 있는 LLM 횟수 (넘으면 규칙으로 대신함, 하루 상한과 별도로 셈) */
-  meetingLlmCallsPerRun: num('MEETING_LLM_CALLS_PER_RUN', 16),
+  /**
+   * 회의 실행 1회에서 부를 수 있는 LLM 횟수 (넘으면 규칙으로 대신함, 하루 상한과 별도로 셈)
+   * 1–6단계 최대 13회(고르기 4×2·이름 맞추기 1·반응 4) + 7단계 평가 4–8회(사람마다 1회, 형식이 틀리면 1번 더) → 30 (10/28 7단계와 함께 올림)
+   */
+  meetingLlmCallsPerRun: num('MEETING_LLM_CALLS_PER_RUN', 30),
+  /** 앱 표(Drizzle)용 DB 연결 수 */
+  dbPoolMax: num('DB_POOL_MAX', 10),
   /** 회의 단계 저장(LangGraph 체크포인트)용 DB 연결 수 */
   checkpointPoolMax: num('CHECKPOINT_POOL_MAX', 3),
   /** 끝난 회의의 단계 기록을 지우기 전에 남겨 두는 일수 */
@@ -78,6 +83,8 @@ export const config = {
   tourMobileApp: process.env.TOUR_MOBILE_APP ?? 'J-ourney',
   /** 기능별 하루 TourAPI 호출 상한 (공공데이터포털 개발계정은 기능마다 하루 1,000건) */
   tourDailyLimit: num('TOUR_DAILY_LIMIT', 1000),
+  /** TourAPI 응답 대기 (밀리초) */
+  tourTimeoutMs: num('TOUR_TIMEOUT_MS', 20000),
   /** 카카오 REST API 키 (6단계 길찾기). 없으면 구간 정보는 '정보 없음'으로 두고 순서는 거리로 비교함 */
   kakaoRestKey: process.env.KAKAO_REST_API_KEY || null,
   /** 카카오맵 길찾기(대중교통·도보) 주소 · 카카오모빌리티 자동차 길찾기 주소 */

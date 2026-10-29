@@ -194,6 +194,19 @@
   .pstop.off { opacity: .35; }
   .pleg { margin-left: 10px; padding: 2px 0 2px 16px; border-left: 2px dashed var(--line); font-size: 12.5px; }
   .pleg .alt, .pleg.est { color: var(--muted); }
+  /* 7단계: 평가 1라운드 (AI마다 A·B 입장·만족도·이유, 한마디, 고칠 요청) */
+  .eval7 { border: 2px solid var(--brand); border-radius: 18px; padding: 12px; display: grid; gap: 8px; background: color-mix(in srgb, var(--brand) 6%, var(--surface)); }
+  .eval7 h3 { margin: 0; font-size: 15px; }
+  .eval7 h3 .note { display: block; font-weight: 400; margin-top: 2px; }
+  .evavg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .evavg span { font-size: 13px; font-weight: 800; border-radius: 99px; padding: 3px 10px; background: var(--surface); border: 1px solid var(--line); }
+  .ecard { border: 1.5px solid color-mix(in srgb, var(--c) 40%, var(--line)); border-left: 5px solid var(--c); border-radius: 14px; padding: 9px 10px; display: grid; gap: 5px; background: var(--surface); }
+  .ecard .phead { display: flex; align-items: center; gap: 8px; }
+  .ecard .phead .note { margin-left: auto; }
+  .evline { display: grid; grid-template-columns: auto auto auto 1fr; gap: 6px; align-items: baseline; font-size: 13.5px; }
+  .evline b.sc { font-variant-numeric: tabular-nums; }
+  .ecard .say { font-size: 13px; background: var(--soft); border-radius: 10px; padding: 6px 9px; }
+  .ecard ul { margin: 0; padding-left: 18px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -260,6 +273,7 @@
     </div>
     <div class="sheet">
       <div class="sheet-head"><h3 id="sheetTitle">AI 4명이 조사를 준비하고 있어요</h3><button type="button" class="chip" id="speed">⏩ 2배로 보기</button></div>
+      <div id="eval"></div>
       <div id="plan"></div>
       <div id="review"></div>
       <div id="aiList"></div>
@@ -291,6 +305,9 @@ async function api(method, path, body) {
 
 /* 서버 실행 방식: LLM_REPLAY면 LLM을 부르지 않고 같은 여행의 지난 AI 결과를 다시 씀 (GET /dev/meeting/mode) */
 let MODE = { replay: false };
+/* 회의 실행·사람 확인 요청의 제한 시간: 터널이 끊긴 연결을 다시 쓰면 응답이 영영 오지 않으므로 무한 대기 대신 오류로 바꿔 다시 보낼 수 있게 함 (10/28) */
+const REQUEST_TIMEOUT_MS = 180_000;
+const errText = (err) => (err?.name === 'TimeoutError' || err?.name === 'AbortError' ? `서버 응답이 ${REQUEST_TIMEOUT_MS / 60000}분 동안 없어요. 터널 연결을 확인하고 다시 해 주세요` : err?.message ?? String(err));
 api('GET', '/dev/meeting/mode').then((m) => {
   MODE = m;
   if (MODE.replay) $('homeNote').textContent = '개발용 시연 화면 · 지금은 LLM 0회 모드예요: 같은 여행을 다시 보면 지난번 AI가 고른 결과를 그대로 쓰고, 새 여행은 저장된 결과가 없어 점수가 높은 곳으로 골라요. 이 PC에서만 열립니다.';
@@ -854,7 +871,8 @@ function onLine(line) {
     });
   } else if (e.type === 'agent.message') {
     const c = chars[d.agentId];
-    if (c) enqueue(d.agentId, (run) => speak(c, d.text, run));
+    // 평가 라운드(1 이상)의 한마디는 동선을 다 보여 준 뒤 7단계 장면에서 말함 (결과 줄의 evaluation)
+    if (c && !d.round) enqueue(d.agentId, (run) => speak(c, d.text, run));
   } else if (e.type === 'board.updated') {
     final.board = d;
     whenIdle(finale);
@@ -1056,7 +1074,7 @@ function conflictCard(it) {
   });
   const checks = [
     pl?.outside ? `여행지 밖이에요 (${esc(pl.outside)}${pl.outsideMinutes != null ? `, 편도 약 ${pl.outsideMinutes}분` : ''})` : '',
-    ...(view.r.retrieve.nameMatches ?? []).filter((m) => (m.ids ?? []).some((id) => `plc_${id}` === it.placeId)).map((m) => `이름이 달라 AI가 맞춘 ${esc(memberAgent(m.memberId)?.nickname ?? '')}의 꼭 지킬 곳이에요 ('${esc(m.keyword)}')`),
+    ...(view.r.retrieve.nameMatches ?? []).filter((m) => (m.ids ?? []).some((id) => `plc_${id}` === it.placeId)).map((m) => `AI가 이름으로 맞춘 ${esc(memberAgent(m.memberId)?.nickname ?? '')}의 꼭 지킬 곳이에요 ('${esc(m.keyword)}')`),
   ].filter(Boolean);
   const vote = view.votes.get(it.placeId);
   const result = vote ? `<span class="rresult ${vote.kept ? 'kept' : 'dropped'}">${vote.kept ? '✔ 남김' : '✕ 뺌'}</span>` : '';
@@ -1152,7 +1170,7 @@ async function sendReview() {
   const run = runId;
   const responses = agents.map((a) => ({ memberId: a.memberId, choices: review.items.map((it) => ({ placeId: it.placeId, keep: review.choice.get(it.placeId).get(a.memberId) })) }));
   try {
-    const res = await fetch('/api/v1/dev/meeting/review', { method: 'POST', headers: { Authorization: `Bearer ${saved.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ meetingId: review.meetingId, responses, close: true }) });
+    const res = await fetch('/api/v1/dev/meeting/review', { method: 'POST', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), headers: { Authorization: `Bearer ${saved.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ meetingId: review.meetingId, responses, close: true }) });
     if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error ? j.error.message : `HTTP ${res.status}`); }
     const lines = (await res.text()).trim().split('\n').map((l) => JSON.parse(l));
     const bad = lines.find((l) => l.kind === 'error');
@@ -1161,7 +1179,7 @@ async function sendReview() {
   } catch (err) {
     review.sent = false;
     drawSummary();
-    $('reviewErr').textContent = err.message;
+    $('reviewErr').textContent = errText(err);
   }
 }
 const VOTE = { true: ['👍', '남겨요'], false: ['✋', '빼요'] };
@@ -1332,6 +1350,69 @@ async function showPlans(r, run) {
   for (const c of Object.values(chars)) badge(c, '');
   drawPlan();
   await tourDay(run);
+  if (run !== runId) return;
+  await showEval(r, run);
+}
+
+/* ───────── 7단계 평가 1라운드 ─────────
+   서버 결과(evaluation)를 그대로 보임: AI마다 A·B 입장·만족도·이유, 한마디, 고칠 요청, 코드가 고친 것
+   입장·요청은 AI가 보기 안에서 고르고, 만족도는 코드가 사실표로 계산한 값. 통과 판정은 8단계(준비 중)
+   캐릭터는 차례로 자기 입장과 한마디를 말함 (바로 보기면 말풍선 없이 시트만) */
+const STANCE = { 찬성: ['ok', '😊'], 조건부: ['warn', '🤔'], 반대: ['bad', '😣'] };
+const REQ_TEXT = { include: '넣기', avoid: '빼기', replace: '바꾸기', move: '긴 이동 줄이기' };
+const FIX_TEXT = { failed: 'LLM 2번 실패 → 규칙 평가', code: '번호 종류가 틀린 요청 버림', protected: '못 바꾸는 곳 요청 버림', stance: '찬성 → 조건부', rule_request: '규칙 요청 붙임', why: '이유 → 규칙 문장', comment: '한마디 → 규칙 문장', reason: '요청 이유 → 규칙 문장' };
+let evalView = null; // { r, minSat }
+function placeNameOf(r, placeId) {
+  for (const p of r.plans ?? []) for (const d of p.route) for (const s of d.stops) if (s.placeId === placeId) return s.name;
+  const id = (placeId ?? '').replace(/^plc_/, '');
+  return r.retrieve.candidates.concat(r.retrieve.lodgings).find((x) => x.id === id)?.name ?? '';
+}
+function evalSection() {
+  if (!evalView) return '';
+  const { r, minSat } = evalView;
+  const ev = r.evaluation;
+  const labels = (r.plans ?? []).map((p) => p.label);
+  const avg = (l) => { const xs = ev.members.map((m) => m.plans.find((v) => v.plan === l)?.score ?? 0); return xs.reduce((a, b) => a + b, 0) / xs.length; };
+  const calls = ev.members.reduce((a, m) => a + m.llmCalls, 0);
+  const replayed = ev.members.filter((m) => m.recorded).length;
+  const rule = ev.members.filter((m) => m.source === 'rule').length;
+  const cards = ev.members.map((m) => {
+    const a = agentOf(m.agentId);
+    const src = m.recorded ? '저장된 AI 답 · LLM 0회' : m.source === 'llm' ? `AI · LLM ${m.llmCalls}회` : `규칙 평가${m.llmCalls ? ` · LLM ${m.llmCalls}회 실패` : ''}`;
+    const lines = m.plans.map((v) => `<div class="evline"><span class="tag">${esc(v.plan)}안</span><span class="tag ${STANCE[v.stance][0]}">${STANCE[v.stance][1]} ${esc(v.stance)}</span><b class="sc">${v.score}점</b><span class="note">${esc(v.why)}</span></div>`).join('');
+    const reqs = m.requests.map((q) => `<li>${esc(q.plan)}안 ${REQ_TEXT[q.type]}: ${q.placeId ? esc(placeNameOf(r, q.placeId)) : '가장 긴 이동'}${q.toId ? ` → ${esc(placeNameOf(r, q.toId))}` : ''}${q.reason ? ` <span class="note">${esc(q.reason)}</span>` : ''}${q.auto ? ' <span class="tag">규칙</span>' : ''}</li>`).join('');
+    const fixes = m.fixes.map((f) => `<span class="tag">${f.plan ? `${esc(f.plan)}안 ` : ''}${FIX_TEXT[f.kind]}</span>`).join('');
+    return `<div class="ecard" style="--c:${a?.color ?? '#999'}">
+      <div class="phead">${face(a?.color ?? '#999', a?.i ?? 0)}<b>${esc(a?.nickname ?? '')} AI</b><span class="note">${src}</span></div>
+      ${lines}<div class="say">💬 ${esc(m.comment)}</div>
+      ${reqs ? `<ul>${reqs}</ul>` : ''}${fixes ? `<div class="note">코드가 고침: ${fixes}</div>` : ''}</div>`;
+  }).join('');
+  return `<div class="eval7">
+    <h3>🗳 7단계 평가 · 라운드 ${ev.round}<span class="note">입장·이유·요청은 AI가 보기 안에서 고르고, 만족도는 코드가 사실(꼭 지킬 곳·👍·⚠·이동 기준)로 계산 · 평가 LLM ${calls}회${replayed ? ` · 저장된 답 ${replayed}명` : ''}${rule ? ` · 규칙 평가 ${rule}명` : ''}</span></h3>
+    <div class="evavg">${labels.map((l) => `<span>${esc(l)}안 구성원 평균 ${avg(l).toFixed(1)}점</span>`).join('')}${minSat != null ? `<span class="note" style="border:0;background:none;font-weight:400">기준 ${minSat}점 이상이면 통과 (판정은 8단계)</span>` : ''}</div>
+    ${cards}</div>`;
+}
+async function showEval(r, run) {
+  if (!r?.evaluation) return;
+  let minSat = null;
+  try { minSat = (await api('GET', `/trips/${saved.tripId}`)).conditions?.rules?.aiMinSatisfaction ?? null; } catch { /* 기준을 못 읽으면 평균만 보임 */ }
+  if (run !== runId) return;
+  evalView = { r, minSat };
+  $('eval').innerHTML = evalSection();
+  sheetEl().scrollTop = 0;
+  const ev = r.evaluation;
+  setTitle(`🗳 라운드 ${ev.round} · AI ${ev.members.length}명이 A·B안을 평가했어요`);
+  $('sub').textContent = $('sub').textContent.replace(' · 6단계 동선', '') + ' · 7단계 평가';
+  $('meetNote').textContent = '7단계 평가 1라운드: AI마다 A·B 입장(찬성·조건부·반대)·이유·고칠 요청을 보기 안에서 고르고, 코드가 번호·못 바꾸는 곳을 확인해요. 만족도는 AI가 아니라 코드가 사실로 계산해요. 평균이 기준을 넘는지 판정하고 고치는 일은 8단계부터예요.';
+  for (const m of ev.members) {
+    const c = chars[m.agentId];
+    if (!c?.marker) continue;
+    const mine = m.plans.find((v) => v.plan === plans?.sel) ?? m.plans[0];
+    badge(c, STANCE[mine.stance][1]);
+    if (m.plans.every((v) => v.stance === '찬성')) hop(c);
+    await speak(c, `${m.plans.map((v) => `${v.plan}안 ${v.stance} ${v.score}점`).join(' · ')} — ${m.comment}`, run);
+    if (run !== runId) return;
+  }
 }
 $('plan').onclick = (e) => {
   if (!plans) return;
@@ -1370,6 +1451,8 @@ async function runMeeting(code, label) {
   $('board').innerHTML = '';
   $('review').innerHTML = '';
   $('plan').innerHTML = '';
+  $('eval').innerHTML = '';
+  evalView = null;
   plans = null;
   tourId++;
   review = null;
@@ -1379,7 +1462,7 @@ async function runMeeting(code, label) {
   sheetEl().classList.remove('tall');
   $('meetNote').textContent = instant ? '⚡ 바로 보기: 애니메이션 없이 결과를 바로 보여 줘요 (위 버튼으로 1배·2배를 고르면 캐릭터가 걸으며 다시 보여 줌).' : '실제 서버가 보낸 회의 이벤트를 캐릭터가 천천히 걸으며 다시 보여 줍니다 (서버 회의는 몇 초 만에 끝남).';
   try {
-    const res = await fetch('/api/v1/dev/meeting/run', { method: 'POST', headers: { Authorization: `Bearer ${saved.token}` } });
+    const res = await fetch('/api/v1/dev/meeting/run', { method: 'POST', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), headers: { Authorization: `Bearer ${saved.token}` } });
     if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error ? j.error.message : `HTTP ${res.status}`); }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -1399,7 +1482,7 @@ async function runMeeting(code, label) {
   } catch (err) {
     $('intro').classList.add('hide');
     setTitle('회의를 진행하지 못했어요');
-    $('aiList').innerHTML = `<p class="err">${esc(err.message)}</p><button class="btn ghost" onclick="go('cond')">조건으로 돌아가기</button>`;
+    $('aiList').innerHTML = `<p class="err">${esc(errText(err))}</p><button class="btn ghost" onclick="go('cond')">조건으로 돌아가기</button>`;
   }
 }
 

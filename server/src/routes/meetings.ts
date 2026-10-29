@@ -14,7 +14,8 @@ import { REACT } from '../meeting/react.js';
 import { eventsAfter } from '../meeting/runs.js';
 import type { MeetingService } from '../meeting/service.js';
 
-const ID_MAX = 40;
+/** 요청에 오는 id(mtg_·mem_·plc_) 글자 수 상한 (시험 경로도 같이 씀) */
+export const ID_MAX = 40;
 const reviewBody = z.object({
   /** 시연 모드에서 방장이 가상 구성원 몫을 대신 낼 때만 */
   memberId: z.string().max(ID_MAX).optional(),

@@ -10,7 +10,7 @@ export async function createTestApp(options: Omit<AppOptions, 'db'> = {}) {
   const db = drizzle(new PGlite(), { schema });
   await migrate(db, { migrationsFolder });
   // 시험은 요청이 많으므로 요청 제한을 넉넉히 둠 (제한 자체는 따로 시험함)
-  return { app: createApp({ db, rateLimitPerMinute: 1000, ...options }), db };
+  return { app: createApp({ db, rateLimitPerMinute: 1000, destinationLlm: destinationLlm(), ...options }), db };
 }
 
 type TestApp = ReturnType<typeof createApp>;
@@ -46,6 +46,83 @@ export function fakeLlm(respond: (input: any, call: number, system: string, sche
     },
   };
   return fake;
+}
+
+/**
+ * 시험용 이름 맞추기 LLM 답 (2단계 place_names 요청): 목록 줄에서 이름에 그 말이 든 곳(음식은 메뉴 칸도)을 2곳까지 고름
+ * 실제 LLM을 흉내 내는 시험 안에서만 글자를 비교함 (서버 코드는 글자로 맞추지 않음)
+ */
+export function nameAnswer(input: { rules: string[]; places: string }) {
+  const lines = input.places ? input.places.split('\n').map((l) => l.split('|')) : [];
+  const flat = (v: string | undefined) => (v ?? '').replace(/\s+/g, '');
+  return {
+    matches: input.rules.map((r, i) => {
+      const [, target, keyword] = r.split('|');
+      const k = flat(keyword);
+      const hit = lines.filter((c) => flat(c[1]).includes(k) || (target === '음식' && (c[4] ?? '').startsWith('메뉴:') && flat(c[4]).includes(k)));
+      return { rule: i + 1, evidence: hit.length ? '이름이나 메뉴에 있음' : '없음', places: hit.slice(0, 2).map((c) => c[0]) };
+    }),
+  };
+}
+
+/**
+ * 시험용 지역 맞추기 LLM 답 (2단계 place_areas 요청): 사람이 쓴 말에 구·군 이름(시·군·구를 뗀 이름)이 있으면 그 구·군, 없으면 이름이 들어 있는 장소
+ * 실제 LLM을 흉내 내는 시험 안에서만 글자를 비교함 (서버 코드는 글자로 맞추지 않음)
+ */
+export function areaAnswer(input: { rules: string[]; areas: string; places: string }) {
+  const split = (t: string) => (t ? t.split('\n').map((l) => l.split('|')) : []);
+  const flat = (v: string | undefined) => (v ?? '').replace(/\s+/g, '');
+  const areas = split(input.areas);
+  const places = split(input.places);
+  return {
+    matches: input.rules.map((r, i) => {
+      const said = flat(r.split('|').slice(2).join('|'));
+      const area = areas.find(([, name]) => flat(name).length > 1 && said.includes(flat(name).replace(/(시|군|구)$/, '')));
+      const place = area ? undefined : places.find((c) => said.includes(flat(c[1])));
+      return { rule: i + 1, evidence: area || place ? '말에 있음' : '없음', pick: area?.[0] ?? place?.[0] ?? '' };
+    }),
+  };
+}
+
+/**
+ * 시험용 여행지 확인 LLM (조건 저장 때 destination 요청): 설명문 맨 아래 지역 표에서 방장 글과 이름이 맞는 곳의 번호를 고름
+ * 예전 코드 규칙을 시험 안에서만 흉내 냄 (서버 코드는 글자로 맞추지 않음). createTestApp이 기본으로 끼움
+ */
+export function destinationLlm() {
+  return fakeLlm((input, _call, system) => destinationAnswer(String(input.destination), system));
+}
+export function destinationAnswer(text: string, system: string) {
+  const table = system
+    .slice(system.lastIndexOf('regions:\n') + 'regions:\n'.length)
+    .split('\n')
+    .map((l) => l.split('|'));
+  const flat = (v: string) => v.replace(/\s+/g, '');
+  const short = (name: string) => {
+    const m = name.match(/^(경상|충청|전라)(남|북)도$/);
+    return m ? m[1][0] + m[2] : name.replace(/(통합특별시|특별자치시|특별자치도|특별시|광역시|도)$/, '');
+  };
+  const districtHit = (word: string, name: string) => {
+    const w = flat(word);
+    const n = flat(name);
+    return w === n || w === n.replace(/(시|군|구)$/, '') || (w.length >= 2 && n.startsWith(w));
+  };
+  const answer = (picks: string[], candidates: string[] = []) => ({ evidence: picks.length || candidates.length ? '목록에 있음' : '없음', picks, candidates });
+  const whole = table.filter((r) => r[2] === '전체');
+  const parts = table.filter((r) => r[2] !== '전체');
+  const [first, ...rest] = text.split(' ');
+  const exact = whole.filter((r) => first === r[1] || first === short(r[1]));
+  const regionHit = exact.length ? exact : whole.filter((r) => first.length >= 2 && short(r[1]).includes(first));
+  if (regionHit.length === 1) {
+    const region = regionHit[0];
+    if (!rest.length) {
+      const elsewhere = exact.length ? [] : parts.filter((r) => r[1] !== region[1] && districtHit(first, r[2]));
+      return elsewhere.length ? answer([], [region[0], ...elsewhere.map((r) => r[0])]) : answer([region[0]]);
+    }
+    return answer(parts.filter((r) => r[1] === region[1] && districtHit(rest.join(' '), r[2])).map((r) => r[0]));
+  }
+  const hits = parts.filter((r) => districtHit(text, r[2]));
+  if (new Set(hits.map((r) => r[1])).size > 1) return answer([], hits.map((r) => r[0]));
+  return answer(hits.map((r) => r[0]));
 }
 
 /** 15문항 응답 만들기: scale은 q1–q12 점수 */

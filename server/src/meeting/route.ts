@@ -3,6 +3,7 @@ import type { Db } from '../db/client.js';
 import { routeCache } from '../db/schema.js';
 import { tryConsumeTourCall } from '../tour/usage.js';
 import type { Point } from './travel.js';
+import { DAY_MS } from '../lib/time.js';
 
 /**
  * 6단계 구간 길찾기 (카카오). 우리 계산식이 아니라 카카오가 준 결과를 그대로 씀 (10/23 사용자 결정: 시간표 대신 경로와 가는 길)
@@ -17,11 +18,12 @@ export const ROUTE = {
   perMeeting: 300,
   /** 자동차 길찾기에서 출발·도착 지점 주변 도로의 교통 장애(유고)로 경로를 못 찾은 결과 코드. 잠깐의 일이라 '경로 없음'으로 저장하지 않음 (10/23 확인: 106 '도착 지점 주변의 도로에 유고 정보가 있음') */
   carIncidentCodes: [105, 106],
+  /** 대중교통 구간에 보여 주는 노선 수 */
+  linesShown: 4,
   /** 화면에 내보내는 길찾기 링크의 주소 (카카오가 준 링크라도 https의 이 주소가 아니면 버림, 10/26 저장분 95개 모두 map.kakao.com) */
   linkHosts: ['map.kakao.com', 'm.map.kakao.com'],
 } as const;
 
-const DAY_MS = 86_400_000;
 
 /** 카카오가 준 길찾기 링크: https이고 ROUTE.linkHosts 주소일 때만 씀 (javascript: 같은 주소가 화면 링크로 들어가지 않게) */
 export function kakaoLink(raw: unknown): string | null {
@@ -111,7 +113,7 @@ export function kakaoRouter(opts: { restKey: string; mapBase: string; naviBase: 
         fare: typeof p.fare?.value === 'number' ? p.fare.value : null,
         transfers: Number(p.transfers) || 0,
         type: String(p.type ?? ''),
-        lines: [...lines].slice(0, 4),
+        lines: [...lines].slice(0, ROUTE.linesShown),
         url: kakaoLink(json.properties?.landingURL),
       };
     },

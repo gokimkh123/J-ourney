@@ -35,6 +35,8 @@ export interface PersonaDeps {
   live?: { llm: LlmClient; recorder: LlmRecorder } | null;
 }
 
+/** 한 번에 받는 응답 수 상한 (문항 15개보다 넉넉히, 문항별 검사는 score.ts가 함) */
+const ANSWERS_MAX = 30;
 const answersBody = z.object({
   answers: z
     .array(
@@ -45,7 +47,7 @@ const answersBody = z.object({
         text: z.string().optional(),
       }),
     )
-    .max(30),
+    .max(ANSWERS_MAX),
 });
 
 /**

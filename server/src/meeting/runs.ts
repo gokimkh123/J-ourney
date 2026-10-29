@@ -6,7 +6,7 @@ import type { AccessGrant } from '../lib/access.js';
 import { ApiError } from '../lib/errors.js';
 import { newId } from '../lib/ids.js';
 import { laneQueue } from '../lib/lane.js';
-import { nowKst } from '../lib/time.js';
+import { DAY_MS, nowKst } from '../lib/time.js';
 import { tryConsumeLlmCall } from '../llm/usage.js';
 
 /** 명세서 3장 ID: agt_ 에이전트(구성원마다 하나), plc_ 장소(TourAPI contentId) */
@@ -23,6 +23,8 @@ export type MeetingEventType =
   | 'review.cast'
   | 'review.closed'
   | 'plan.proposed'
+  | 'round.started'
+  | 'vote.cast'
   | 'meeting.failed';
 
 /** 시험 화면에만 보내는 LLM 과정 이벤트 (요청 내용·받는 글자·원본 응답). DB에 기록하지 않음 */
@@ -157,6 +159,8 @@ export async function failInterruptedMeetings(db: Db): Promise<number> {
   // 실행 중 실패와 같게, 공식 경로로 시작한 여행은 조건·성향을 고쳐 다시 시작할 수 있게 되돌림
   const tripIds = [...new Set(rows.map((r) => r.tripId))];
   if (tripIds.length) await db.update(trips).set({ status: 'preparing' }).where(and(inArray(trips.id, tripIds), eq(trips.status, 'meeting')));
+  // 실행 중 실패와 같은 이벤트를 남김: 앱이 다시 접속하면 afterSeq로 받아 실패를 앎 (10/28 명세서 대조: 서버를 다시 켜면 이벤트 없이 실패만 됨)
+  for (const r of rows) await eventRecorder(db, r.tripId, r.id)({ type: 'meeting.failed', data: { meetingId: r.id, reason: 'error', planId: null } });
   return rows.length;
 }
 
@@ -202,7 +206,7 @@ export async function eventsAfter(db: Db, tripId: string, afterSeq: number): Pro
  * schema: 체크포인트가 있는 Postgres 스키마. 주면 기록이 아직 남은 회의만 골라 지움 (이미 지운 회의를 매일 다시 지우지 않게)
  */
 export async function pruneMeetingCheckpoints(db: Db, checkpointer: BaseCheckpointSaver, keepDays: number, schema?: string): Promise<number> {
-  const before = new Date(Date.now() - keepDays * 86400000);
+  const before = new Date(Date.now() - keepDays * DAY_MS);
   const stored = schema ? sql`exists (select 1 from ${sql.identifier(schema)}.checkpoints c where c.thread_id = ${meetings.id})` : undefined;
   const old = await db
     .select({ id: meetings.id })

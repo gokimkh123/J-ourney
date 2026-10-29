@@ -59,7 +59,11 @@ export function meetingService({ db, graph, limits, publisher, replay = false, l
     const graph = graphOf(meeting);
     let mark = Date.now();
     try {
-      const stream = await graph.stream(input as never, { ...configOf(meeting.id), streamMode: ['custom', 'updates'] });
+      // 끝난 상태와 멈춘 까닭(사람 확인)은 실행 흐름에서 바로 받음: 끝난 뒤 getState()로 읽으면 체크포인트 id(시각 기반)가 시계가 뒤로 가는 순간 꼬여
+      // 이전 단계의 상태를 읽을 수 있음 (10/28 점검: 시계를 5초 되돌리면 보드 없는 상태 · 사람 확인 없음으로 읽혀 'done'이 됨)
+      let state: MeetingStateType | null = null;
+      let pending: ReviewRequest | null = null;
+      const stream = await graph.stream(input as never, { ...configOf(meeting.id), streamMode: ['custom', 'updates', 'values'] });
       for await (const [mode, chunk] of stream as AsyncIterable<[string, unknown]>) {
         if (mode === 'custom') {
           const e = chunk as MeetingEventDraft;
@@ -69,18 +73,25 @@ export function meetingService({ db, graph, limits, publisher, replay = false, l
             const envelope = await record(e);
             observer?.event?.(envelope);
           }
+        } else if (mode === 'values') {
+          // 멈추면 마지막 values 조각에 멈춘 까닭(__interrupt__)이 실려 오기도 함: 상태 칸이 함께 있을 때만 상태로 씀
+          const { __interrupt__: interrupts, ...values } = chunk as Record<string, unknown> & { __interrupt__?: { value?: unknown }[] };
+          if (interrupts?.[0] && !pending) pending = interrupts[0].value as ReviewRequest;
+          if (Object.keys(values).length) state = values as unknown as MeetingStateType;
         } else
-          for (const node of Object.keys(chunk as object)) {
-            if (node === '__interrupt__') continue;
+          for (const [node, value] of Object.entries(chunk as object)) {
+            if (node === '__interrupt__') {
+              const first = (value as { value?: unknown }[] | undefined)?.[0];
+              if (first) pending = first.value as ReviewRequest;
+              continue;
+            }
             observer?.node?.(node, Date.now() - mark);
             mark = Date.now();
           }
       }
-      const snap = await graph.getState(configOf(meeting.id));
-      const state = snap.values as MeetingStateType;
-      const pending = snap.tasks.flatMap((t) => t.interrupts ?? []);
-      if (pending.length) {
-        const request = pending[0].value as ReviewRequest;
+      if (!state) state = (await graph.getState(configOf(meeting.id))).values as MeetingStateType;
+      if (pending) {
+        const request = pending;
         await db.update(meetings).set({ status: 'reviewing', review: request }).where(eq(meetings.id, meeting.id));
         const requested = await record({ type: 'review.requested', data: { meetingId: meeting.id, ...request, total: state.members.length } });
         observer?.event?.(requested);
@@ -152,7 +163,7 @@ export function meetingService({ db, graph, limits, publisher, replay = false, l
         picks.set(p.memberId, { ...p, savedFrom: p.savedFrom ?? m.id });
       }
       for (const n of v.pool?.nameMatches ?? []) {
-        const key = `${n.label}\n${n.keyword}`;
+        const key = `${n.type ?? 'include'}\n${n.label}\n${n.keyword}`;
         if (!names.has(key)) names.set(key, n);
       }
     }

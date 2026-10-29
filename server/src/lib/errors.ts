@@ -17,6 +17,8 @@ const STATUS = {
   PAYLOAD_TOO_LARGE: 413,
   RATE_LIMITED: 429,
   INTERNAL_ERROR: 500,
+  /** AI가 필요한 확인을 지금 할 수 없음 (하루 AI 상한·오류·AI 0번 모드에 녹화 없음·접근 키 없는 바깥 요청) — 잠시 뒤 다시 */
+  AI_UNAVAILABLE: 503,
 } as const;
 
 export type ErrorCode = keyof typeof STATUS;

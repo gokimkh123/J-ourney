@@ -4,7 +4,7 @@ import type { Board, ReviewChoice, ReviewDecision, ReviewRequest } from './types
 
 /**
  * 5단계 사람 확인 (코드, LLM 0회, 사용자 결정 10/19)
- * - 고르는 안건: 4단계 안건 중 장소가 있는 것 (⚠·✕가 붙은 곳 · 여행지 밖 장소 · 이름이 달라 AI가 맞춘 꼭 지킬 곳), 메모는 보기만 함
+ * - 고르는 안건: 4단계 안건 중 장소가 있는 것 (⚠·✕가 붙은 곳 · 여행지 밖 장소. AI가 이름으로 맞춘 꼭 지킬 곳은 REACT.nameMatchAgenda를 켰을 때만), 메모는 보기만 함
  * - 안건마다 다수결, 같으면 방장의 응답으로 정함 · 시간 제한 없음 · 방장이 '진행'으로 마감하면 응답하지 않은 사람은 '남김'으로 셈
  */
 export const REVIEW = {

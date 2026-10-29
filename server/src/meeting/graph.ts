@@ -7,15 +7,17 @@ import type { LlmClient } from '../llm/client.js';
 import type { LlmRecorder } from '../llm/record.js';
 import { memberColor } from '../routes/views.js';
 import type { TourClient } from '../tour/client.js';
+import { areaMatcher, savedAreaMatcher } from './areas.js';
 import { type SavedNameMatch, nameMatcher, savedNameMatcher } from './names.js';
 import { type PickResult, boardOf, buildPickGraph, savedPickFor } from './pick.js';
 import { type AiReaction, REACT, reactBoard } from './react.js';
 import { acceptReactions, reactRequest } from './react-ai.js';
-import { type MemberInput, type RetrieveResult, retrieveCandidates } from './retrieve.js';
+import { type Candidate, type MemberInput, type RetrieveResult, retrieveCandidates } from './retrieve.js';
 import { applyReview, reviewRequestOf } from './review.js';
 import { ROUTE, type RouteClient, type RouteMeter, cachedRouter, newRouteMeter } from './route.js';
 import { type PlanProposal, SCHEDULE, schedulePlans } from './schedule.js';
 import { type MeetingEventDraft, type MeetingLimits, agentIdOf, reserveMeetingLlm } from './runs.js';
+import { EVAL, type EvalRound, type MemberEval, acceptEval, evalRequest, ruleEval } from './evaluate.js';
 import type { Board, ResolvedDestination, ReviewDecision, ReviewRequest, TripConditions } from './types.js';
 
 /**
@@ -47,8 +49,10 @@ export const MeetingState = Annotation.Root({
   reviewRequest: Annotation<ReviewRequest | null>(),
   /** 5단계 결과: 사람 4명이 남김·뺌을 정한 결과 (다수결, 같으면 방장) */
   reviewDecision: Annotation<ReviewDecision | null>(),
-  /** 6단계 결과: A·B 두 안(경로·가는 길·식당)과 이 회의에서 부른 카카오 길찾기 수 */
-  plans: Annotation<{ plans: PlanProposal[]; kakao: RouteMeter } | null>(),
+  /** 6단계 결과: A·B 두 안(경로·가는 길·식당)과 이 회의에서 부른 카카오 길찾기 수, 두 안에 들어간 DB 보충 식당(7단계가 표시를 봄, 10/28 전 회의에는 없음) */
+  plans: Annotation<{ plans: PlanProposal[]; kakao: RouteMeter; extras?: Candidate[] } | null>(),
+  /** 7단계 결과: 사람마다 A·B 입장·이유·한마디·요청과 코드가 계산한 만족도 (코드가 고친 것 포함) */
+  evaluation: Annotation<EvalRound | null>(),
 });
 export type MeetingStateType = typeof MeetingState.State;
 
@@ -100,7 +104,8 @@ async function prepare(deps: MeetingDeps, state: MeetingStateType): Promise<Part
         meetingId: state.meetingId,
         kind: 'meeting',
         maxRounds: trip.conditions.rules.maxRounds,
-        agents: rows.map(({ member, persona }) => ({ agentId: agentIdOf(member.id), memberId: member.id, nickname: member.nickname, title: persona.title, chips: persona.chips.map((c) => c.label), color: memberColor(member) })),
+        // chips는 성향 카드(명세서 4.3)와 같은 { label, emoji } (10/28 명세서 대조)
+        agents: rows.map(({ member, persona }) => ({ agentId: agentIdOf(member.id), memberId: member.id, nickname: member.nickname, title: persona.title, chips: persona.chips.map((c) => ({ label: c.label, emoji: c.emoji })), color: memberColor(member) })),
       },
     });
     for (const { member } of rows) emit({ type: 'research.progress', data: { agentId: agentIdOf(member.id), stage: 'planning', tool: null, focus: null, foundCount: 0 } });
@@ -124,8 +129,9 @@ async function prepare(deps: MeetingDeps, state: MeetingStateType): Promise<Part
 }
 
 /**
- * 2단계 후보 찾기 (코드). 장소·음식 넣기 규칙을 이름으로 못 찾을 때만 이름 맞추기 LLM 1회 (회의 실행 상한·하루 상한 안에서, 실행 중일 때만)
- * 2단계만 보는 시험 경로(upTo 'retrieve', 회의 id 없음)는 LLM을 부르지 않음. LLM_REPLAY면 지난 회의에서 맞춘 이름을 다시 씀
+ * 2단계 후보 찾기 (코드). 꼭 지킬 것·꼭 피할 것의 장소·음식 이름이 있으면 이름 맞추기 LLM 1–3회 (규칙 6개씩 + 구 단위 여행의 여행지 밖 1회),
+ * 지역 조건이 있으면 지역 맞추기 LLM 1–2회 (회의 실행 상한·하루 상한 안에서, 실행 중일 때만)
+ * 2단계만 보는 시험 경로(upTo 'retrieve', 회의 id 없음)는 LLM을 부르지 않음. LLM_REPLAY면 지난 회의에서 맞춘 이름·지역을 다시 씀
  */
 async function retrieve(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
   const meetingId = state.meetingId;
@@ -138,6 +144,14 @@ async function retrieve(deps: MeetingDeps, state: MeetingStateType): Promise<Par
           saved: state.saved ? savedNameMatcher(state.saved.nameMatches) : undefined,
         })
       : null;
+  const matchAreas =
+    deps.limits && meetingId
+      ? areaMatcher(deps.llm ?? null, () => reserveMeetingLlm(deps.db, meetingId, deps.limits!), {
+          emit: deps.traceLlm ? emit : undefined,
+          recorder: deps.recorder,
+          saved: state.saved ? savedAreaMatcher(state.saved.nameMatches) : undefined,
+        })
+      : null;
   const result = await retrieveCandidates(deps.db, {
     conditions: state.conditions!,
     destination: state.destination!,
@@ -145,6 +159,7 @@ async function retrieve(deps: MeetingDeps, state: MeetingStateType): Promise<Par
     crowdClient: deps.crowdClient,
     today: deps.today,
     matchNames,
+    matchAreas,
   });
   if (state.meetingId) {
     // 사람마다 조사 과정을 실제 자료로 알림 (지도에서 캐릭터가 그 장소로 이동): 장소 찾기 → 인기 순위 → 혼잡도
@@ -230,7 +245,7 @@ async function review(state: MeetingStateType): Promise<Partial<MeetingStateType
  */
 async function schedule(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
   const kakao = newRouteMeter();
-  const plans = await schedulePlans(deps.db, cachedRouter(deps.db, deps.router ?? null, kakao), {
+  const { plans, extras } = await schedulePlans(deps.db, cachedRouter(deps.db, deps.router ?? null, kakao), {
     meetingId: state.meetingId,
     pool: state.pool!,
     board: state.board!,
@@ -239,7 +254,62 @@ async function schedule(deps: MeetingDeps, state: MeetingStateType): Promise<Par
     moveMode: state.conditions?.moveMode ?? 'transit',
   });
   for (const plan of plans) emit({ type: 'plan.proposed', data: plan });
-  return { plans: { plans, kakao } };
+  return { plans: { plans, kakao, extras } };
+}
+
+/**
+ * 7단계 평가 1라운드: 사람마다 LLM 1회(4명 동시에)로 A·B 입장·이유·한마디·고칠 요청을 받음 (10/27 계획 그림, 10/28 사용자 승인)
+ * 답 형식표가 입장·요청 종류·표 번호를 보기로만 받게 하고, 코드는 그 고른 값과 사실표만 확인함 (AI가 쓴 글은 보여 주기만 함). 만족도는 코드가 계산
+ * 순서: 녹화된 같은 요청의 답 → 회의 LLM 상한 안에서 부름(부른 답은 녹화) → 형식이 틀리면 1번 더 → 그래도 못 쓰면 규칙 평가
+ */
+async function evaluateOne(deps: MeetingDeps, state: MeetingStateType, m: MemberInputOf): Promise<MemberEval> {
+  const plans = state.plans!.plans;
+  const minSat = state.conditions!.rules.aiMinSatisfaction;
+  const extras = state.plans!.extras ?? [];
+  const pool = extras.length ? { ...state.pool!, candidates: [...state.pool!.candidates, ...extras] } : state.pool!;
+  const { table, facts, req } = evalRequest(m, plans, pool, state.board!, state.reviewDecision ?? null);
+  const agentId = agentIdOf(m.memberId);
+  const meetingId = state.meetingId;
+  let calls = 0;
+  let tried = false;
+  // 녹화된 답을 먼저 모두 봄: 녹화할 때 첫 시도가 형식·오류로 실패해 두 번째 답만 녹화된 경우도 LLM 없이 다시 씀 (fill에서도 첫 시도를 다시 부르지 않음)
+  for (let attempt = 1; attempt <= EVAL.tries; attempt++) {
+    const replayed = await deps.recorder?.replay(req, attempt);
+    if (replayed) return { ...acceptEval(m, plans, table, facts, replayed), llmCalls: 0, recorded: true };
+  }
+  for (let attempt = 1; attempt <= EVAL.tries; attempt++) {
+    const llm = deps.llm;
+    if (!llm || !meetingId || !deps.limits || !(await reserveMeetingLlm(deps.db, meetingId, deps.limits))) break;
+    calls++;
+    tried = true;
+    try {
+      let value;
+      if (deps.traceLlm && llm.streamJson) {
+        emit({ type: 'llm.request', data: { agentId, purpose: 'eval', try: attempt, model: llm.name, system: req.system, input: req.input } });
+        const out = await llm.streamJson(req, () => {});
+        emit({ type: 'llm.response', data: { agentId, purpose: 'eval', try: attempt, model: out.model, ms: out.ms, usage: out.usage, text: out.text } });
+        value = out.value;
+      } else value = await llm.generateJson(req);
+      await deps.recorder?.record(req, value, attempt);
+      return { ...acceptEval(m, plans, table, facts, value), llmCalls: calls };
+    } catch (err) {
+      console.warn(`7단계 평가 LLM ${attempt}번째 실패:`, err instanceof Error ? err.message.slice(0, 200) : err);
+    }
+  }
+  return { ...ruleEval(m, plans, table, facts, minSat, tried ? [{ kind: 'failed', plan: null }] : []), llmCalls: calls };
+}
+type MemberInputOf = MeetingStateType['members'][number];
+
+/** 7단계 노드: round.started → 사람마다 평가(동시에) → agent.message(한마디)·vote.cast(안마다 찬성 yes, 조건부·반대 no, 만족도) */
+async function evaluate(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const round = 1;
+  emit({ type: 'round.started', data: { round, maxRounds: state.conditions!.rules.maxRounds } });
+  const members = await Promise.all(state.members.map((m) => evaluateOne(deps, state, m)));
+  for (const e of members) {
+    emit({ type: 'agent.message', data: { agentId: e.agentId, round, text: e.comment } });
+    for (const v of e.plans) emit({ type: 'vote.cast', data: { planId: v.planId, agentId: e.agentId, round, vote: v.stance === '찬성' ? 'yes' : 'no', score: v.score, stance: v.stance, reason: v.why } });
+  }
+  return { evaluation: { round, members } };
 }
 
 /** 회의 그래프의 노드 이름과 단계 (시험 화면의 그래프 칸에 씀) */
@@ -251,6 +321,7 @@ export const MEETING_NODES = [
   { id: 'react', step: 4, label: '반응·안건', kind: 'llm' },
   { id: 'review', step: 5, label: '사람 확인', kind: 'human' },
   { id: 'schedule', step: 6, label: '동선 짜기 A·B', kind: 'code' },
+  { id: 'evaluate', step: 7, label: '평가 1라운드 ×4', kind: 'llm' },
 ] as const;
 
 /** 실제 회의 그래프의 노드·연결과 단계별 규칙 값 (그래프를 만들기만 하고 실행하지 않음, 시험 화면이 규칙 값을 따로 적지 않게 함) */
@@ -260,12 +331,12 @@ export async function meetingGraphShape() {
   return {
     nodes: Object.keys(graph.nodes).map((id) => ({ id, step: meta.get(id)?.step ?? null, label: meta.get(id)?.label ?? id, kind: meta.get(id)?.kind ?? 'edge' })),
     edges: graph.edges.map((e) => ({ from: e.source, to: e.target, conditional: !!e.conditional })),
-    rules: { react: REACT, schedule: SCHEDULE, route: ROUTE },
+    rules: { react: REACT, schedule: SCHEDULE, route: ROUTE, evaluate: EVAL },
   };
 }
 
 /**
- * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건 → (고를 안건이 있으면) 사람 확인 → 동선 짜기 A·B
+ * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건 → (고를 안건이 있으면) 사람 확인 → 동선 짜기 A·B → 평가 1라운드
  * upTo 'retrieve'면 2단계에서 멈춤 (LLM 0회 시험용). 사람 확인은 멈췄다 이어서 실행하므로 체크포인트 저장(checkpointer)이 있어야 함
  */
 export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' } = {}) {
@@ -287,6 +358,7 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
     .addNode('react', (s) => react(deps, s))
     .addNode('review', review)
     .addNode('schedule', (s) => schedule(deps, s))
+    .addNode('evaluate', (s) => evaluate(deps, s))
     .addConditionalEdges(
       'retrieve',
       (s) =>
@@ -310,6 +382,7 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
     .addEdge('gather', 'react')
     .addConditionalEdges('react', (s) => (s.reviewRequest?.items.length ? 'review' : 'schedule'), ['review', 'schedule'])
     .addEdge('review', 'schedule')
-    .addEdge('schedule', END)
+    .addEdge('schedule', 'evaluate')
+    .addEdge('evaluate', END)
     .compile({ checkpointer: deps.checkpointer });
 }

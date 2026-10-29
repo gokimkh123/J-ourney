@@ -44,6 +44,8 @@ export interface AppOptions {
   crowdClient?: TourClient | null;
   /** 회의용 LLM (응답 대기 시간이 다름). 없으면 llm을 씀 */
   meetingLlm?: LlmClient | null;
+  /** 여행지 확인 LLM (조건 저장 때 방장이 쓴 여행지를 공식 지역 목록에서 고름). 없으면 llm을 씀 (LLM_REPLAY=true면 녹화만). 시험에서 바꿔 끼울 때만 넘김 */
+  destinationLlm?: LlmClient | null;
   /** 회의 단계 저장 (운영: Postgres, 시험: 메모리) */
   checkpointer?: BaseCheckpointSaver;
   meetingRunsPerTrip?: number;
@@ -90,6 +92,7 @@ export function createApp({
   rateLimitPerMinute = config.rateLimitPerMinute,
   crowdClient = null,
   meetingLlm,
+  destinationLlm,
   checkpointer = new MemorySaver(),
   meetingRunsPerTrip = config.meetingRunsPerTrip,
   meetingLlmCallsPerRun = config.meetingLlmCallsPerRun,
@@ -117,7 +120,6 @@ export function createApp({
   api.get('/health', (c) => c.json({ status: 'ok', time: nowKst() }));
 
   if (db) {
-    api.route('/', tripRoutes(db));
     // LLM 녹화·재생: 실제로 부른 답은 늘 녹화하고, only(LLM_REPLAY=true)면 LLM 호출기를 넘기지 않아 어떤 경로도 LLM을 부르지 않음
     const mode: ReplayMode = llmReplay === true ? 'only' : llmReplay === false ? 'off' : llmReplay;
     const recorder = llmRecorder(db, (llm ?? meetingLlm)?.name ?? 'none', mode);
@@ -125,6 +127,8 @@ export function createApp({
     const anyLlm = llm ?? meetingLlm ?? null;
     const liveRecorder = mode === 'only' && accessKeys.length > 0 && accessReplay !== 'only' && anyLlm ? llmRecorder(db, anyLlm.name, accessReplay) : null;
     const live = liveRecorder && llm ? { llm, recorder: liveRecorder } : null;
+    const tripLlm = destinationLlm !== undefined ? destinationLlm : mode === 'only' ? null : llm;
+    api.route('/', tripRoutes(db, { llm: tripLlm, recorder, live, llmDailyLimit, accessKeys }));
     api.route('/', personaRoutes({ db, llm: mode === 'only' ? null : llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret, accessKeys, live }));
     // 회의 그래프와 실행기는 서버가 켜질 때 한 번만 만들고 공식 경로·시험 경로가 함께 씀
     const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
