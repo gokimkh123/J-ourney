@@ -8,7 +8,6 @@
     "scheme": "journey",
     "userInterfaceStyle": "automatic",
     "android": {
-      "package": "com.journey.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -23,12 +22,7 @@
     },
     "plugins": [
       "expo-router",
-      [
-        "expo-navigation-bar",
-        {
-          "enforceContrast": false
-        }
-      ],
+      ["expo-navigation-bar", { "enforceContrast": false }],
       [
         "expo-splash-screen",
         {
@@ -41,16 +35,6 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    },
-    "extra": {
-      "router": {},
-      "expo-navigation-bar": {
-        "enforceContrast": false
-      },
-      "eas": {
-        "projectId": "a3cc6e21-9a00-4f1c-a208-f198c2adb967"
-      }
-    },
-    "owner": "seiun03"
+    }
   }
 }
