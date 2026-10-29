@@ -149,7 +149,8 @@ export type BoardUpdatedEvent = EventBase<'board.updated', Board>;
 
 export type RoundStartedEvent = EventBase<
   'round.started',
-  { round: number; maxRounds: number }
+  /** speakers: 명세 v2.2. 이번 라운드에 말하는 AI의 agentId(1라운드는 모두, 2라운드부터 사회자가 고른 AI) */
+  { round: number; maxRounds: number; speakers?: string[] }
 >;
 
 export type AgentMessageEvent = EventBase<
@@ -173,12 +174,15 @@ export type PlanProposedEvent = EventBase<
     moveMode?: 'transit' | 'car';
     lodging?: { placeId: string; name: string } | null;
     notes?: string[];
+    /** 명세 v2.2: 고친 안(같은 planId, version + 1)에 붙는 바뀐 점 (예: '1일째 광안리해수욕장 뺌 → 해운대해수욕장') */
+    changes?: string[];
   }
 >;
 
 export type VoteCastEvent = EventBase<
   'vote.cast',
-  { planId: string; agentId: string; vote: AiVote; score: number }
+  /** carried: 명세 v2.2. 이번 라운드에 말하지 않아 지난 입장을 그대로 둔 AI(점수는 서버가 다시 계산) */
+  { planId: string; agentId: string; vote: AiVote; score: number; carried?: boolean }
 >;
 
 export type MeetingAgreedEvent = EventBase<'meeting.agreed', MeetingAgreedData>;
@@ -260,7 +264,7 @@ export type MeetingPhase =
   | 'confirmed';
 
 export type TimelineItem =
-  | { kind: 'round'; seq: number; at: string; round: number; maxRounds: number }
+  | { kind: 'round'; seq: number; at: string; round: number; maxRounds: number; speakers?: string[] }
   | {
       kind: 'message';
       seq: number;
@@ -270,7 +274,7 @@ export type TimelineItem =
       text: string;
       places: PlaceInfo[];
     }
-  | { kind: 'proposal'; seq: number; at: string; planId: string; version: number };
+  | { kind: 'proposal'; seq: number; at: string; planId: string; version: number; changes?: string[] };
 
 export type ConfirmVoteStatus = ConfirmDecision | 'pending';
 
@@ -297,7 +301,7 @@ export type MeetingState = {
     }
   >;
   latestPlanId: string | null;
-  votes: Record<string, Record<string, { vote: AiVote; score: number }>>;
+  votes: Record<string, Record<string, { vote: AiVote; score: number; carried?: true }>>;
   agreement: MeetingAgreedData | null;
   failure: MeetingFailedEvent['data'] | null;
   confirmVotes: Record<string, ConfirmVoteStatus>;

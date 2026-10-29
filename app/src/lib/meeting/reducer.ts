@@ -10,6 +10,11 @@ import type {
   TimelineItem,
 } from './types.ts';
 
+/** 서버가 글자 목록을 줄 때만 쓴다. 없거나 모양이 다르면 undefined(그 칸을 상태에 넣지 않음). */
+function stringList(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.filter((x): x is string => typeof x === 'string') : undefined;
+}
+
 function emptyBoard(): MeetingState['board'] {
   return { candidates: [], agenda: [] };
 }
@@ -87,12 +92,16 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
       return { ...state, board: event.data };
     case 'round.started': {
       const { round, maxRounds } = event.data;
+      const speakers = stringList(event.data.speakers);
       return {
         ...state,
         phase: 'meeting',
         round,
         maxRounds,
-        timeline: [...state.timeline, { kind: 'round', seq: event.seq, at: event.at, round, maxRounds }],
+        timeline: [
+          ...state.timeline,
+          { kind: 'round', seq: event.seq, at: event.at, round, maxRounds, ...(speakers !== undefined && { speakers }) },
+        ],
       };
     }
     case 'agent.message': {
@@ -118,6 +127,7 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
     }
     case 'plan.proposed': {
       const { planId, version, route, label, moveMode, lodging, notes } = event.data;
+      const changes = stringList(event.data.changes);
       // 실서버는 합의 없이 A·B 두 안을 낸 채 끝난다. 조사·사람 확인 중에 안이 오면 '안이 나온' 단계로 본다.
       const phase = state.phase === 'researching' || state.phase === 'reviewing' ? 'proposed' : state.phase;
       return {
@@ -135,14 +145,19 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
           },
         },
         latestPlanId: planId,
-        timeline: [...state.timeline, { kind: 'proposal', seq: event.seq, at: event.at, planId, version }],
+        timeline: [
+          ...state.timeline,
+          { kind: 'proposal', seq: event.seq, at: event.at, planId, version, ...(changes !== undefined && { changes }) },
+        ],
       };
     }
     case 'vote.cast': {
       const { planId, agentId, vote, score } = event.data;
+      // 같은 라운드에 같은 안을 다시 보내면(다듬기를 되돌릴 때) 마지막 것을 쓴다. 덮어쓰기라 그대로 맞는다.
+      const cast = event.data.carried === true ? { vote, score, carried: true as const } : { vote, score };
       return {
         ...state,
-        votes: { ...state.votes, [planId]: { ...state.votes[planId], [agentId]: { vote, score } } },
+        votes: { ...state.votes, [planId]: { ...state.votes[planId], [agentId]: cast } },
       };
     }
     case 'meeting.agreed':
