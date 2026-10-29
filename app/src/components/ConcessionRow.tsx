@@ -9,14 +9,14 @@ export type ConcessionRowProps = {
   color: string;
   /** 양보한 것 */
   gave: string;
-  /** 대신 얻은 것 */
+  /** 대신 얻은 것. 서버가 주지 않으면 빈 글자이고 그 줄은 숨긴다 */
   got: string;
 };
 
 /** B3 "서로 양보한 것" 한 줄: 양보(취소선) → 얻음(굵게). 조사 붙임 문제를 피하려고 이름표로 나눈다. */
 export default function ConcessionRow({ name, color, gave, got }: ConcessionRowProps) {
   return (
-    <View style={styles.row} accessible accessibilityLabel={`${name}: ${gave} 양보, ${got} 얻음`}>
+    <View style={styles.row} accessible accessibilityLabel={got === "" ? `${name}: ${gave} 양보` : `${name}: ${gave} 양보, ${got} 얻음`}>
       <Avatar color={color} name={name} size="sm" />
       <View style={styles.body}>
         <View style={styles.line}>
@@ -27,14 +27,16 @@ export default function ConcessionRow({ name, color, gave, got }: ConcessionRowP
             {gave}
           </AppText>
         </View>
-        <View style={styles.line}>
-          <AppText variant="caption" tone="accent" style={styles.tag}>
-            얻음
-          </AppText>
-          <AppText variant="smallStrong" style={styles.flex}>
-            {got}
-          </AppText>
-        </View>
+        {got !== "" && (
+          <View style={styles.line}>
+            <AppText variant="caption" tone="accent" style={styles.tag}>
+              얻음
+            </AppText>
+            <AppText variant="smallStrong" style={styles.flex}>
+              {got}
+            </AppText>
+          </View>
+        )}
       </View>
     </View>
   );
