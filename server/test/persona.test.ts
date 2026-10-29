@@ -224,6 +224,7 @@ describe('성향 질문·페르소나 API', () => {
     await expect(real.generateJson({ system: '가'.repeat(100), input: {}, schema: z.object({ a: z.string() }), schemaName: 't' })).rejects.toBeInstanceOf(LlmTokenLimitError);
   });
 
+  // 앱(PGlite DB)을 두 번 만드는 시험이라 느린 CI에서는 5초를 넘음 (10/29 GitHub 5.5초) → 이 시험만 20초
   it('LLM이 실패하거나 하루 상한이면 규칙 카드로 대신함', async () => {
     const broken = await setup({ llm: fakeLlm(() => { throw new Error('timeout'); }) });
     const res = await call(broken.app, 'POST', '/me/persona', { answers: seoyeon(MUST_KEEP) }, broken.token);
@@ -235,7 +236,7 @@ describe('성향 질문·페르소나 API', () => {
     const res2 = await call(capped.app, 'POST', '/me/persona', { answers: seoyeon() }, capped.token);
     expect(res2.body.persona.source).toBe('rule');
     expect(llm.calls).toBe(0);
-  });
+  }, 20_000);
 
   it('LLM 문장이 길이를 넘으면 그 칸만 규칙 문장으로 대신함', async () => {
     const { app, token } = await setup({ llm: fakeLlm(() => draft('아주아주아주아주아주 긴 유형명')) });
