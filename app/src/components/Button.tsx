@@ -4,7 +4,7 @@ import { disabledOpacity, hitSize, pressedOpacity, radius, spacing, useTheme, ty
 import AppText, { type TextTone } from "./AppText.tsx";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
-export type ButtonSize = "sm" | "md" | "lg";
+export type ButtonSize = "xs" | "sm" | "md" | "lg";
 
 export type ButtonProps = {
   label: string;
@@ -32,7 +32,11 @@ function variantColors(c: ThemeColors): Record<ButtonVariant, { bg: string; bord
   };
 }
 
+// xs는 글줄 옆에 놓는 작은 칩. 눈에 보이는 높이는 줄이고 눌리는 영역은 hitSlop으로 hitSize까지 넓힌다.
+const XS_HEIGHT = 32;
+
 const SIZE: Record<ButtonSize, { height: number; padH: number; radius: number }> = {
+  xs: { height: XS_HEIGHT, padH: spacing.sm + spacing.xs, radius: radius.md },
   sm: { height: hitSize, padH: spacing.md, radius: radius.md },
   md: { height: hitSize, padH: spacing.lg, radius: radius.lg },
   lg: { height: 56, padH: spacing.lg, radius: radius.lg },
@@ -54,6 +58,7 @@ export default function Button({
   const v = variantColors(colors)[variant];
   const s = SIZE[size];
   const inactive = disabled || loading;
+  const small = size === "xs" || size === "sm";
 
   return (
     <Pressable
@@ -63,7 +68,13 @@ export default function Button({
       accessibilityLabel={label}
       accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled: inactive, busy: loading }}
-      hitSlop={size === "sm" ? spacing.xs : undefined}
+      hitSlop={
+        size === "xs"
+          ? { top: (hitSize - XS_HEIGHT) / 2, bottom: (hitSize - XS_HEIGHT) / 2, left: spacing.xs, right: spacing.xs }
+          : size === "sm"
+            ? spacing.xs
+            : undefined
+      }
       style={({ pressed }) => [
         styles.base,
         {
@@ -82,11 +93,11 @@ export default function Button({
       {/* 로딩 중에도 글자 자리를 지켜서 버튼 너비가 흔들리지 않게 한다. */}
       <View style={[styles.content, loading && styles.hidden]}>
         {icon !== undefined && (
-          <AppText variant={size === "sm" ? "label" : "button"} tone={v.text}>
+          <AppText variant={small ? "label" : "button"} tone={v.text}>
             {icon}
           </AppText>
         )}
-        <AppText variant={size === "sm" ? "label" : "button"} tone={v.text} numberOfLines={1}>
+        <AppText variant={small ? "label" : "button"} tone={v.text} numberOfLines={1}>
           {label}
         </AppText>
       </View>
