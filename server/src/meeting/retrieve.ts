@@ -1,18 +1,19 @@
 import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { categories, places, regions } from '../db/schema.js';
-import { todayKst } from '../lib/time.js';
+import { DAY_MS, todayKst } from '../lib/time.js';
 import type { MustKeepRule, PersonaProfile } from '../persona/types.js';
 import type { TourClient } from '../tour/client.js';
 import { CANDIDATE_TYPES, LODGING_TYPE } from './categories.js';
 import { crowd } from './crowd.js';
 import { type OpenHours, closedOn, hoursLabel, hoursOn } from './hours.js';
 import { normName } from './match.js';
+import type { AreaMatcher, AreaRule } from './areas.js';
 import type { NameMatcher, NamePlace, NameRule } from './names.js';
 import { popularity } from './popularity.js';
-import { districtsNamed, shortRegionName } from './regions.js';
+import { shortRegionName, withSubDistricts } from './regions.js';
 import { centerOf, oneWayMinutes } from './travel.js';
-import { type RulePlace, dislikeMatches, dislikeText, isDietAvoid, likeMatches, likeText, ruleMatcher } from './rules.js';
+import { type RulePlace, dislikeMatches, dislikeText, isAreaRule, isDietAvoid, isLegacyRule, isNameRule, likeMatches, likeText, ruleMatcher } from './rules.js';
 import type { ResolvedDestination, TripConditions } from './types.js';
 
 /** 후보 찾기 규칙 값 (모두 여기서만 바꿈) */
@@ -46,6 +47,10 @@ export const RETRIEVE = {
   mustKeepPoint: 10,
   popularityRange: 2,
   crowdRange: 2,
+  /** 집중률 점수의 가운데(이보다 붐비면 +, 한산하면 −) · 이유 글에 '이름난 곳'·'활기찬/한산한 날'을 적는 점수 하한 */
+  crowdNeutral: 50,
+  popularReasonMin: 0.8,
+  crowdReasonMin: 0.6,
   dislikePoint: -3,
   /** 이름이 앞부분까지 같고 이 거리(m) 안이면 같은 곳으로 보고 하나만 남김 (예: 오륙도·오륙도 등대) */
   sameSpotMeters: 300,
@@ -73,6 +78,9 @@ export const RETRIEVE = {
    */
   businessCodes: ['AC', 'FD', 'SH04', 'SH05', 'SH07'],
 } as const;
+
+/** 이름·지역 규칙인데 맞추기 LLM의 답을 받지 못했을 때 메모 */
+export const NO_NAME_ANSWER = 'AI 맞추기를 하지 못해 적용하지 못함 (하루 AI 상한·오류·AI 0번 모드)';
 
 /** 숙소·가게인지 (공식 분류 코드로만 봄) */
 export const isBusiness = (code: string | null) => !!code && RETRIEVE.businessCodes.some((c) => code.startsWith(c));
@@ -154,13 +162,15 @@ export interface RetrieveResult {
   /** 꼭 지킬 것(넣기)이 여행지에 없고 같은 시·도의 다른 구·군에만 있는 것 (placeId: 넣은 후보 id, 지역 규칙이라 넣지 못했으면 null) */
   /** minutes: 여행지 가운데에서 편도 어림 (분). 넣은 곳은 그 곳까지, 멀어서 못 넣은 규칙은 가장 가까운 곳까지 */
   outsideRules: { memberId: string; label: string; district: string; placeId: string | null; minutes?: number }[];
-  /** 이름 맞추기(LLM)로 찾은 꼭 지킬 것: 사람이 쓴 말(keyword)과 맞춘 장소 이름·id (보드에 오르면 5단계 사람 확인 안건) */
-  nameMatches: { memberId: string; label: string; keyword: string; places: string[]; ids: string[] }[];
+  /**
+   * 이름·지역 맞추기(LLM)로 맞춘 규칙: 넣기(꼭 지킬 것)·피하기(꼭 피할 것), 사람이 쓴 말(keyword)과 맞춘 장소 id·구·군 코드(districts, 지역 규칙)와 그 이름
+   * 4단계 메모로 보이고, 6단계 끼니 보충 식당도 이 값으로만 맞춤
+   */
+  nameMatches: { memberId: string; type: 'include' | 'avoid'; label: string; keyword: string; places: string[]; ids: string[]; districts?: string[] }[];
   /** 꼭 지킬 것(넣기)인데 후보에 하나도 없는 것과 그 까닭 (여행지 밖 메모가 있는 것은 빼고) */
   missingRules: { memberId: string; label: string; reason: string }[];
 }
 
-const DAY_MS = 86400000;
 export function tripDates(c: TripConditions): string[] {
   const out: string[] = [];
   for (let t = Date.parse(`${c.startDate}T00:00:00Z`); t <= Date.parse(`${c.endDate}T00:00:00Z`); t += DAY_MS) out.push(new Date(t).toISOString().slice(0, 10));
@@ -196,8 +206,10 @@ export async function retrieveCandidates(
     members: readonly MemberInput[];
     crowdClient: TourClient | null;
     today?: string;
-    /** 장소·음식 넣기 규칙을 코드가 이름으로 못 찾으면 같은 곳을 고르는 함수 (LLM 1회, names.ts). 없으면 맞추지 않음 */
+    /** 꼭 지킬 것·꼭 피할 것의 장소·음식 이름을 장소 목록에서 맞추는 함수 (LLM, names.ts). 없으면 맞추지 않고 메모만 남김 */
     matchNames?: NameMatcher | null;
+    /** 지역 조건을 구·군 목록 또는 장소 목록에서 맞추는 함수 (LLM, areas.ts). 없으면 맞추지 않고 메모만 남김 */
+    matchAreas?: AreaMatcher | null;
   },
 ): Promise<RetrieveResult> {
   const today = opts.today ?? todayKst();
@@ -232,15 +244,25 @@ export async function retrieveCandidates(
       ),
     );
 
-  // 사람의 규칙을 장소에 맞추는 함수 (종류는 분류 코드, 지역은 법정동 코드, 특정 음식·장소만 이름)
+  type Row = (typeof rows)[number];
+
+  // 사람의 규칙을 장소에 맞추는 함수 (종류는 분류 코드, 장소·음식 이름과 지역은 2단계 LLM이 고른 장소 번호·구·군 코드 — 10/29 사용자 결정: 코드가 글자로 맞추지 않음)
   const regionDistricts = await db
     .select({ districtCode: regions.districtCode, districtName: regions.districtName })
     .from(regions)
     .where(eq(regions.regionCode, destination.regionCode));
-  const ctx = { regionWords, districtsOf: (word: string) => districtsNamed(word, regionDistricts) };
-  const includes = new Map(members.map((m) => [m.memberId, m.mustKeep.filter((r) => r.type === 'include').map((r) => ({ rule: r, matches: ruleMatcher(r, ctx) }))]));
-  const avoids = members.flatMap((m) => m.mustKeep.filter((r) => r.type === 'avoid' && !isDietAvoid(r)).map((r) => ruleMatcher(r, ctx)));
-  const viewOf =(p: (typeof rows)[number]): RulePlace => ({
+  const tripDistricts = destination.districtCodes.length ? destination.districtCodes : regionDistricts.map((r) => r.districtCode);
+  // LLM이 고른 장소 id(이름 규칙·장소를 고른 지역 규칙)와 구·군 코드(지역 규칙) — 아래 askNames·지역 맞추기가 채움
+  const named = new Map<MustKeepRule, Set<string>>();
+  const areaPicked = new Map<MustKeepRule, Set<string>>();
+  const matcherOf = (r: MustKeepRule) =>
+    isNameRule(r) || isAreaRule(r)
+      ? (v: RulePlace) => (!!v.id && !!named.get(r)?.has(v.id)) || (!!v.districtCode && !!areaPicked.get(r)?.has(v.districtCode))
+      : ruleMatcher(r);
+  const includes = new Map(members.map((m) => [m.memberId, m.mustKeep.filter((r) => r.type === 'include' && !isLegacyRule(r)).map((r) => ({ rule: r, matches: matcherOf(r) }))]));
+  const avoidRules = members.flatMap((m) => m.mustKeep.filter((r) => r.type === 'avoid' && !isLegacyRule(r) && !isDietAvoid(r)).map((r) => ({ memberId: m.memberId, rule: r, matches: matcherOf(r) })));
+  const avoids = avoidRules.map((a) => a.matches);
+  const viewOf = (p: Row): RulePlace => ({
     id: p.id,
     title: p.title,
     code: p.lcls3,
@@ -254,17 +276,90 @@ export async function retrieveCandidates(
     views.some((v) => k.matches(v) && (k.rule.target !== 'place' || !isBusiness(v.code)));
   const notDestination = (code: string | null) => !!code && RETRIEVE.notDestinationCodes.some((c) => code.startsWith(c));
   // 제외 분류라도 누군가 꼭 지킬 것으로 고른 곳은 넣음 (장소 이름 규칙은 숙소·가게가 아닌 곳일 때만: 이름에 같은 낱말이 든 매장은 넣지 않음)
-  const wanted = (p: (typeof rows)[number]) => {
+  // 구·군을 고른 지역 규칙은 장소 종류를 정하지 않으므로 제외 시설을 끌어들이지 않음 (10/28 점검: '해운대' 지역 규칙으로 사후면세점·대형마트·도서관이 꼭 지킬 곳이 됨). 장소를 고른 지역 규칙은 그 장소만
+  const wanted = (p: Row) => {
     const v = [viewOf(p)];
-    return [...includes.values()].some((list) => list.some((k) => metIn(v, k)));
+    return [...includes.values()].some((list) => list.some((k) => !areaPicked.get(k.rule)?.size && metIn(v, k)));
   };
+
+  // 이름 맞추기 (LLM, 10/29 사용자 결정 '가'): 꼭 지킬 것·꼭 피할 것의 장소·음식 이름은 LLM이 장소 목록에서 같은 곳의 번호를 고름 (코드는 목록만 줄임, names.ts)
+  // 목록은 여행지의 모든 장소 (거르기 전, 숙소·가게는 빼고 음식점은 남김 — 10/27 검증: 엘시티 전망대 → 엘시티 레지던스(숙소)). 10/28 비교 시험과 같은 목록
+  // 구 단위 여행에서 여행지 안에 맞는 곳이 없는 넣기 규칙은 아래에서 같은 시·도의 다른 구·군 목록으로 한 번 더 물음 (여행지 밖, 10/16 사용자 결정)
+  const codeNames = new Map((await db.select({ code: categories.code, name: categories.name3 }).from(categories)).map((c) => [c.code, c.name]));
+  const districtName = new Map(regionDistricts.map((r) => [r.districtCode, r.districtName]));
+  const toMatchable = (p: Row) => ({ contentId: p.id, title: p.title, districtCode: p.districtCode });
+  const titleOf = new Map<string, string>();
+  /** LLM에게 보여 줄 장소 목록 (거르기 전, 숙소·가게는 빼고 음식점은 남김) */
+  const listOf = async (from: readonly Row[]): Promise<NamePlace[]> => {
+    const listed = from.filter((p) => p.type !== RETRIEVE.lodgingType);
+    const listPop = await popularity(db, { regionCode: destination.regionCode, tripMonth, places: listed.map(toMatchable), regionWords });
+    const out = listed
+      .filter((p) => !isBusiness(p.lcls3) || p.type === RETRIEVE.foodType)
+      .map((p) => {
+        const v = viewOf(p);
+        return { id: p.id, title: p.title, category: (p.lcls3 && codeNames.get(p.lcls3)) ?? null, district: (p.districtCode && districtName.get(p.districtCode)) ?? null, isFood: v.isFood, menu: v.menu, summary: strip(p.overview) || null, popularity: listPop.scores.get(p.id) ?? null };
+      });
+    for (const p of out) titleOf.set(p.id, p.title);
+    return out;
+  };
+  let destinationList: NamePlace[] | null = null;
+  const destinationPlaces = async () => (destinationList ??= await listOf(rows));
+  const nameRules = [
+    ...members.flatMap((m) => (includes.get(m.memberId) ?? []).filter((k) => isNameRule(k.rule)).map((k) => ({ memberId: m.memberId, rule: k.rule }))),
+    ...avoidRules.filter((a) => isNameRule(a.rule)).map((a) => ({ memberId: a.memberId, rule: a.rule })),
+  ];
+  const areaRules = [
+    ...members.flatMap((m) => (includes.get(m.memberId) ?? []).filter((k) => isAreaRule(k.rule)).map((k) => ({ memberId: m.memberId, rule: k.rule }))),
+    ...avoidRules.filter((a) => isAreaRule(a.rule)).map((a) => ({ memberId: a.memberId, rule: a.rule })),
+  ];
+  /** LLM이 답한 이름·지역 규칙 (답이 없던 규칙은 'AI로 맞추지 못함' 메모) */
+  const answered = new Set<MustKeepRule>();
+  const askNames = async (list: readonly { memberId: string; rule: MustKeepRule }[], namePlaces: readonly NamePlace[]) => {
+    if (!list.length || !opts.matchNames) return;
+    // 보여 줄 장소가 없으면 묻지 않고 '맞는 곳 없음'으로 둠 (AI를 못 쓴 것과 구분)
+    if (!namePlaces.length) {
+      for (const x of list) answered.add(x.rule);
+      return;
+    }
+    const asked: NameRule[] = list.map((x, i) => ({ key: String(i), type: x.rule.type === 'avoid' ? 'avoid' : 'include', label: x.rule.label, keyword: x.rule.keyword!.trim(), target: x.rule.target === 'food' ? 'food' : 'place' }));
+    const found = await opts.matchNames(asked, namePlaces);
+    for (const [i, x] of list.entries()) {
+      const ids = found.get(String(i));
+      if (!ids) continue;
+      answered.add(x.rule);
+      named.set(x.rule, new Set([...(named.get(x.rule) ?? []), ...ids.filter((id) => titleOf.has(id))]));
+    }
+  };
+  if (nameRules.length && opts.matchNames) await askNames(nameRules, await destinationPlaces());
+
+  // 지역 맞추기 (LLM, 10/29 사용자 결정): 15번에서 나온 지역 말(예: 서면 쪽 위주로)은 LLM이 여행지 시·도의 구·군 목록 또는 장소 목록에서 번호를 고름 (areas.ts)
+  // 동네 이름은 그 동네가 있는 구·군 (장소 자료의 지역 표시가 구·군까지라 그보다 좁힐 수 없음), 특정 장소 이름은 그 장소 (예: 한옥마을 → 전북 전주 한옥마을)
+  if (areaRules.length && opts.matchAreas) {
+    const asked: AreaRule[] = areaRules.map((x, i) => ({ key: String(i), type: x.rule.type === 'avoid' ? 'avoid' : 'include', label: x.rule.label, keyword: x.rule.keyword!.trim(), said: x.rule.quote?.trim() || x.rule.label }));
+    const found = await opts.matchAreas(asked, regionDistricts.map((d) => ({ code: d.districtCode, name: d.districtName })), await destinationPlaces());
+    for (const [i, x] of areaRules.entries()) {
+      const a = found.get(String(i));
+      if (!a) continue;
+      answered.add(x.rule);
+      areaPicked.set(x.rule, new Set(withSubDistricts(a.districts, regionDistricts)));
+      named.set(x.rule, new Set(a.ids.filter((id) => titleOf.has(id))));
+    }
+  }
+  // 지역 넣기 규칙이 여행지의 모든 구·군을 가리키면 조건으로 쓰지 않고 메모만 남김: 모든 후보가 꼭 지킬 곳이 되어 거르기·고르기·자기 조건 검사가 무너짐
+  // (10/28 점검, 예: 전주 여행 + '전주 가면 한옥마을이지' → 지역 전주. 여행지 구·군은 법정동 코드로만 비교함)
+  const wholeTrip = (r: MustKeepRule) => isAreaRule(r) && tripDistricts.length > 0 && tripDistricts.every((d) => !!areaPicked.get(r)?.has(d));
+  for (const [memberId, list] of includes) includes.set(memberId, list.filter((k) => !wholeTrip(k.rule)));
+  const skippedRules = members.flatMap((m) => [
+    ...m.mustKeep.filter((r) => r.type === 'include' && wholeTrip(r)).map((r) => ({ memberId: m.memberId, label: r.label, reason: '여행지 전체라 조건으로 쓰지 않음' })),
+    ...m.mustKeep.filter(isLegacyRule).map((r) => ({ memberId: m.memberId, label: r.label, reason: '예전 성향 카드의 규칙이라 쓰지 않음 (성향을 다시 내면 쓰임)' })),
+  ]);
 
   // ① 거르기 (빼는 이유와 예시를 남김)
   const excluded = new Map<string, string[]>();
   const drop = (reason: string, title: string) => excluded.set(reason, [...(excluded.get(reason) ?? []), title]);
   const startYmd = dates[0].replaceAll('-', '');
   const endYmd = dates[dates.length - 1].replaceAll('-', '');
-  const rejectReason = (p: (typeof rows)[number]): string | null => {
+  const rejectReason = (p: Row): string | null => {
     if (p.type === RETRIEVE.festivalType) {
       const s = intro(p.introRaw, 'eventstartdate');
       const e = intro(p.introRaw, 'eventenddate');
@@ -282,60 +377,36 @@ export async function retrieveCandidates(
   });
 
   // 꼭 지킬 것(넣기)이 구 단위 여행지에 하나도 없을 때: 같은 시·도의 다른 구·군에서 같은 거르기를 거친 곳을 찾음 (10/16 사용자 결정)
-  // 지역 규칙(예: 사하구 여행 + '영도 방문')은 장소 하나로 채울 수 없어 넣지 않고 기록만 함 (4단계 안건)
-  const districtName = new Map(regionDistricts.map((r) => [r.districtCode, r.districtName]));
+  // 지역 규칙(예: 사하구 여행 + '영도 방문')은 장소 하나로 채울 수 없어 넣지 않고 기록만 함 (4단계 안건). 이름 규칙은 다른 구·군 목록으로 이름 맞추기를 한 번 더 함
   const keptViews = kept.map(viewOf);
   const unmet = destination.districtCodes.length
     ? members.flatMap((m) => (includes.get(m.memberId) ?? []).filter((k) => !metIn(keptViews, k)).map((k) => ({ memberId: m.memberId, k })))
     : [];
   const unmetPlaces = unmet.filter((u) => u.k.rule.target !== 'area');
-  const outsideRows = unmetPlaces.length
-    ? (
-        await db
-          .select(fields)
-          .from(places)
-          .where(
-            and(
-              eq(places.visible, true),
-              eq(places.regionCode, destination.regionCode),
-              inArray(places.contentTypeId, types),
-              notInArray(places.districtCode, destination.districtCodes),
-            ),
-          )
-      ).filter((p) => !rejectReason(p))
+  const outsideAll = unmetPlaces.length
+    ? await db
+        .select(fields)
+        .from(places)
+        .where(
+          and(
+            eq(places.visible, true),
+            eq(places.regionCode, destination.regionCode),
+            inArray(places.contentTypeId, types),
+            notInArray(places.districtCode, destination.districtCodes),
+          ),
+        )
     : [];
-  const codeNames = new Map((await db.select({ code: categories.code, name: categories.name3 }).from(categories)).map((c) => [c.code, c.name]));
-  const toMatchable = (p: (typeof rows)[number]) => ({ contentId: p.id, title: p.title, districtCode: p.districtCode });
-
-  // 이름 맞추기 (LLM, 10/19 사용자 결정): 장소·음식 넣기 규칙이 이름·메뉴 글자로 시·도 안(여행지 + 같은 시·도의 다른 구·군) 어디에서도 맞지 않으면
-  // 코드가 후보를 줄이고(글자 겹침·인기 순) LLM이 같은 곳을 고름. 맞춘 곳은 그 규칙의 꼭 지킬 곳이 됨 (예: 엘시티 전망대 = 부산엑스더스카이)
-  const inRegion = [...kept, ...outsideRows];
-  const inRegionViews = inRegion.map(viewOf);
-  const nameRules = members.flatMap((m) =>
-    (includes.get(m.memberId) ?? [])
-      .filter((k) => (k.rule.target === 'place' || k.rule.target === 'food') && !!k.rule.keyword?.trim() && !metIn(inRegionViews, k))
-      .map((k) => ({ memberId: m.memberId, k })),
-  );
-  const nameMatches: RetrieveResult['nameMatches'] = [];
-  if (nameRules.length && opts.matchNames) {
-    const regionPop = await popularity(db, { regionCode: destination.regionCode, tripMonth, places: inRegion.map(toMatchable), regionWords });
-    // LLM에 보여 주는 후보에서 숙소·가게는 뺌 (음식점은 음식·식당 이름 규칙에 필요해 남김). 예: 엘시티 전망대 → 엘시티 레지던스(숙소)로 맞춘 일 (10/27 검증)
-    const namePlaces: NamePlace[] = inRegion.filter((p) => !isBusiness(p.lcls3) || p.type === RETRIEVE.foodType).map((p) => {
-      const v = viewOf(p);
-      const summary = p.overview ? p.overview.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : null;
-      return { id: p.id, title: p.title, category: (p.lcls3 && codeNames.get(p.lcls3)) ?? null, district: (p.districtCode && districtName.get(p.districtCode)) ?? null, isFood: v.isFood, menu: v.menu, summary, popularity: regionPop.scores.get(p.id) ?? null };
-    });
-    const asked: NameRule[] = nameRules.map((x, i) => ({ key: String(i), label: x.k.rule.label, keyword: x.k.rule.keyword!.trim(), target: x.k.rule.target as 'place' | 'food' }));
-    const found = await opts.matchNames(asked, namePlaces);
-    const titleOf = new Map(inRegion.map((p) => [p.id, p.title]));
-    for (const [i, x] of nameRules.entries()) {
-      const ids = new Set((found.get(String(i)) ?? []).filter((id) => titleOf.has(id)));
-      if (!ids.size) continue;
-      const byCode = x.k.matches;
-      x.k.matches = (v) => byCode(v) || (!!v.id && ids.has(v.id));
-      nameMatches.push({ memberId: x.memberId, label: x.k.rule.label, keyword: x.k.rule.keyword!.trim(), places: [...ids].map((id) => titleOf.get(id)!), ids: [...ids] });
-    }
-  }
+  const unmetNames = unmetPlaces.filter((u) => isNameRule(u.k.rule)).map((u) => ({ memberId: u.memberId, rule: u.k.rule }));
+  if (unmetNames.length && opts.matchNames) await askNames(unmetNames, await listOf(outsideAll));
+  const outsideRows = outsideAll.filter((p) => !rejectReason(p));
+  const inRegionViews = [...kept, ...outsideRows].map(viewOf);
+  const nameMatches: RetrieveResult['nameMatches'] = [...nameRules, ...areaRules].flatMap((x) => {
+    const ids = [...(named.get(x.rule) ?? [])];
+    const districts = [...(areaPicked.get(x.rule) ?? [])];
+    if (!ids.length && !districts.length) return [];
+    const places = [...districts.map((d) => districtName.get(d) ?? d), ...ids.map((id) => titleOf.get(id) ?? id)];
+    return [{ memberId: x.memberId, type: x.rule.type === 'avoid' ? ('avoid' as const) : ('include' as const), label: x.rule.label, keyword: x.rule.keyword!.trim(), places, ids, ...(districts.length ? { districts } : {}) }];
+  });
   // 장소 이름 규칙: 이름이 같은 곳 중 숙소·가게가 아닌 곳이 있으면 숙소·가게는 꼭 지킬 곳으로 보지 않음 (10/27 사용자 결정, 이름 맞추기로 찾은 곳 포함)
   for (const list of includes.values())
     for (const k of list) {
@@ -362,7 +433,7 @@ export async function retrieveCandidates(
 
   // ② 사람별 점수 (좋아요·싫어요·꼭 지킬 것 모두 코드로 맞춤, 장소 이름·소개글의 글자로 종류를 추측하지 않음)
   const viewById = new Map<string, RulePlace>();
-  const toCandidate = (p: (typeof rows)[number]): Candidate => {
+  const toCandidate = (p: Row): Candidate => {
     const view = viewOf(p);
     viewById.set(p.id, view);
     const category = (p.lcls3 && codeNames.get(p.lcls3)) ?? null;
@@ -392,13 +463,13 @@ export async function retrieveCandidates(
       if (popularityScore !== null && m.profile.weights.popularity) {
         const v = (popularityScore / 100) * m.profile.weights.popularity * RETRIEVE.popularityRange;
         s += v;
-        if (v >= 0.8) why.push('이름난 곳');
+        if (v >= RETRIEVE.popularReasonMin) why.push('이름난 곳');
       }
       if (crowdScore !== null) {
         if (m.profile.weights.crowd) {
-          const v = ((crowdScore - 50) / 50) * m.profile.weights.crowd * RETRIEVE.crowdRange;
+          const v = ((crowdScore - RETRIEVE.crowdNeutral) / RETRIEVE.crowdNeutral) * m.profile.weights.crowd * RETRIEVE.crowdRange;
           s += v;
-          if (v >= 0.6) why.push(m.profile.weights.crowd > 0 ? '활기찬 날' : '한산한 날');
+          if (v >= RETRIEVE.crowdReasonMin) why.push(m.profile.weights.crowd > 0 ? '활기찬 날' : '한산한 날');
         }
         if (m.profile.maxCrowd !== null && crowdScore > m.profile.maxCrowd) {
           s += RETRIEVE.dislikePoint;
@@ -443,7 +514,7 @@ export async function retrieveCandidates(
 
   // ③ 뽑기: 사람마다 8곳 → 4명 합 상위로 채움 → 음식점 최소 수 → 같은 곳은 하나만
   const byTotal = [...scored].sort((a, b) => b.total - a.total || a.id.localeCompare(b.id));
-  const isMust = (c: Candidate) => Object.values(c.reasons).some((r) => r.some((w) => w.startsWith('꼭 지킬 것')));
+  const isMust = (c: Candidate) => Object.values(c.marks).some((ks) => ks.some((k) => k.kind === 'must'));
   const mustIds = new Set(scored.filter(isMust).map((c) => c.id));
   const chosen = new Map<string, Candidate>();
   const sameSpot = (a: Candidate, b: Candidate) => {
@@ -557,7 +628,7 @@ export async function retrieveCandidates(
     }
   }
   for (const u of unmet.filter((x) => x.k.rule.target === 'area')) {
-    const codes = ctx.districtsOf(u.k.rule.keyword?.trim() ?? '');
+    const codes = [...(areaPicked.get(u.k.rule) ?? [])];
     if (codes.length && !codes.some((d) => destination.districtCodes.includes(d))) {
       outsideRules.push({ memberId: u.memberId, label: u.k.rule.label, district: codes.map((d) => districtName.get(d) ?? d).join('·'), placeId: null });
     }
@@ -571,14 +642,27 @@ export async function retrieveCandidates(
     .concat([...outsideLodgings.values()]);
 
   // 꼭 지킬 것(넣기)이 후보에 하나도 없으면 표시 없이 빠지지 않게 까닭과 함께 남김 (4단계 안건 메모). 여행지 밖 메모가 있는 규칙은 거기서 이미 알림
+  // 여행지 전체를 가리켜 쓰지 않은 지역 규칙, 여행지 어디에도 맞는 곳이 없어 아무것도 거르지 않은 피하기 규칙도 메모로 알림 (조용히 효과가 없지 않게)
   const pool = [...candidates, ...lodgings];
-  const missingRules: RetrieveResult['missingRules'] = [];
+  const rowViews = rows.map(viewOf);
+  // 이름·지역 규칙인데 LLM 답을 받지 못함 (LLM 없음·하루 상한·실패·LLM_REPLAY에 녹화 없음): 코드가 글자로 대신 맞추지 않고 알림
+  const noAnswer = (r: MustKeepRule) => (isNameRule(r) || isAreaRule(r)) && !answered.has(r);
+  const missingRules: RetrieveResult['missingRules'] = [
+    ...skippedRules,
+    ...avoidRules
+      .filter((a) => !rowViews.some(a.matches))
+      .map((a) => ({ memberId: a.memberId, label: a.rule.label, reason: noAnswer(a.rule) ? NO_NAME_ANSWER : '여행지 자료에서 맞는 곳을 찾지 못해 적용하지 못함' })),
+  ];
   for (const m of members) {
     for (const k of includes.get(m.memberId) ?? []) {
       if (pool.some((c) => c.marks[m.memberId]?.some((x) => x.kind === 'must' && x.label === k.rule.label))) continue;
       if (outsideRules.some((r) => r.memberId === m.memberId && r.label === k.rule.label)) continue;
-      const blocked = rows.some((p) => rejectReason(p) && k.matches(viewOf(p)));
-      missingRules.push({ memberId: m.memberId, label: k.rule.label, reason: blocked ? '여행 날짜가 휴무이거나 다른 사람의 꼭 피할 것에 걸림' : '여행지 자료에서 찾지 못함' });
+      const blocked = [...rows, ...outsideAll].some((p) => rejectReason(p) && k.matches(viewOf(p)));
+      missingRules.push({
+        memberId: m.memberId,
+        label: k.rule.label,
+        reason: blocked ? '여행 날짜가 휴무이거나 다른 사람의 꼭 피할 것에 걸림' : noAnswer(k.rule) ? NO_NAME_ANSWER : '여행지 자료에서 찾지 못함',
+      });
     }
   }
   const sources = ['tour_api'];
@@ -596,7 +680,7 @@ export async function retrieveCandidates(
       { label: '고른 후보', count: candidates.length },
       { label: `숙소 후보 (${nights}박${nights ? `, 숙박 ${rows.filter(isLodging).length}곳 중` : ' · 당일치기라 뽑지 않음'})`, count: lodgings.length },
       ...(outsideSpots.size + outsideLodgings.size ? [{ label: '꼭 지킬 것이 여행지에 없어 같은 시·도에서 넣은 곳', count: outsideSpots.size + outsideLodgings.size }] : []),
-      ...(nameMatches.length ? [{ label: '이름 맞추기(LLM)로 찾은 꼭 지킬 것', count: nameMatches.length }] : []),
+      ...(nameMatches.length ? [{ label: '이름·지역 맞추기(LLM)로 맞춘 꼭 지킬 것·꼭 피할 것', count: nameMatches.length }] : []),
     ],
     excluded: [...excluded].map(([reason, list]) => ({ reason, count: list.length, examples: list.slice(0, 3) })),
     popularity: { baseYm: pop.baseYm, matched: pop.matched },

@@ -194,6 +194,25 @@
   .pstop.off { opacity: .35; }
   .pleg { margin-left: 10px; padding: 2px 0 2px 16px; border-left: 2px dashed var(--line); font-size: 12.5px; }
   .pleg .alt, .pleg.est { color: var(--muted); }
+  /* 7단계: 평가 1라운드 (AI마다 A·B 입장·만족도·이유, 한마디, 고칠 요청) */
+  .eval7 { border: 2px solid var(--brand); border-radius: 18px; padding: 12px; display: grid; gap: 8px; background: color-mix(in srgb, var(--brand) 6%, var(--surface)); }
+  .eval7 h3 { margin: 0; font-size: 15px; }
+  .eval7 h3 .note { display: block; font-weight: 400; margin-top: 2px; }
+  .evavg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .evavg span { font-size: 13px; font-weight: 800; border-radius: 99px; padding: 3px 10px; background: var(--surface); border: 1px solid var(--line); }
+  .ecard { border: 1.5px solid color-mix(in srgb, var(--c) 40%, var(--line)); border-left: 5px solid var(--c); border-radius: 14px; padding: 9px 10px; display: grid; gap: 5px; background: var(--surface); }
+  .ecard .phead { display: flex; align-items: center; gap: 8px; }
+  .ecard .phead .note { margin-left: auto; }
+  .evline { display: grid; grid-template-columns: auto auto auto 1fr; gap: 6px; align-items: baseline; font-size: 13.5px; }
+  .evline b.sc { font-variant-numeric: tabular-nums; }
+  .ecard .say { font-size: 13px; background: var(--soft); border-radius: 10px; padding: 6px 9px; }
+  .ecard ul { margin: 0; padding-left: 18px; font-size: 13px; }
+  /* 8–12단계: 라운드마다 집계·고친 것·사회자 */
+  .eround { display: grid; gap: 8px; border-top: 1.5px dashed var(--line); padding-top: 8px; }
+  .eround:first-of-type { border-top: 0; padding-top: 0; }
+  .efix { font-size: 13px; background: var(--soft); border-radius: 10px; padding: 6px 9px; }
+  .efix ul { margin: 2px 0 0; padding-left: 18px; }
+  .ecarry { font-size: 12.5px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -260,6 +279,7 @@
     </div>
     <div class="sheet">
       <div class="sheet-head"><h3 id="sheetTitle">AI 4명이 조사를 준비하고 있어요</h3><button type="button" class="chip" id="speed">⏩ 2배로 보기</button></div>
+      <div id="eval"></div>
       <div id="plan"></div>
       <div id="review"></div>
       <div id="aiList"></div>
@@ -291,6 +311,9 @@ async function api(method, path, body) {
 
 /* 서버 실행 방식: LLM_REPLAY면 LLM을 부르지 않고 같은 여행의 지난 AI 결과를 다시 씀 (GET /dev/meeting/mode) */
 let MODE = { replay: false };
+/* 회의 실행·사람 확인 요청의 제한 시간: 터널이 끊긴 연결을 다시 쓰면 응답이 영영 오지 않으므로 무한 대기 대신 오류로 바꿔 다시 보낼 수 있게 함 (10/28) */
+const REQUEST_TIMEOUT_MS = 180_000;
+const errText = (err) => (err?.name === 'TimeoutError' || err?.name === 'AbortError' ? `서버 응답이 ${REQUEST_TIMEOUT_MS / 60000}분 동안 없어요. 터널 연결을 확인하고 다시 해 주세요` : err?.message ?? String(err));
 api('GET', '/dev/meeting/mode').then((m) => {
   MODE = m;
   if (MODE.replay) $('homeNote').textContent = '개발용 시연 화면 · 지금은 LLM 0회 모드예요: 같은 여행을 다시 보면 지난번 AI가 고른 결과를 그대로 쓰고, 새 여행은 저장된 결과가 없어 점수가 높은 곳으로 골라요. 이 PC에서만 열립니다.';
@@ -814,6 +837,8 @@ function onLine(line) {
   if (line.kind !== 'event') return;
   const e = line.event;
   const d = e.data;
+  // 6단계 A·B와 9단계에서 다시 짠 안(같은 planId, version + 1)을 모두 둠: 라운드 장면이 버전마다 지도를 바꿈
+  if (e.type === 'plan.proposed') planVersions.push(d);
   if (e.type === 'meeting.started') {
     agents = d.agents.map((a, i) => ({ ...a, i }));
     for (const a of agents) chars[a.agentId] = { agent: a, i: a.i };
@@ -854,7 +879,8 @@ function onLine(line) {
     });
   } else if (e.type === 'agent.message') {
     const c = chars[d.agentId];
-    if (c) enqueue(d.agentId, (run) => speak(c, d.text, run));
+    // 평가 라운드(1 이상)의 한마디는 동선을 다 보여 준 뒤 7단계 장면에서 말함 (결과 줄의 evaluation)
+    if (c && !d.round) enqueue(d.agentId, (run) => speak(c, d.text, run));
   } else if (e.type === 'board.updated') {
     final.board = d;
     whenIdle(finale);
@@ -1056,7 +1082,7 @@ function conflictCard(it) {
   });
   const checks = [
     pl?.outside ? `여행지 밖이에요 (${esc(pl.outside)}${pl.outsideMinutes != null ? `, 편도 약 ${pl.outsideMinutes}분` : ''})` : '',
-    ...(view.r.retrieve.nameMatches ?? []).filter((m) => (m.ids ?? []).some((id) => `plc_${id}` === it.placeId)).map((m) => `이름이 달라 AI가 맞춘 ${esc(memberAgent(m.memberId)?.nickname ?? '')}의 꼭 지킬 곳이에요 ('${esc(m.keyword)}')`),
+    ...(view.r.retrieve.nameMatches ?? []).filter((m) => (m.ids ?? []).some((id) => `plc_${id}` === it.placeId)).map((m) => `AI가 이름으로 맞춘 ${esc(memberAgent(m.memberId)?.nickname ?? '')}의 꼭 지킬 곳이에요 ('${esc(m.keyword)}')`),
   ].filter(Boolean);
   const vote = view.votes.get(it.placeId);
   const result = vote ? `<span class="rresult ${vote.kept ? 'kept' : 'dropped'}">${vote.kept ? '✔ 남김' : '✕ 뺌'}</span>` : '';
@@ -1152,7 +1178,7 @@ async function sendReview() {
   const run = runId;
   const responses = agents.map((a) => ({ memberId: a.memberId, choices: review.items.map((it) => ({ placeId: it.placeId, keep: review.choice.get(it.placeId).get(a.memberId) })) }));
   try {
-    const res = await fetch('/api/v1/dev/meeting/review', { method: 'POST', headers: { Authorization: `Bearer ${saved.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ meetingId: review.meetingId, responses, close: true }) });
+    const res = await fetch('/api/v1/dev/meeting/review', { method: 'POST', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), headers: { Authorization: `Bearer ${saved.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ meetingId: review.meetingId, responses, close: true }) });
     if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error ? j.error.message : `HTTP ${res.status}`); }
     const lines = (await res.text()).trim().split('\n').map((l) => JSON.parse(l));
     const bad = lines.find((l) => l.kind === 'error');
@@ -1161,12 +1187,14 @@ async function sendReview() {
   } catch (err) {
     review.sent = false;
     drawSummary();
-    $('reviewErr').textContent = err.message;
+    $('reviewErr').textContent = errText(err);
   }
 }
 const VOTE = { true: ['👍', '남겨요'], false: ['✋', '빼요'] };
 async function playReview(lines, run) {
   const events = lines.filter((l) => l.kind === 'event').map((l) => l.event);
+  // 이어서 실행한 줄은 onLine을 지나지 않으므로 6·9단계 안(버전마다)을 여기서 모음 (라운드 장면이 버전마다 지도를 바꿈)
+  for (const e of events) if (e.type === 'plan.proposed') planVersions.push(e.data);
   const closed = events.find((e) => e.type === 'review.closed')?.data;
   if (!closed) throw new Error('사람 확인 결과를 받지 못했어요');
   // 응답이 들어온 순서대로 손을 듦 (review.cast)
@@ -1321,9 +1349,11 @@ async function tourDay(run) {
     if (!live()) return;
   }
 }
+/** 안마다 처음 짠 버전 (6단계): 라운드 장면이 뒤 버전으로 바꿔 감. 이벤트가 없으면 결과의 마지막 안 */
+const firstPlans = (r) => r.plans.map((p) => planVersions.filter((v) => v.planId === p.planId).sort((a, b) => a.version - b.version)[0] ?? p);
 async function showPlans(r, run) {
   if (!r?.plans?.length) { for (const c of Object.values(chars)) wander(c, run); return; }
-  plans = { list: r.plans, kakao: r.kakao, sel: r.plans[0].label, day: 0, layers: [] };
+  plans = { list: firstPlans(r), kakao: r.kakao, sel: r.plans[0].label, day: 0, layers: [] };
   $('plan').innerHTML = planSection();
   sheetEl().scrollTop = 0;
   setTitle(`🗺 A·B 두 안이 나왔어요 · ${r.plans[0].route.length}일 동선`);
@@ -1332,6 +1362,156 @@ async function showPlans(r, run) {
   for (const c of Object.values(chars)) badge(c, '');
   drawPlan();
   await tourDay(run);
+  if (run !== runId) return;
+  await showEval(r, run);
+}
+
+/* ───────── 7단계 평가 1라운드 ─────────
+   서버 결과(evaluation)를 그대로 보임: AI마다 A·B 입장·만족도·이유, 한마디, 고칠 요청, 코드가 고친 것
+   입장·요청은 AI가 보기 안에서 고르고, 만족도는 코드가 사실표로 계산한 값. 통과 판정은 8단계(준비 중)
+   캐릭터는 차례로 자기 입장과 한마디를 말함 (바로 보기면 말풍선 없이 시트만) */
+const STANCE = { 찬성: ['ok', '😊'], 조건부: ['warn', '🤔'], 반대: ['bad', '😣'] };
+const REQ_TEXT = { include: '넣기', avoid: '빼기', replace: '바꾸기', move: '긴 이동 줄이기' };
+const FIX_TEXT = { failed: 'LLM 2번 실패 → 규칙 평가', limit: 'AI 상한에 닿아 규칙 평가', no_llm: 'AI 0번 모드라 규칙 평가', move_auto: '긴 이동 줄이기를 줄일 수 있는 구간으로', code: '번호 종류가 틀린 요청 버림', protected: '못 바꾸는 곳 요청 버림', stance: '찬성 → 조건부', rule_request: '규칙 요청 붙임', why: '이유 → 규칙 문장', comment: '한마디 → 규칙 문장', reason: '요청 이유 → 규칙 문장' };
+let evalView = null; // { r, minSat, upto: 보여 준 마지막 라운드 }
+let planVersions = []; // 받은 plan.proposed 전부 (안마다 version 1, 2, …)
+const OUTCOME_TEXT = { passed: '✅ 두 안 모두 기준을 넘었어요', max_rounds: '⏱ 최대 라운드까지 회의했어요', stalled: '⏸ 2라운드 연속 나아지지 않아 멈췄어요', no_change: '⏸ 더 반영할 수 있는 요청이 없어 멈췄어요' };
+const agtOf = (memberId) => `agt_${memberId.replace(/^mem_/, '')}`;
+function placeNameOf(r, placeId) {
+  for (const p of r.plans ?? []) for (const d of p.route) for (const s of d.stops) if (s.placeId === placeId) return s.name;
+  const id = (placeId ?? '').replace(/^plc_/, '');
+  return r.retrieve.candidates.concat(r.retrieve.lodgings).find((x) => x.id === id)?.name ?? '';
+}
+/** 8–12단계: 라운드마다 평균·통과, 말한 AI의 카드(지난 평가를 그대로 둔 AI는 한 줄), 9단계에서 고친 것, 10단계 사회자 */
+function roundsSection() {
+  const { r, minSat, upto } = evalView;
+  const blocks = r.rounds.slice(0, upto + 1).map((rd, i) => {
+    const avgs = rd.tally.map((t) => `<span>${esc(t.plan)}안 평균 ${t.average.toFixed(1)}점 ${t.passed ? '✅ 통과' : '❌ 미달'}</span>`).join('');
+    const cards = rd.members.map((m) => {
+      const a = agentOf(m.agentId);
+      const line = m.plans.map((v) => `${esc(v.plan)}안 ${STANCE[v.stance][1]} ${esc(v.stance)} ${v.score}점`).join(' · ');
+      if (m.carried) return `<div class="ecarry">${esc(a?.nickname ?? '')} AI · 지난 평가 그대로 (점수만 바뀐 일정으로 다시 계산) · ${line}</div>`;
+      const src = m.recorded ? '저장된 AI 답 · LLM 0회' : m.source === 'llm' ? `AI · LLM ${m.llmCalls}회` : `규칙 평가${m.fixes.some((f) => f.kind === 'limit') ? ' · AI 상한' : m.fixes.some((f) => f.kind === 'no_llm') ? ' · AI 0번 모드' : ''}`;
+      const lines = m.plans.map((v) => `<div class="evline"><span class="tag">${esc(v.plan)}안</span><span class="tag ${STANCE[v.stance][0]}">${STANCE[v.stance][1]} ${esc(v.stance)}</span><b class="sc">${v.score}점</b><span class="note">${esc(v.why)}</span></div>`).join('');
+      const reqs = m.requests.map((q) => `<li>${esc(q.plan)}안 ${REQ_TEXT[q.type]}: ${q.placeId ? esc(placeNameOf(r, q.placeId)) : '가장 긴 이동'}${q.toId ? ` → ${esc(placeNameOf(r, q.toId))}` : ''}${q.auto ? ' <span class="tag">규칙</span>' : ''}</li>`).join('');
+      return `<div class="ecard" style="--c:${a?.color ?? '#999'}"><div class="phead">${face(a?.color ?? '#999', a?.i ?? 0)}<b>${esc(a?.nickname ?? '')} AI</b><span class="note">${src}</span></div>${lines}<div class="say">💬 ${esc(m.comment)}</div>${reqs ? `<ul>${reqs}</ul>` : ''}</div>`;
+    }).join('');
+    const fixed = rd.applied.filter((x) => x.applied);
+    const fixes = fixed.length ? `<div class="efix">🔧 9단계 수정 (라운드 ${rd.round} 뒤)<ul>${fixed.map((x) => `<li>${esc(agentOf(agtOf(x.by))?.nickname ?? '')} AI 요청 · ${esc(x.note)}</li>`).join('')}</ul></div>` : '';
+    const next = r.rounds[i + 1];
+    const mod = next && i < upto ? `<div class="efix">🎙 10단계 사회자: 라운드 ${next.round}에는 ${next.speakers.map((id) => esc(agentOf(agtOf(id))?.nickname ?? '')).join('·')} AI가 다시 말해요</div>` : '';
+    const end = rd.outcome ? `<div class="efix"><b>${esc(OUTCOME_TEXT[rd.outcome])}</b>${rd.reverted.length ? ` · 다듬어 본 ${esc(rd.reverted.join('·'))}안은 점수가 떨어져 되돌렸어요` : ''} · 이 A·B안을 사람에게 넘겨요</div>` : '';
+    return `<div class="eround"><h3>🗳 라운드 ${rd.round}${i === 0 ? ' · 7·8단계' : ' · 11·12단계'}<span class="note">말한 AI ${rd.speakers.length}명 · 평가 LLM ${rd.members.reduce((a, m) => a + m.llmCalls, 0)}회</span></h3>
+      <div class="evavg">${avgs}${minSat != null ? `<span class="note" style="border:0;background:none;font-weight:400">기준 ${minSat}점 이상이면 통과</span>` : ''}</div>${cards}${fixes}${mod}${end}</div>`;
+  }).join('');
+  return `<div class="eval7">${blocks}</div>`;
+}
+function evalSection() {
+  if (!evalView) return '';
+  if (evalView.r.rounds?.length) return roundsSection();
+  const { r, minSat } = evalView;
+  const ev = r.evaluation;
+  const labels = (r.plans ?? []).map((p) => p.label);
+  const avg = (l) => { const xs = ev.members.map((m) => m.plans.find((v) => v.plan === l)?.score ?? 0); return xs.reduce((a, b) => a + b, 0) / xs.length; };
+  const calls = ev.members.reduce((a, m) => a + m.llmCalls, 0);
+  const replayed = ev.members.filter((m) => m.recorded).length;
+  const rule = ev.members.filter((m) => m.source === 'rule').length;
+  const cards = ev.members.map((m) => {
+    const a = agentOf(m.agentId);
+    const src = m.recorded ? '저장된 AI 답 · LLM 0회' : m.source === 'llm' ? `AI · LLM ${m.llmCalls}회` : `규칙 평가${m.llmCalls ? ` · LLM ${m.llmCalls}회 실패` : ''}`;
+    const lines = m.plans.map((v) => `<div class="evline"><span class="tag">${esc(v.plan)}안</span><span class="tag ${STANCE[v.stance][0]}">${STANCE[v.stance][1]} ${esc(v.stance)}</span><b class="sc">${v.score}점</b><span class="note">${esc(v.why)}</span></div>`).join('');
+    const reqs = m.requests.map((q) => `<li>${esc(q.plan)}안 ${REQ_TEXT[q.type]}: ${q.placeId ? esc(placeNameOf(r, q.placeId)) : '가장 긴 이동'}${q.toId ? ` → ${esc(placeNameOf(r, q.toId))}` : ''}${q.reason ? ` <span class="note">${esc(q.reason)}</span>` : ''}${q.auto ? ' <span class="tag">규칙</span>' : ''}</li>`).join('');
+    const fixes = m.fixes.map((f) => `<span class="tag">${f.plan ? `${esc(f.plan)}안 ` : ''}${FIX_TEXT[f.kind]}</span>`).join('');
+    return `<div class="ecard" style="--c:${a?.color ?? '#999'}">
+      <div class="phead">${face(a?.color ?? '#999', a?.i ?? 0)}<b>${esc(a?.nickname ?? '')} AI</b><span class="note">${src}</span></div>
+      ${lines}<div class="say">💬 ${esc(m.comment)}</div>
+      ${reqs ? `<ul>${reqs}</ul>` : ''}${fixes ? `<div class="note">코드가 고침: ${fixes}</div>` : ''}</div>`;
+  }).join('');
+  return `<div class="eval7">
+    <h3>🗳 7단계 평가 · 라운드 ${ev.round}<span class="note">입장·이유·요청은 AI가 보기 안에서 고르고, 만족도는 코드가 사실(꼭 지킬 곳·👍·⚠·이동 기준)로 계산 · 평가 LLM ${calls}회${replayed ? ` · 저장된 답 ${replayed}명` : ''}${rule ? ` · 규칙 평가 ${rule}명` : ''}</span></h3>
+    <div class="evavg">${labels.map((l) => `<span>${esc(l)}안 구성원 평균 ${avg(l).toFixed(1)}점</span>`).join('')}${minSat != null ? `<span class="note" style="border:0;background:none;font-weight:400">기준 ${minSat}점 이상이면 통과 (판정은 8단계)</span>` : ''}</div>
+    ${cards}</div>`;
+}
+/** 8–12단계 장면: 라운드마다 말한 AI가 입장·한마디를 말하고(지난 평가를 그대로 둔 AI는 표정만), 집계 → 고친 것(요청한 AI가 말함) → 다음 버전 지도 → 사회자 */
+async function playRounds(r, minSat, run) {
+  evalView = { r, minSat, upto: 0 };
+  for (let i = 0; i < r.rounds.length; i++) {
+    const rd = r.rounds[i];
+    evalView.upto = i;
+    $('eval').innerHTML = evalSection();
+    setTitle(i === 0 ? `🗳 라운드 1 · AI ${rd.members.length}명이 A·B안을 평가했어요` : `🗳 라운드 ${rd.round} · ${rd.speakers.length}명이 고친 안을 다시 평가했어요`);
+    $('meetNote').textContent = i === 0
+      ? '7·8단계: AI마다 A·B 입장·이유·고칠 요청을 보기 안에서 고르고, 만족도는 코드가 사실로 계산해요. 안마다 구성원 평균이 기준 이상이면 통과예요.'
+      : '11·12단계: 사회자가 부른 AI만 고친 안을 다시 평가해요. 부르지 않은 AI는 지난 입장을 그대로 두고 점수만 바뀐 일정으로 다시 계산해요.';
+    for (const m of rd.members) {
+      const c = chars[m.agentId];
+      if (!c?.marker) continue;
+      const mine = m.plans.find((v) => v.plan === plans?.sel) ?? m.plans[0];
+      badge(c, STANCE[mine.stance][1]);
+      if (m.carried) continue;
+      if (m.plans.every((v) => v.stance === '찬성')) hop(c);
+      await speak(c, `${m.plans.map((v) => `${v.plan}안 ${v.stance} ${v.score}점`).join(' · ')} — ${m.comment}`, run);
+      if (run !== runId) return;
+    }
+    setTitle(`📊 ${i === 0 ? '8' : '12'}단계 집계 · ${rd.tally.map((t) => `${t.plan}안 ${t.average.toFixed(1)}점 ${t.passed ? '통과' : '미달'}`).join(' · ')}`);
+    await wait(PACE.voteHold);
+    if (run !== runId) return;
+    const next = r.rounds[i + 1];
+    const fixed = rd.applied.filter((x) => x.applied);
+    if (fixed.length) {
+      setTitle(`🔧 9단계 수정 · 요청 ${fixed.length}개를 반영해 다시 짰어요`);
+      for (const x of fixed) {
+        const c = chars[agtOf(x.by)];
+        if (c?.marker) await speak(c, `🔧 ${x.note}`, run, { type: false });
+        if (run !== runId) return;
+      }
+      if (next && plans) {
+        plans.list = next.plans.map((p) => planVersions.find((v) => v.planId === p.planId && v.version === p.version) ?? plans.list.find((x) => x.label === p.label));
+        $('plan').innerHTML = planSection();
+        drawPlan();
+      }
+    }
+    if (next) {
+      setTitle(`🎙 10단계 사회자 · 라운드 ${next.round}에는 ${next.speakers.map((id) => agentOf(agtOf(id))?.nickname ?? '').join('·')} AI가 다시 말해요`);
+      await wait(PACE.look);
+      if (run !== runId) return;
+    }
+  }
+  // 끝: 마지막 A·B (되돌린 안 포함)를 지도에
+  if (plans) {
+    plans.list = r.plans;
+    $('plan').innerHTML = planSection();
+    drawPlan();
+  }
+  const last = r.rounds.at(-1);
+  setTitle(`${OUTCOME_TEXT[r.outcome ?? last.outcome] ?? '회의가 끝났어요'} · A·B안을 사람에게 넘겨요`);
+}
+async function showEval(r, run) {
+  if (!r?.evaluation) return;
+  // 통과 기준: 결과 줄의 회의 규칙 (예전 서버는 없어 여행 조건에서 읽음)
+  let minSat = r.rules?.aiMinSatisfaction ?? null;
+  if (minSat == null) try { minSat = (await api('GET', `/trips/${saved.tripId}`)).conditions?.rules?.aiMinSatisfaction ?? null; } catch { /* 기준을 못 읽으면 평균만 보임 */ }
+  if (run !== runId) return;
+  if (r.rounds?.length) {
+    $('sub').textContent = $('sub').textContent.replace(' · 6단계 동선', '') + ' · 7–12단계 라운드';
+    return playRounds(r, minSat, run);
+  }
+  evalView = { r, minSat };
+  $('eval').innerHTML = evalSection();
+  sheetEl().scrollTop = 0;
+  const ev = r.evaluation;
+  setTitle(`🗳 라운드 ${ev.round} · AI ${ev.members.length}명이 A·B안을 평가했어요`);
+  $('sub').textContent = $('sub').textContent.replace(' · 6단계 동선', '') + ' · 7단계 평가';
+  $('meetNote').textContent = '7단계 평가 1라운드: AI마다 A·B 입장(찬성·조건부·반대)·이유·고칠 요청을 보기 안에서 고르고, 코드가 번호·못 바꾸는 곳을 확인해요. 만족도는 AI가 아니라 코드가 사실로 계산해요. 평균이 기준을 넘는지 판정하고 고치는 일은 8단계부터예요.';
+  for (const m of ev.members) {
+    const c = chars[m.agentId];
+    if (!c?.marker) continue;
+    const mine = m.plans.find((v) => v.plan === plans?.sel) ?? m.plans[0];
+    badge(c, STANCE[mine.stance][1]);
+    if (m.plans.every((v) => v.stance === '찬성')) hop(c);
+    await speak(c, `${m.plans.map((v) => `${v.plan}안 ${v.stance} ${v.score}점`).join(' · ')} — ${m.comment}`, run);
+    if (run !== runId) return;
+  }
 }
 $('plan').onclick = (e) => {
   if (!plans) return;
@@ -1370,6 +1550,9 @@ async function runMeeting(code, label) {
   $('board').innerHTML = '';
   $('review').innerHTML = '';
   $('plan').innerHTML = '';
+  $('eval').innerHTML = '';
+  evalView = null;
+  planVersions = [];
   plans = null;
   tourId++;
   review = null;
@@ -1379,7 +1562,7 @@ async function runMeeting(code, label) {
   sheetEl().classList.remove('tall');
   $('meetNote').textContent = instant ? '⚡ 바로 보기: 애니메이션 없이 결과를 바로 보여 줘요 (위 버튼으로 1배·2배를 고르면 캐릭터가 걸으며 다시 보여 줌).' : '실제 서버가 보낸 회의 이벤트를 캐릭터가 천천히 걸으며 다시 보여 줍니다 (서버 회의는 몇 초 만에 끝남).';
   try {
-    const res = await fetch('/api/v1/dev/meeting/run', { method: 'POST', headers: { Authorization: `Bearer ${saved.token}` } });
+    const res = await fetch('/api/v1/dev/meeting/run', { method: 'POST', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), headers: { Authorization: `Bearer ${saved.token}` } });
     if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error ? j.error.message : `HTTP ${res.status}`); }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -1399,7 +1582,7 @@ async function runMeeting(code, label) {
   } catch (err) {
     $('intro').classList.add('hide');
     setTitle('회의를 진행하지 못했어요');
-    $('aiList').innerHTML = `<p class="err">${esc(err.message)}</p><button class="btn ghost" onclick="go('cond')">조건으로 돌아가기</button>`;
+    $('aiList').innerHTML = `<p class="err">${esc(errText(err))}</p><button class="btn ghost" onclick="go('cond')">조건으로 돌아가기</button>`;
   }
 }
 

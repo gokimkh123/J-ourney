@@ -148,7 +148,7 @@ export function pickInput(member: MemberInput, pool: RetrieveResult) {
     me: {
       ...meInput(member),
       // 꼭 지킬 것(넣기)에 맞는 후보: 코드가 2단계에서 공식 분류·이름으로 맞춘 결과
-      mustKeepIds: pool.candidates.flatMap((c, i) => (c.reasons[member.memberId]?.some((w) => w.startsWith('꼭 지킬 것')) ? [candidateCode(i)] : [])),
+      mustKeepIds: pool.candidates.flatMap((c, i) => (isMustFor(c, member.memberId) ? [candidateCode(i)] : [])),
     },
     candidates: tables.candidates,
     nights: pool.nights,
@@ -194,9 +194,10 @@ export function rulePick(member: MemberInput, pool: RetrieveResult): PickResult 
   };
 }
 
-/** 그 사람의 꼭 지킬 것(넣기)에 맞는 후보 id (2단계에서 코드가 공식 분류·이름으로 맞춘 결과) */
-export const mustIdsOf = (member: MemberInput, pool: RetrieveResult) =>
-  new Set(pool.candidates.filter((c) => c.reasons[member.memberId]?.some((w) => w.startsWith('꼭 지킬 것'))).map((c) => c.id));
+/** 그 사람의 꼭 지킬 것(넣기) 표시가 붙은 후보인지 (2단계에서 코드가 공식 분류·이름으로 맞춘 표시) */
+const isMustFor = (c: Candidate, memberId: string) => (c.marks[memberId] ?? []).some((k) => k.kind === 'must');
+/** 그 사람의 꼭 지킬 것(넣기)에 맞는 후보 id */
+export const mustIdsOf = (member: MemberInput, pool: RetrieveResult) => new Set(pool.candidates.filter((c) => isMustFor(c, member.memberId)).map((c) => c.id));
 
 /** LLM 답 검사: 표에 있는 서로 다른 id가 정확히 3곳이면 통과 (숙소 칸은 틀려도 다시 부르지 않고 규칙으로 채움) */
 export function checkDraft(draft: PickDraft, pool: RetrieveResult): boolean {
@@ -208,11 +209,24 @@ export function checkDraft(draft: PickDraft, pool: RetrieveResult): boolean {
 /** 꼭 지킬 것에 맞는 후보가 있으면 그중 하나는 골랐는지 (사람이 직접 요구한 조건이라 빠지면 1번 더 부르고, 그래도 빠지면 코드가 넣음) */
 export const keepsMust = (draft: PickDraft, must: ReadonlySet<string>) => !must.size || draft.picks.some((p) => must.has(p.id.trim()));
 
-/** 그 사람 조건(싫어요·혼잡 상한·하루 시간대)에 걸리는 후보 id. 꼭 지킬 것은 사람이 직접 요구한 곳이라 뺌 */
+/**
+ * 그 사람 조건(싫어요·혼잡 상한·하루 시간대)에 걸리는 후보 id. 꼭 지킬 것은 사람이 직접 요구한 곳이라 뺌
+ * 다만 ✕(그 사람 하루 시간에 닫힘 등)인 꼭 지킬 곳은 같은 규칙을 ✕ 없이 채우는 다른 후보가 있을 때 뺌 (10/28 점검: 분류 규칙으로 꼭 지킬 곳이 여럿일 때
+ * 닫힌 곳을 고르면 6단계에서 빠져 꼭 지킬 것을 잃음). 그곳뿐이면 그대로 두어 4단계 안건('꼭 지킬 곳이지만 ✕')으로 사람이 정함
+ */
 export function ownConflictIds(member: MemberInput, pool: RetrieveResult): Set<string> {
   const must = mustIdsOf(member, pool);
+  const kind = new Map(pool.candidates.map((c) => [c.id, reactionOf(c, member, { lodging: false, proposed: false })?.kind ?? null]));
+  const labels = (c: Candidate) => (c.marks[member.memberId] ?? []).filter((k) => k.kind === 'must').map((k) => k.label);
+  const elsewhere = (c: Candidate) => labels(c).every((label) => pool.candidates.some((o) => o.id !== c.id && kind.get(o.id) !== 'block' && labels(o).includes(label)));
   return new Set(
-    pool.candidates.filter((c) => !must.has(c.id) && ['warn', 'block'].includes(reactionOf(c, member, { lodging: false, proposed: false })?.kind ?? '')).map((c) => c.id),
+    pool.candidates
+      .filter((c) => {
+        const k = kind.get(c.id);
+        if (!must.has(c.id)) return k === 'warn' || k === 'block';
+        return k === 'block' && elsewhere(c);
+      })
+      .map((c) => c.id),
   );
 }
 export const keepsOwnLimits = (draft: PickDraft, conflicts: ReadonlySet<string>) => draft.picks.every((p) => !conflicts.has(p.id.trim()));
@@ -340,13 +354,13 @@ export function buildPickGraph(deps: PickDeps) {
       return { tries, draft: null, blocked: true, calls: (s.calls ?? 0) + 1 };
     }
   };
-  const retryOrFinish = (s: PickStateType) =>
-    !s.blocked &&
-    s.draft &&
-    (!checkDraft(s.draft, s.from) || !keepsMust(s.draft, mustIdsOf(s.who, s.from)) || !keepsOwnLimits(s.draft, ownConflictIds(s.who, s.from))) &&
-    s.tries < PICK.tries
-      ? 'choose'
-      : 'finish';
+  const retryOrFinish = (s: PickStateType) => {
+    if (s.blocked || !s.draft || s.tries >= PICK.tries) return 'finish';
+    const conflicts = ownConflictIds(s.who, s.from);
+    // 자기 조건에 안 걸리는 후보가 고를 수보다 적으면 다시 불러도 지킬 수 없으므로 그 까닭으로는 다시 부르지 않음 (코드가 바꿈, 10/28 점검: 헛 호출)
+    const ownOk = keepsOwnLimits(s.draft, conflicts) || s.from.candidates.length - conflicts.size < PICK.count;
+    return !checkDraft(s.draft, s.from) || !keepsMust(s.draft, mustIdsOf(s.who, s.from)) || !ownOk ? 'choose' : 'finish';
+  };
   const finish = async (s: PickStateType): Promise<Partial<PickStateType>> => {
     const ok = !s.blocked && !!s.draft && checkDraft(s.draft, s.from);
     if (s.draft && !ok && !s.blocked) console.info(`3단계 고르기: ${s.tries}번 모두 형식이 틀려 규칙으로 대신함`);

@@ -149,17 +149,17 @@
 <script>
 const STEPS = [
   { n: 1, name: '준비', kind: 'code', live: true, desc: '시연 여행(4명 성향) + 회의 조건' },
-  { n: 2, name: '후보 찾기', kind: 'code', live: true, desc: 'DB·인기도·혼잡도 → 40곳 · 이름 맞추기만 LLM 0–1회' },
+  { n: 2, name: '후보 찾기', kind: 'code', live: true, desc: 'DB·인기도·혼잡도 → 40곳 · 장소·음식 이름 맞추기만 LLM 0–3회' },
   { n: 3, name: '고르기 ×4', kind: 'llm', live: true, desc: 'AI 4명이 각자 3곳 + 숙소' },
   { n: 4, name: '후보 보드', kind: 'llm', live: true, desc: '4명 반응 👍 ⚠ ✕ (코드 + AI) · 회의 안건' },
   { n: 5, name: '사람 확인', kind: 'human', live: true, desc: '안건마다 남김·뺌 (interrupt)' },
   { n: 6, name: '동선 짜기 A·B', kind: 'code', live: true, desc: '경로 · 가는 길(카카오) · 맛집 · 시각표 없음' },
-  { n: 7, name: '평가 1라운드', kind: 'llm', desc: '4명 찬반·요청' },
-  { n: 8, name: '집계', kind: 'code', desc: '만족도 계산' },
-  { n: 9, name: '수정', kind: 'code', desc: '요청대로 바꾸기' },
-  { n: 10, name: '사회자', kind: 'code', desc: '다음 발언자 고르기' },
-  { n: 11, name: '평가 2라운드', kind: 'llm', desc: '부른 AI만' },
-  { n: 12, name: '집계', kind: 'code', desc: '통과 확인' },
+  { n: 7, name: '평가 1라운드', kind: 'llm', live: true, desc: '4명 입장·이유·요청 · 만족도는 코드' },
+  { n: 8, name: '집계', kind: 'code', live: true, desc: '안마다 구성원 평균 ≥ 기준이면 통과' },
+  { n: 9, name: '수정', kind: 'code', live: true, desc: '통과 못 한 안을 요청대로 고쳐 다시 짬' },
+  { n: 10, name: '사회자', kind: 'code', live: true, desc: '다음 라운드에 말할 AI 고르기' },
+  { n: 11, name: '평가 2–5라운드', kind: 'llm', live: true, desc: '부른 AI만 (최대 5라운드까지 되풀이)' },
+  { n: 12, name: '집계', kind: 'code', live: true, desc: '통과 확인 · 끝나는 조건' },
   { n: 13, name: '마무리', kind: 'llm', desc: 'A·B 설명 + 카카오' },
   { n: 14, name: '사람 선택', kind: 'human', desc: '2안 중 하나' },
   { n: 15, name: '확정', kind: 'end', desc: '일정 확정' },
@@ -167,6 +167,9 @@ const STEPS = [
 const KIND = { code: '코드', llm: 'LLM', human: '사람', end: '끝' };
 /* 서버 실행 방식: LLM_REPLAY면 LLM을 부르지 않고 지난 결과를 다시 씀 (GET /dev/meeting/mode) */
 let MODE = { replay: false };
+/* 회의 실행·사람 확인 요청의 제한 시간: 터널이 끊긴 연결을 다시 쓰면 응답이 영영 오지 않으므로 무한 대기 대신 오류로 바꿔 다시 보낼 수 있게 함 (10/28) */
+const REQUEST_TIMEOUT_MS = 180_000;
+const errText = (err) => (err?.name === 'TimeoutError' || err?.name === 'AbortError' ? `서버 응답이 ${REQUEST_TIMEOUT_MS / 60000}분 동안 없어요. 터널 연결을 확인하고 다시 해 주세요` : err?.message ?? String(err));
 const runText = (steps) => (MODE.replay ? `회의 실행 (${steps}, 저장된 결과 · LLM 0회)` : `회의 실행 (${steps}, 실제 LLM)`);
 const pickSource = (p) => (p.savedFrom || p.recorded ? '<span class="ok">저장된 AI 결과</span>' : p.source === 'llm' ? '<span class="ok">AI가 고름</span>' : MODE.replay ? '<span class="warn">지난 AI 결과 없음 · 규칙</span>' : '<span class="warn">규칙으로 대신함</span>');
 const KEY = 'journey-dev-meeting';
@@ -314,7 +317,8 @@ function showRetrieve() {
 /* LangGraph 실행 보기: 노드·연결은 서버 그래프(GET /dev/meeting/graph), 노드 안의 세부 단계와 숫자는 실제 실행 결과 */
 const STATE_KEYS = [
   ['tripId', 'START'], ['conditions', 'prepare'], ['destination', 'prepare'], ['members', 'prepare'], ['pool', 'retrieve'], ['picks', 'pick'], ['board', 'gather'],
-  ['reviewRequest', 'react'], ['reviewDecision', 'review'], ['plans', 'schedule'],
+  ['reviewRequest', 'react'], ['reviewDecision', 'review'], ['plans', 'schedule'], ['planStates', 'schedule'], ['evaluation', 'evaluate'], ['rounds', 'evaluate'],
+  ['deliberation', 'tally'], ['changes', 'revise'], ['speakers', 'moderate'],
 ];
 const STAGE_TEXT = { planning: '준비', searching: '후보 받음', picking: '고르는 중', done: '고름' };
 const NODE_VIEW = {
@@ -345,6 +349,13 @@ const NODE_VIEW = {
       ['이어서 실행 (Command resume) · 뺀 곳 지움', '', d?.reviewDecision ? `보드 ${d.board.candidates.length}곳` : ''],
     ],
   },
+  evaluate: {
+    desc: '사람마다 LLM 1회(4명 동시에)로 A·B 입장(찬성·조건부·반대)·이유·한마디·고칠 요청을 받음. 답 형식표가 입장·요청 종류·표 번호를 보기로만 받고, 코드는 고른 값과 사실표만 확인 · 만족도는 코드 계산',
+    subs: (d) => (d?.evaluation?.members ?? [null, null, null, null]).map((e, i) => {
+      const who = d?.members?.find((m) => m.memberId === e?.memberId);
+      return [who ? `${who.nickname} AI` : `AI ${i + 1}`, '', e ? `${e.recorded ? 'AI(저장)' : e.source === 'llm' ? 'AI' : '규칙'} · ${e.plans.map((v) => `${v.plan} ${v.stance} ${v.score}점`).join(' / ')}` : '', e ? e.memberId : ''];
+    }),
+  },
   schedule: {
     desc: '반응·사람 확인을 반영해 A·B 두 안을 짬: 날마다 들를 곳(참여 인원 평균) → 순서(자동차 길찾기로 모든 순서 비교) → 끼니 식당 → 구간 가는 길(카카오: 도보·대중교통·택시·자차). 시각표·머무는 시간은 만들지 않음 (코드, LLM 0회)',
     subs: (d) => {
@@ -358,6 +369,18 @@ const NODE_VIEW = {
         ['A·B 두 안 보냄 (plan.proposed ×2)', '', ps ? ps.map((p) => p.planId).join(', ') : ''],
       ];
     },
+  },
+  tally: {
+    desc: '안마다 구성원 만족도(코드 계산)의 평균이 회의 조건의 기준 이상이면 통과. 둘 다 통과면 끝(요청이 남으면 1번 다듬어 봄), 아니면 수정 · 최대 라운드·2라운드 연속 나아지지 않음이면 끝 (코드, LLM 0회)',
+    subs: (d) => (d?.rounds ?? []).map((rd) => [`라운드 ${rd.round}`, '', rd.tally.map((t) => `${t.plan} ${t.average.toFixed(2)}${t.passed ? ' 통과' : ''}`).join(' / ') + (rd.outcome ? ` → 끝` : rd.next ? ` → ${NEXT_TEXT[rd.next]}` : '')]),
+  },
+  revise: {
+    desc: '통과 못 한 안의 요청을 그 안의 만족도가 낮은 사람 것부터 반영(안마다 라운드당 최대 3개, 같은 요청은 회의에서 한 번)하고 바뀐 안만 6단계 계산(카카오 길찾기)으로 다시 짬 · 꼭 지킬 곳·숙소·사람이 남긴 곳은 그대로 (코드, LLM 0회)',
+    subs: (d) => (d?.rounds ?? []).filter((rd) => rd.applied.length).map((rd) => [`라운드 ${rd.round} 뒤`, 'api', `반영 ${rd.applied.filter((a) => a.applied).length} · 못 함 ${rd.applied.filter((a) => !a.applied).length}`]),
+  },
+  moderate: {
+    desc: '다음 라운드에 다시 평가할 AI를 고름: 통과 못 한 안에 조건부·반대를 낸 AI + 고친 뒤 자기 꼭 지킬 곳·좋아하는 곳이 빠진 AI. 나머지는 지난 평가를 그대로 두고 만족도만 다시 계산 → 평가로 돌아감 ↩ (코드, LLM 0회)',
+    subs: (d) => (d?.rounds ?? []).slice(1).map((rd) => [`라운드 ${rd.round}에 말할 AI`, '', `${rd.speakers.length}명`]),
   },
   gather: {
     desc: '4명이 고른 곳을 후보 보드로 모음 (여러 명이 고른 곳은 함께 표시, 반응은 4단계에서)',
@@ -405,6 +428,8 @@ function nodeOrder() {
   }
   const order = [];
   for (let id = '__start__'; id && !order.includes(id); id = next[id]) order.push(id);
+  // 라운드 고리(사회자 → 평가)는 앞 노드로 돌아가므로 END를 끝에 붙여 그림
+  if (!order.includes('__end__')) order.push('__end__');
   return order;
 }
 
@@ -563,9 +588,19 @@ function onLlm(type, d) {
     }
     return;
   }
-  // 2단계 이름 맞추기 (회의 1번에 1회, 사람 카드 없이 기록만)
+  // 7단계 평가 (사람마다 1회): 고르기 카드를 덮지 않고 기록만. 요청 내용은 7단계 칸의 '보낸 입력'에서 봄
+  if (d.purpose === 'eval') {
+    const who = agents3.find((a) => a.agentId === d.agentId)?.nickname ?? '';
+    if (type === 'llm.request') {
+      evalRound[d.agentId] = d.input.round ?? 1;
+      evalInputs[`${d.agentId}|${evalRound[d.agentId]}`] = { system: d.system, input: d.input, try: d.try };
+      log(`${who} AI → 평가 LLM 요청 (라운드 ${evalRound[d.agentId]}, ${d.try}번째)`);
+    } else if (type === 'llm.response') log(`${who} AI ← 평가 LLM 응답 (라운드 ${evalRound[d.agentId] ?? 1}, ${d.ms}ms, 입력 ${d.usage.input ?? '-'} / 출력 ${d.usage.output ?? '-'}토큰)`);
+    return;
+  }
+  // 2단계 이름 맞추기 (회의 1번에 0–3회, 사람 카드 없이 기록만)
   if (d.purpose === 'names') {
-    if (type === 'llm.request') log(`이름 맞추기 → LLM 요청 (코드가 이름으로 못 찾은 꼭 지킬 것 ${d.input.rules.length}개)`);
+    if (type === 'llm.request') log(`이름 맞추기 → LLM 요청 (꼭 지킬 것·꼭 피할 것의 장소·음식 이름 ${d.input.rules.length}개)`);
     else if (type === 'llm.response') log(`이름 맞추기 ← LLM 응답 (${d.ms}ms, 입력 ${d.usage.input ?? '-'} / 출력 ${d.usage.output ?? '-'}토큰)`);
     return;
   }
@@ -595,6 +630,9 @@ function onLlm(type, d) {
   }
 }
 const card = (agentId) => $('agents3').querySelector(`[data-agent="${agentId}"]`);
+/** 평가 LLM에 보낸 입력 (사람·라운드마다, 시험 화면에서 실제 요청을 보여 줌, 녹화 재생이면 없음) · 사람마다 지금 평가 중인 라운드 */
+let evalInputs = {};
+let evalRound = {};
 function onEvent(e) {
   log(`#${e.seq} ${e.type}${e.data.stage ? ' · ' + (STAGE_TEXT[e.data.stage] ?? e.data.stage) : ''}${e.data.agentId ? ' · ' + (agents3.find((a) => a.agentId === e.data.agentId)?.nickname ?? '') : ''}`);
   if (e.type === 'meeting.started') {
@@ -643,9 +681,9 @@ async function runMeeting() {
   $('run3').disabled = true;
   $('run3Msg').textContent = '실행 중…';
   if (graphShape) { drawFlow(null); logStart = 0; q('[data-node="__start__"]').classList.add('done'); q('.lg-edge').classList.add('flow'); q('.lg-node').classList.add('run'); setKey('tripId', '✓'); }
-  agents3 = []; $('agents3').innerHTML = ''; $('board3').innerHTML = '';
+  agents3 = []; evalInputs = {}; evalRound = {}; $('agents3').innerHTML = ''; $('board3').innerHTML = '';
   try {
-    const res = await fetch('/api/v1/dev/meeting/run', { method: 'POST', headers: { Authorization: `Bearer ${saved.token}` } });
+    const res = await fetch('/api/v1/dev/meeting/run', { method: 'POST', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), headers: { Authorization: `Bearer ${saved.token}` } });
     if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error ? `${j.error.code}: ${j.error.message}` : `HTTP ${res.status}`); }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -664,7 +702,12 @@ async function runMeeting() {
         if (line.status === 'reviewing') {
           q('[data-node="review"]')?.classList.add('run');
           log(`멈춤 · 사람 확인 기다림 (안건 ${line.review.items.length}개, LLM ${line.llmCalls}회)`);
-        } else log(`끝 · LLM ${line.llmCalls}회`);
+        } else {
+          // 라운드 고리는 끝나는 노드가 회의마다 달라(집계 또는 수정) 남은 '실행 중' 표시를 지우고 END를 끝남으로
+          $('lg').querySelectorAll('.lg-node.run').forEach((el) => el.classList.remove('run'));
+          q('[data-node="__end__"]')?.classList.add('done');
+          log(`끝 · LLM ${line.llmCalls}회${line.outcome ? ` · ${OUTCOME_TEXT[line.outcome]}` : ''}`);
+        }
       }
     };
     // 받는 쪽: 줄마다 실제 도착 시각을 붙여 쌓음 / 보여 주는 쪽: 도착 시각 ÷ 보기 속도에 맞춰 꺼냄 (실제 속도면 받는 즉시)
@@ -704,7 +747,7 @@ async function runMeeting() {
     }
     await reading;
     if (readError) throw readError;
-  } catch (err) { $('run3Msg').innerHTML = `<span class="bad">${esc(err.message)}</span>`; log('실패: ' + err.message); }
+  } catch (err) { $('run3Msg').innerHTML = `<span class="bad">${esc(errText(err))}</span>`; log('실패: ' + errText(err)); }
   $('run3').disabled = false;
   loadRuns();
 }
@@ -721,8 +764,10 @@ function showPicks(r) {
   }
   const nick = (agentId) => agents3.find((a) => a.agentId === agentId)?.nickname ?? agentId;
   if (cur >= 4) $('board3').innerHTML = reactBoard(r);
-  if (cur === 5 || cur === 6) showReview(r);
-  if (cur === 6) showPlans(r);
+  if (cur >= 5) showReview(r);
+  if (cur >= 6) showPlans(r);
+  if (cur === 7) showEval(r);
+  if (cur >= 8) showRounds(r);
   if (cur === 3) $('board3').innerHTML = `<h3>후보 보드 (${r.board.candidates.length}곳 · 반응은 4단계에서)</h3><div class="tw"><table><thead><tr><th>장소</th><th>고른 AI</th><th>수</th></tr></thead><tbody>${[...r.board.candidates].sort((a, b) => b.proposedBy.length - a.proposedBy.length).map((c) => `<tr><td>${esc(c.name)}</td><td>${c.proposedBy.map((id) => `<span class="pill">${esc(nick(id))}</span>`).join('')}</td><td class="n ${c.proposedBy.length > 1 ? 'best' : ''}">${c.proposedBy.length}</td></tr>`).join('')}</tbody></table></div>`;
   setKey('picks', `${r.picks.length}명`);
   setKey('board', `${r.board.candidates.length}곳`);
@@ -769,7 +814,7 @@ function reactBoard(r) {
     ${[...r.board.candidates].sort((a, b) => key(b) - key(a)).map((c) => `<tr><td>${esc(c.name)}</td>${agents3.map((a) => cell(c, a)).join('')}<td class="n ${score.get(c.placeId)?.blocked ? 'bad' : ''}">${score.get(c.placeId)?.blocked ? '제외' : score.get(c.placeId)?.score ?? '-'}</td></tr>`).join('')}
     </tbody></table></div>
     <h3>회의 안건 (${r.board.agenda.length}개)</h3>${r.board.agenda.length ? `<ol>${r.board.agenda.map((x) => `<li>${esc(x.text)}</li>`).join('')}</ol>` : '<p class="note">⚠·✕가 붙은 곳이 없어 안건 없음</p>'}
-    ${(r.retrieve?.nameMatches ?? []).length ? `<h3>이름 맞추기 (2단계, LLM)</h3><ul>${r.retrieve.nameMatches.map((x) => `<li>${esc(nameOfMember(x.memberId))}: '${esc(x.keyword)}' → ${x.places.map(esc).join(', ')}</li>`).join('')}</ul><p class="note">코드가 이름·메뉴 글자로 못 찾은 꼭 지킬 것을 LLM이 같은 곳으로 맞춤 (사람 확인 대상)</p>` : ''}`;
+    ${(r.retrieve?.nameMatches ?? []).length ? `<h3>이름 맞추기 (2단계, LLM)</h3><ul>${r.retrieve.nameMatches.map((x) => `<li>${esc(nameOfMember(x.memberId))}: ${x.type === 'avoid' ? '꼭 피할 것' : '꼭 지킬 것'} '${esc(x.keyword)}' → ${x.places.map(esc).join(', ')}</li>`).join('')}</ul><p class="note">장소·음식 이름은 코드가 글자로 맞추지 않고 LLM이 장소 목록에서 고름 (코드는 목록만 줄임). 4단계 메모로 보임</p>` : ''}`;
 }
 const nameOfMember = (memberId) => agents3.find((a) => a.memberId === memberId)?.nickname ?? memberId;
 
@@ -858,7 +903,7 @@ async function submitReview(close) {
   $('send5').disabled = true; $('close5').disabled = true;
   $('msg5').textContent = '보내는 중…';
   try {
-    const res = await fetch('/api/v1/dev/meeting/review', { method: 'POST', headers: { Authorization: `Bearer ${saved.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ meetingId: review5.meetingId, responses, close }) });
+    const res = await fetch('/api/v1/dev/meeting/review', { method: 'POST', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), headers: { Authorization: `Bearer ${saved.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ meetingId: review5.meetingId, responses, close }) });
     if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error ? `${j.error.code}: ${j.error.message}` : `HTTP ${res.status}`); }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -872,9 +917,14 @@ async function submitReview(close) {
       last3 = { ...last3, ...line };
       $('board3').innerHTML = reactBoard(last3);
       $('review5').innerHTML = decisionHtml(last3);
-      if (cur === 6) showPlans(last3);
+      if (cur >= 6) showPlans(last3);
+      if (cur === 7) showEval(last3);
+      if (cur >= 8) showRounds(last3);
       setKey('reviewDecision', `남김 ${line.reviewDecision.kept.length} · 뺌 ${line.reviewDecision.dropped.length}`);
-      log(`이어서 실행 끝 · LLM ${line.llmCalls}회 (5단계 0회)${line.kakao ? ` · 카카오 ${line.kakao.calls.transit + line.kakao.calls.walk + line.kakao.calls.car}회` : ''}`);
+      // 이어서 실행도 라운드 고리 끝에서 멈추는 노드가 회의마다 달라 남은 '실행 중' 표시를 지움
+      $('lg').querySelectorAll('.lg-node.run').forEach((el) => el.classList.remove('run'));
+      q('[data-node="__end__"]')?.classList.add('done');
+      log(`이어서 실행 끝 · LLM ${line.llmCalls}회 (5단계 0회)${line.kakao ? ` · 카카오 ${line.kakao.calls.transit + line.kakao.calls.walk + line.kakao.calls.car}회` : ''}${line.outcome ? ` · ${OUTCOME_TEXT[line.outcome]}` : ''}`);
     };
     for (;;) {
       const { done, value } = await reader.read();
@@ -883,7 +933,7 @@ async function submitReview(close) {
       let nl;
       while ((nl = buf.indexOf('\n')) >= 0) { handle(JSON.parse(buf.slice(0, nl))); buf = buf.slice(nl + 1); }
     }
-  } catch (err) { $('msg5') && ($('msg5').innerHTML = `<span class="bad">${esc(err.message)}</span>`); }
+  } catch (err) { $('msg5') && ($('msg5').innerHTML = `<span class="bad">${esc(errText(err))}</span>`); }
   if ($('send5')) { $('send5').disabled = false; $('close5').disabled = false; }
 }
 
@@ -972,6 +1022,131 @@ function showPlans(r) {
   setKey('plans', r.plans.map((p) => p.label).join('·'));
 }
 
+/* 7단계: 6단계 A·B에 이어 평가 1라운드 (사람마다 LLM 1회). 코드는 고른 값(입장·요청 종류·표 번호)과 사실표만 보고, AI 글은 보여 주기만 함 */
+const FIX_TEXT = { failed: 'LLM 2번 실패(형식·오류) → 규칙 평가', limit: 'AI 상한(회의 1번·하루)에 닿아 규칙 평가', no_llm: 'AI 0번 모드: 저장된 같은 요청이 없어 규칙 평가', move_auto: '긴 이동 줄이기: 바꿀 수 없는 곳 대신 그 안에서 줄일 수 있는 가장 긴 이동으로', code: '번호 종류가 틀린 요청 버림', protected: '못 바꾸는 곳 요청 버림', stance: '찬성 → 조건부', rule_request: '규칙 요청 붙임', why: '이유 → 규칙 문장', comment: '한마디 → 규칙 문장', reason: '요청 이유 → 규칙 문장' };
+const TYPE_TEXT = { include: '넣기', avoid: '빼기', replace: '바꾸기', move: '긴 이동 줄이기' };
+const STANCE_CLASS = { 찬성: 'ok', 조건부: 'warn', 반대: 'bad' };
+function rules7() {
+  const e = graphShape?.rules?.evaluate;
+  if (!e) return '<span class="note">규칙 값을 불러오는 중…</span>';
+  const S = e.satisfaction;
+  return `<div class="tw"><table><thead><tr><th>정하는 것</th><th>규칙</th></tr></thead><tbody>
+    <tr><td>AI가 고르는 것</td><td>안마다 입장 (찬성·조건부·반대 중 하나) · 요청 종류 (넣기·빼기·바꾸기·긴 이동 줄이기 중 하나) · 장소는 이 회의 표의 번호만 (답 형식표가 보기 밖의 값을 막음, 틀리면 1번 더 → 규칙 평가)</td></tr>
+    <tr><td>AI가 쓰는 글</td><td>이유 ${e.whyMax}자 · 한마디 ${e.commentMax}자 · 요청 이유 ${e.reasonMax}자 — 화면에 보이기만 하고 판단·점수·수정에 쓰지 않음 (코드는 길이와 번호·칸 이름만 확인)</td></tr>
+    <tr><td>코드 확인</td><td>번호 종류 · 못 바꾸는 곳(꼭 지킬 곳·숙소·5단계에서 사람이 남긴 곳) · 못 지킴·넘음인데 찬성 → 조건부 · 조건부·반대인데 요청 없음 → 규칙 요청 · 글 속 번호 → 장소 이름</td></tr>
+    <tr><td>만족도 (코드)</td><td>기본 ${S.start} · 👍 곳마다 +${S.likeEach} (최대 +${S.likeMax}) · 꼭 지킬 것 지킴 +${S.mustKept} / 못 지킴 ${S.mustBroken} · 이동 기준 넘음 ${S.limitOver} (규칙이면 ${S.ruleBroken}) · ⚠ 곳 있음 ${S.warned} · 찬성 +${S.stance['찬성']} / 조건부 ${S.stance['조건부']} / 반대 ${S.stance['반대']} → ${S.min}–${S.max}점</td></tr>
+    <tr><td>다음</td><td>8단계 집계: 안마다 구성원 평균이 회의 조건의 최소 만족도 이상이면 통과, 아니면 9–12단계 라운드 (8–12단계 칸에서 봄)</td></tr></tbody></table></div>`;
+}
+function renderStep7() {
+  const p = $('panel');
+  p.innerHTML = `<h2>7. 평가 1라운드 <span class="k llm">LLM · 사람마다 1회</span></h2>
+    <p class="muted">1–6단계에 이어 실행됩니다. 6단계 A·B 두 안을 4명의 AI가 각자 평가합니다. 사람 확인 안건이 있으면 아래에서 먼저 정해 주세요.</p>
+    <div id="rules7">${rules7()}</div>
+    <div class="row"><button class="btn primary" id="run3">${runText('1–7단계')}</button>
+      <label style="display:flex;flex-direction:row;align-items:center;gap:6px">보기 속도 <select id="speed3"><option value="1">실제 속도</option><option value="0.5">½ (느리게 재생)</option></select></label>
+      <span id="run3Msg" class="note"></span><span id="runsInfo" class="pill">실행 횟수 확인 중</span></div>
+    <div id="review5"></div>
+    <div id="eval7"><div class="locked-box">실행하면 4명의 평가가 여기에 나옵니다.</div></div>
+    <details><summary>6단계 A·B 두 안</summary><div id="plans6"></div></details>
+    <details><summary>후보 보드·AI가 고른 곳 (1–4단계)</summary><div id="board3"></div><div id="agents3" class="members"></div></details>`;
+  loadRuns();
+  $('run3').onclick = runMeeting;
+  if (last3) showPicks(last3);
+}
+function showEval(r) {
+  const box = $('eval7');
+  if (!box) return;
+  // 7단계 칸은 1라운드만 (2라운드부터는 8–12단계 칸)
+  const first = r.rounds?.[0];
+  const ev = first ? { round: 1, members: first.members } : r.evaluation;
+  if (!ev) { box.innerHTML = r.status === 'reviewing' ? '<div class="locked-box">사람 확인을 마치면 이어서 A·B를 짜고 평가합니다.</div>' : ''; return; }
+  const placeName = (id) => { for (const p of r.plans ?? []) for (const d of p.route) for (const s of d.stops) if (s.placeId === id) return s.name; return nameOfPlace(r, (id ?? '').replace(/^plc_/, '')); };
+  const labels = (r.plans ?? []).map((p) => p.label);
+  const avg = (l) => { const xs = ev.members.map((m) => m.plans.find((v) => v.plan === l)?.score ?? 0); return (xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(1); };
+  const rows = ev.members.map((m) => {
+    const who = r.members.find((x) => x.memberId === m.memberId);
+    const src = m.recorded ? 'AI(저장 · LLM 0회)' : m.source === 'llm' ? `AI · LLM ${m.llmCalls}회` : `규칙${m.llmCalls ? ` · LLM ${m.llmCalls}회 실패` : ''}`;
+    const cells = labels.map((l) => { const v = m.plans.find((x) => x.plan === l); return `<td><span class="${STANCE_CLASS[v.stance]}">${esc(v.stance)}</span> <b class="n">${v.score}점</b><br><span class="note">${esc(v.why)}</span></td>`; }).join('');
+    const reqs = m.requests.map((q) => `<li>${esc(q.plan)}안 ${TYPE_TEXT[q.type]}: ${q.placeId ? esc(placeName(q.placeId)) : '가장 긴 이동'}${q.toId ? ` → ${esc(placeName(q.toId))}` : ''}${q.reason ? ` <span class="note">${esc(q.reason)}</span>` : ''}${q.auto ? ' <span class="pill">규칙</span>' : ''}</li>`).join('');
+    const fixes = m.fixes.map((f) => `<span class="pill">${f.plan ? `${f.plan} ` : ''}${FIX_TEXT[f.kind]}</span>`).join('');
+    const input = evalInputs[`${m.agentId}|${ev.round}`];
+    return `<tr><td><b style="color:${esc(who?.color ?? 'inherit')}">${esc(who?.nickname ?? m.memberId)} AI</b><br><span class="note">${src}</span></td>${cells}
+      <td>💬 ${esc(m.comment)}${reqs ? `<ul style="margin:4px 0 0;padding-left:18px">${reqs}</ul>` : ''}${fixes ? `<div>코드가 고침: ${fixes}</div>` : ''}
+      ${input ? `<details><summary>보낸 입력 (${input.try}번째)</summary><b>표 (plans)</b>${labels.map((l) => `<pre>${esc(input.input.plans[l])}</pre>`).join('')}<b>사실 (facts)</b><pre>${esc(JSON.stringify(input.input.facts, null, 2))}</pre><b>후보 (candidates)</b><pre>${esc(input.input.candidates)}</pre><b>나 (me)</b><pre>${esc(JSON.stringify(input.input.me, null, 2))}</pre><b>지시문</b><pre>${esc(input.system)}</pre></details>` : ''}</td></tr>`;
+  }).join('');
+  const calls = ev.members.reduce((a, m) => a + m.llmCalls, 0);
+  box.innerHTML = `<p class="note">라운드 ${ev.round} · 평가 LLM ${calls}회 · 규칙 평가 ${ev.members.filter((m) => m.source === 'rule').length}명 · 코드가 고친 것 ${ev.members.reduce((a, m) => a + m.fixes.length, 0)}건</p>
+    <div class="tw"><table><thead><tr><th>AI</th>${labels.map((l) => `<th>${esc(l)}안</th>`).join('')}<th>한마디 · 요청</th></tr></thead><tbody>${rows}
+    <tr><td><b>구성원 평균</b></td>${labels.map((l) => { const t = first?.tally.find((x) => x.plan === l); return `<td class="n"><b>${avg(l)}점</b>${t ? ` ${t.passed ? '<span class="ok">통과</span>' : '<span class="bad">통과 못 함</span>'}` : ''}</td>`; }).join('')}<td class="note">8단계 집계: 기준 ${r.rules?.aiMinSatisfaction ?? '-'}점 이상이면 통과 (다음 라운드는 8–12단계 칸)</td></tr></tbody></table></div>`;
+  setKey('evaluation', `${ev.members.length}명`);
+}
+
+/* 8–12단계: 집계 → 수정 → 사회자 → 다시 평가 → 다시 집계 (최대 라운드까지). 모두 코드, 다시 평가만 부른 AI 1회씩 */
+const OUTCOME_TEXT = { passed: '두 안 모두 통과 → 끝', max_rounds: '최대 라운드까지 함 → 끝 (통과 못 한 안도 그때의 안을 사람에게)', stalled: '2라운드 연속 나아지지 않음 → 끝', no_change: '반영할 수 있는 요청이 없음 → 끝' };
+const NEXT_TEXT = { revise: '9단계 수정', polish: '다듬기 1번 (둘 다 통과, 요청이 남음)', end: '끝' };
+const STEP_TITLE = { 8: '8. 집계', 9: '9. 수정', 10: '10. 사회자', 11: '11. 평가 2–5라운드', 12: '12. 집계' };
+function rules8() {
+  const R = graphShape?.rules?.rounds;
+  if (!R) return '<span class="note">규칙 값을 불러오는 중…</span>';
+  return `<div class="tw"><table><thead><tr><th>단계</th><th>규칙 (모두 코드, LLM 0회 · 11단계만 부른 AI 1회씩)</th></tr></thead><tbody>
+    <tr><td>8·12 집계</td><td>안마다 구성원 만족도 평균 ≥ 회의 조건의 기준(기본 7점)이면 통과 (가장 낮은 사람 조건 없음). 둘 다 통과면 끝, 통과한 안에 조건부·반대인 사람의 요청이 남으면 1번 다듬어 보고 평균이 떨어진 안은 되돌림</td></tr>
+    <tr><td>9 수정</td><td>통과 못 한 안의 요청만, 그 안의 만족도가 낮은 사람 것부터 · 안마다 라운드당 최대 ${R.changesPerPlan}개 · 같은 요청은 회의에서 한 번 · 한 라운드에 같은 곳은 한 번 · 꼭 지킬 곳(그 규칙의 하나뿐인 곳)·숙소·사람이 남긴 곳은 그대로 → 바뀐 안만 6단계 계산(카카오 길찾기)으로 다시 짬</td></tr>
+    <tr><td>10 사회자</td><td>통과 못 한 안에 조건부·반대를 낸 AI + 고친 뒤 자기 꼭 지킬 곳·좋아하는 곳이 빠진 AI만 다시 평가 · 나머지는 지난 평가를 그대로 두고 만족도만 바뀐 일정으로 다시 계산</td></tr>
+    <tr><td>끝나는 때</td><td>둘 다 통과 · 최대 라운드 · 통과 못 한 안의 평균이 ${R.noProgressRounds}라운드 연속 오르지 않음 · 반영할 수 있는 요청이 없음 → 그때의 A·B를 사람에게</td></tr></tbody></table></div>`;
+}
+function renderRounds() {
+  const p = $('panel');
+  p.innerHTML = `<h2>${STEP_TITLE[cur]} <span class="k ${cur === 11 ? 'llm' : 'code'}">${cur === 11 ? 'LLM · 부른 AI만 1회씩' : '코드 · LLM 0회'}</span></h2>
+    <p class="muted">8–12단계는 한 고리입니다: 집계 → (통과 못 하면) 수정 → 사회자 → 다시 평가 → 다시 집계. 1–7단계에 이어 실행되고 라운드마다 아래에 쌓입니다. 사람 확인 안건이 있으면 먼저 정해 주세요.</p>
+    <div id="rules8">${rules8()}</div>
+    <div class="row"><button class="btn primary" id="run3">${runText('1–12단계')}</button>
+      <label style="display:flex;flex-direction:row;align-items:center;gap:6px">보기 속도 <select id="speed3"><option value="1">실제 속도</option><option value="0.5">½ (느리게 재생)</option></select></label>
+      <span id="run3Msg" class="note"></span><span id="runsInfo" class="pill">실행 횟수 확인 중</span></div>
+    <div id="review5"></div>
+    <div id="rounds8"><div class="locked-box">실행하면 라운드마다 점수·평균·고친 것·다음에 말할 AI가 여기에 나옵니다.</div></div>
+    <details><summary>마지막 A·B 두 안</summary><div id="plans6"></div></details>
+    <details><summary>후보 보드·AI가 고른 곳 (1–4단계)</summary><div id="board3"></div><div id="agents3" class="members"></div></details>`;
+  loadRuns();
+  $('run3').onclick = runMeeting;
+  if (last3) showPicks(last3);
+}
+function showRounds(r) {
+  const box = $('rounds8');
+  if (!box) return;
+  const rounds = r.rounds ?? [];
+  if (!rounds.length) { box.innerHTML = r.status === 'reviewing' ? '<div class="locked-box">사람 확인을 마치면 이어서 A·B를 짜고 라운드를 돕니다.</div>' : ''; return; }
+  const who = (id) => r.members.find((m) => m.memberId === id);
+  const nick = (id) => esc(who(id)?.nickname ?? id);
+  const min = r.rules?.aiMinSatisfaction;
+  const total = rounds.reduce((a, rd) => a + rd.members.reduce((b, m) => b + m.llmCalls, 0), 0);
+  const html = rounds.map((rd, i) => {
+    const labels = rd.plans.map((x) => x.label);
+    const calls = rd.members.reduce((a, m) => a + m.llmCalls, 0);
+    const rows = rd.members.map((m) => {
+      const src = m.carried ? '지난 평가 그대로 · LLM 0회' : m.recorded ? 'AI(저장 · LLM 0회)' : m.source === 'llm' ? `AI · LLM ${m.llmCalls}회` : `규칙${m.llmCalls ? ` · LLM ${m.llmCalls}회 실패` : ''}`;
+      const cells = labels.map((l) => { const v = m.plans.find((x) => x.plan === l); return `<td><span class="${STANCE_CLASS[v.stance]}">${esc(v.stance)}</span> <b class="n">${v.score}점</b><br><span class="note">${esc(v.why)}</span></td>`; }).join('');
+      const reqs = m.requests.map((q2) => `<li>${esc(q2.plan)}안 ${TYPE_TEXT[q2.type]}${q2.auto ? ' <span class="pill">규칙</span>' : ''}</li>`).join('');
+      const fixes = m.fixes.map((f) => `<span class="pill">${f.plan ? `${esc(f.plan)} ` : ''}${esc(FIX_TEXT[f.kind])}</span>`).join('');
+      const input = evalInputs[`${m.agentId}|${rd.round}`];
+      return `<tr><td><b style="color:${esc(who(m.memberId)?.color ?? 'inherit')}">${nick(m.memberId)} AI</b><br><span class="note">${src}</span></td>${cells}
+        <td>${m.carried ? '<span class="note">(이번 라운드에 말하지 않음)</span>' : `💬 ${esc(m.comment)}`}${reqs ? `<ul style="margin:4px 0 0;padding-left:18px">${reqs}</ul>` : ''}${fixes ? `<div>코드가 고침: ${fixes}</div>` : ''}
+        ${input && rd.round > 1 ? `<details><summary>보낸 입력 (others·changes)</summary><pre>${esc(JSON.stringify({ others: input.input.others, changes: input.input.changes }, null, 2))}</pre></details>` : ''}</td></tr>`;
+    }).join('');
+    const tallyRow = `<tr><td><b>평균 (${i === 0 ? '8' : '12'}단계 집계)</b></td>${labels.map((l) => { const t = rd.tally.find((x) => x.plan === l); return `<td class="n"><b>${t ? t.average.toFixed(2) : '-'}점</b> ${t ? (t.passed ? '<span class="ok">통과</span>' : '<span class="bad">통과 못 함</span>') : ''}</td>`; }).join('')}<td class="note">기준 ${min ?? '-'}점 이상</td></tr>`;
+    const applied = rd.applied.length
+      ? `<h4>9단계 수정 (라운드 ${rd.round} 뒤)</h4><ul>${rd.applied.map((a) => `<li class="${a.applied ? '' : 'note'}">${nick(a.by)} AI 요청 · ${TYPE_TEXT[a.type]} → ${esc(a.note)}</li>`).join('')}</ul>`
+      : '';
+    const next = rounds[i + 1];
+    const mod = next ? `<h4>10단계 사회자</h4><p>라운드 ${next.round}에 말할 AI: ${next.speakers.map((id) => `<span class="pill">${nick(id)}</span>`).join('')}${rd.hurt.length ? ` <span class="note">(빠진 곳이 꼭 지킬 곳·좋아하는 곳이었던 AI: ${rd.hurt.map(nick).join(', ')})</span>` : ''}</p>` : '';
+    const plans = rd.plans.map((x) => `<div><b>${esc(x.label)}안 v${x.version}</b> ${x.days.map((d, k) => `<span class="note">${k + 1}일째</span> ${d.map(esc).join(' → ')}`).join(' · ')}</div>`).join('');
+    const end = rd.outcome ? `<p><b>${esc(OUTCOME_TEXT[rd.outcome])}</b>${rd.reverted.length ? ` · 다듬기 전으로 되돌린 안: ${esc(rd.reverted.join('·'))}` : ''}</p>` : rd.next ? `<p class="note">다음: ${esc(NEXT_TEXT[rd.next])}</p>` : '';
+    return `<div class="card" style="margin:10px 0"><h3>라운드 ${rd.round} ${i === 0 ? '(7·8단계)' : '(11·12단계)'} · 말한 AI ${rd.speakers.length}명 · 평가 LLM ${calls}회</h3>${plans}
+      <div class="tw"><table><thead><tr><th>AI</th>${labels.map((l) => `<th>${esc(l)}안</th>`).join('')}<th>한마디 · 요청</th></tr></thead><tbody>${rows}${tallyRow}</tbody></table></div>${applied}${mod}${end}</div>`;
+  }).join('');
+  box.innerHTML = `<p class="note">라운드 ${rounds.length}개 · 평가 LLM ${total}회 · ${r.outcome ? OUTCOME_TEXT[r.outcome] : '진행 중'}</p>${html}`;
+  setKey('rounds', `${rounds.length}개`);
+}
+
 function render() {
   renderSteps();
   if (cur === 1) renderStep1();
@@ -980,6 +1155,8 @@ function render() {
   else if (cur === 4) renderStep4();
   else if (cur === 5) renderStep5();
   else if (cur === 6) renderStep6();
+  else if (cur === 7) renderStep7();
+  else if (cur >= 8 && cur <= 12) renderRounds();
 }
 render();
 loadGraph();

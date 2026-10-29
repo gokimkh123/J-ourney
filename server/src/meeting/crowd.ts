@@ -1,9 +1,12 @@
 import { and, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { crowdFetches, crowdForecasts } from '../db/schema.js';
-import { todayKst } from '../lib/time.js';
+import { DAY_MS, todayKst } from '../lib/time.js';
 import type { TourClient } from '../tour/client.js';
 import { placeMatcher, type MatchablePlace } from './match.js';
+
+/** 예측 행을 한 번에 넣는 수 (DB 문장 하나의 크기를 줄임) */
+const INSERT_CHUNK = 500;
 
 /** 집중률 예측 기능 이름 (TatsCnctrRateService) */
 export const CROWD_OPERATION = 'tatsCnctrRatedList';
@@ -11,7 +14,6 @@ export const CROWD_OPERATION = 'tatsCnctrRatedList';
 export const CROWD_WINDOW_DAYS = 30;
 const PAGE = 1000;
 
-const DAY_MS = 86400000;
 
 /** 같은 날 같은 구·군을 동시에 받으려는 요청은 먼저 시작한 호출을 함께 기다림 (중복 호출 방지, 끝나면 지움) */
 const inflight = new Map<string, Promise<void>>();
@@ -99,8 +101,8 @@ async function fetchDistrict(db: Db, client: TourClient, regionCode: string, sg:
   }
   await db.delete(crowdForecasts).where(and(eq(crowdForecasts.signguCd, sg), lt(crowdForecasts.baseYmd, ymd(today))));
   const rows = [...new Map(items.map((i) => [`${i.day}|${i.spot}`, { signguCd: sg, baseYmd: i.day, spotName: i.spot, rate: i.rate }])).values()];
-  for (let i = 0; i < rows.length; i += 500) {
-    await db.insert(crowdForecasts).values(rows.slice(i, i + 500)).onConflictDoUpdate({ target: [crowdForecasts.signguCd, crowdForecasts.baseYmd, crowdForecasts.spotName], set: { rate: sql`excluded.rate` } });
+  for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
+    await db.insert(crowdForecasts).values(rows.slice(i, i + INSERT_CHUNK)).onConflictDoUpdate({ target: [crowdForecasts.signguCd, crowdForecasts.baseYmd, crowdForecasts.spotName], set: { rate: sql`excluded.rate` } });
   }
   await db.insert(crowdFetches).values({ signguCd: sg, fetchedOn: today, rows: rows.length }).onConflictDoNothing();
 }

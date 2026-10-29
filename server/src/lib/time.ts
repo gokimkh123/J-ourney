@@ -1,4 +1,6 @@
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+/** 하루(밀리초) */
+export const DAY_MS = 86_400_000;
 
 /** 한국 시간(+09:00) ISO 8601 문자열 (명세서 3장 공통 규칙) */
 export function nowKst(date: Date = new Date()): string {

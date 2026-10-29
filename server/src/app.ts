@@ -8,7 +8,8 @@ import type { Db } from './db/client.js';
 import { config } from './config.js';
 import { ACCESS, type AccessKey, accessOf, matchKey } from './lib/access.js';
 import { ApiError } from './lib/errors.js';
-import { writeRateLimit } from './lib/rate-limit.js';
+import { createMonitor, monitorStats } from './lib/monitor.js';
+import { tunnelIp, writeRateLimit } from './lib/rate-limit.js';
 import { nowKst } from './lib/time.js';
 import type { LlmClient } from './llm/client.js';
 import { type ReplayMode, llmRecorder } from './llm/record.js';
@@ -44,6 +45,8 @@ export interface AppOptions {
   crowdClient?: TourClient | null;
   /** 회의용 LLM (응답 대기 시간이 다름). 없으면 llm을 씀 */
   meetingLlm?: LlmClient | null;
+  /** 여행지 확인 LLM (조건 저장 때 방장이 쓴 여행지를 공식 지역 목록에서 고름). 없으면 llm을 씀 (LLM_REPLAY=true면 녹화만). 시험에서 바꿔 끼울 때만 넘김 */
+  destinationLlm?: LlmClient | null;
   /** 회의 단계 저장 (운영: Postgres, 시험: 메모리) */
   checkpointer?: BaseCheckpointSaver;
   meetingRunsPerTrip?: number;
@@ -70,6 +73,7 @@ ${error ? `<p class="e">${error}</p>` : ''}<form method="post" action="/dev/key"
 const devUiFile = new URL('../dev-ui/index.html', import.meta.url);
 const devMeetingFile = new URL('../dev-ui/meeting.html', import.meta.url);
 const devAppFile = new URL('../dev-ui/app.html', import.meta.url);
+const devMonitorFile = new URL('../dev-ui/monitor.html', import.meta.url);
 /** 시연 화면 그림 (그림 지도·캐릭터). 이 폴더 바로 아래의 이 형식 파일만 내보냄 */
 const devImgDir = new URL('../dev-ui/img/', import.meta.url);
 const DEV_IMG_TYPES: Record<string, string> = { png: 'image/png', webp: 'image/webp' };
@@ -90,6 +94,7 @@ export function createApp({
   rateLimitPerMinute = config.rateLimitPerMinute,
   crowdClient = null,
   meetingLlm,
+  destinationLlm,
   checkpointer = new MemorySaver(),
   meetingRunsPerTrip = config.meetingRunsPerTrip,
   meetingLlmCallsPerRun = config.meetingLlmCallsPerRun,
@@ -101,6 +106,8 @@ export function createApp({
 }: AppOptions) {
   // 터널로 시험 경로를 여는데(DEV_UI_TUNNEL) 접근 키가 하나도 없으면 열지 않음 (키를 빠뜨려 바깥에 실제 API가 열리지 않게, 서버 시작 로그에 경고)
   const tunnelDev = devUiTunnel && accessKeys.length > 0;
+  // 관리자 디버깅 화면(/dev/monitor)용 요청·WebSocket 기록 (시험 화면을 켠 서버만, 메모리에만)
+  const monitor = devUi ? createMonitor({ accessKeys, ipSecret: ipHashSecret }) : null;
   const api = new Hono();
   api.use('*', writeRateLimit(rateLimitPerMinute));
   api.use(
@@ -117,7 +124,6 @@ export function createApp({
   api.get('/health', (c) => c.json({ status: 'ok', time: nowKst() }));
 
   if (db) {
-    api.route('/', tripRoutes(db));
     // LLM 녹화·재생: 실제로 부른 답은 늘 녹화하고, only(LLM_REPLAY=true)면 LLM 호출기를 넘기지 않아 어떤 경로도 LLM을 부르지 않음
     const mode: ReplayMode = llmReplay === true ? 'only' : llmReplay === false ? 'off' : llmReplay;
     const recorder = llmRecorder(db, (llm ?? meetingLlm)?.name ?? 'none', mode);
@@ -125,13 +131,15 @@ export function createApp({
     const anyLlm = llm ?? meetingLlm ?? null;
     const liveRecorder = mode === 'only' && accessKeys.length > 0 && accessReplay !== 'only' && anyLlm ? llmRecorder(db, anyLlm.name, accessReplay) : null;
     const live = liveRecorder && llm ? { llm, recorder: liveRecorder } : null;
+    const tripLlm = destinationLlm !== undefined ? destinationLlm : mode === 'only' ? null : llm;
+    api.route('/', tripRoutes(db, { llm: tripLlm, recorder, live, llmDailyLimit, accessKeys }));
     api.route('/', personaRoutes({ db, llm: mode === 'only' ? null : llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret, accessKeys, live }));
     // 회의 그래프와 실행기는 서버가 켜질 때 한 번만 만들고 공식 경로·시험 경로가 함께 씀
     const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
     const graph = buildMeetingGraph({ db, crowdClient, llm: mode === 'only' ? null : (meetingLlm ?? llm), recorder, limits, checkpointer, traceLlm: true, router: routeClient });
     const liveGraph = liveRecorder ? buildMeetingGraph({ db, crowdClient, llm: meetingLlm ?? llm, recorder: liveRecorder, limits, checkpointer, traceLlm: true, router: routeClient }) : undefined;
     const service = meetingService({ db, graph, liveGraph, limits, publisher: hub, replay: mode !== 'off', liveReplay: accessReplay !== 'off' });
-    api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs, accessKeys }));
+    api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs, accessKeys, monitor }));
     if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: tunnelDev, replay: mode !== 'off', accessKeys }));
   } else {
     api.all('*', () => {
@@ -142,6 +150,7 @@ export function createApp({
   const app = new Hono();
   // 기본 보안 헤더 (내용 보안 정책 CSP는 시험 화면이 바깥 지도 스크립트를 써서 넣지 않음)
   app.use('*', secureHeaders());
+  if (monitor) app.use('*', monitor.middleware);
   app.route('/api/v1', api);
 
   if (devUi) {
@@ -172,6 +181,20 @@ export function createApp({
       if (needKey(c)) return c.redirect('/dev/key');
       c.header('Cache-Control', 'no-store');
       return c.html(await readFile(devAppFile, 'utf8'));
+    });
+    // 관리자 디버깅 화면 (10/29): 들어오는 요청·WebSocket·분당 횟수·오늘 호출 수. 서버 컴퓨터(ssh로 연 로컬 주소)에서만 — 터널로는 팀 키가 있어도 403
+    const adminOnly = (c: Context) => (tunnelIp(c) === null ? null : c.json({ error: { code: 'FORBIDDEN', message: '관리자 화면은 서버 컴퓨터(ssh로 연 주소)에서만 열 수 있음' } }, 403));
+    app.get('/dev/monitor', async (c) => {
+      const denied = adminOnly(c);
+      if (denied) return denied;
+      c.header('Cache-Control', 'no-store');
+      return c.html(await readFile(devMonitorFile, 'utf8'));
+    });
+    app.get('/dev/monitor/data', async (c) => {
+      const denied = adminOnly(c);
+      if (denied) return denied;
+      c.header('Cache-Control', 'no-store');
+      return c.json({ ...(db ? await monitorStats(db) : {}), ...monitor!.snapshot() });
     });
     // 파일 이름 규칙(영문 소문자·숫자·-)에 맞지 않으면 읽지 않음 → 폴더 밖 경로로 나갈 수 없음
     app.get('/dev/img/:name', async (c) => {

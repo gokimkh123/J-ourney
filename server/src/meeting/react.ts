@@ -18,6 +18,12 @@ export const REACT = {
   tightMinutes: 60,
   queuePopularity: 85,
   agendaMax: 5,
+  /**
+   * AI가 이름으로 맞춘 꼭 지킬 곳을 5단계 사람 확인 안건으로 올릴지 (10/29: 끔 → 4단계 메모로만 보임)
+   * 10/29 사용자 결정 '가'로 장소·음식 이름 규칙이 모두 AI 맞춤이 되어, 안건으로 두면 꼭 지킬 것이 있는 거의 모든 회의가 5단계에서 멈춤.
+   * 10/28 시험에서 AI가 고른 곳이 틀리거나 애매한 것은 규칙의 약 2%였음 (나머지 놓침은 '찾지 못함' 메모로 보임). 사람은 14단계에서 고칠 수 있음
+   */
+  nameMatchAgenda: false,
   reasonsMax: 2,
   ai: { reasonMax: 40, reasonHardMax: 60, quoteMin: 2, quoteMax: 40, summaryChars: 160, thinking: 'medium' },
 } as const;
@@ -92,7 +98,8 @@ export function reactionOf(c: Candidate, m: MemberInput, opts: { lodging: boolea
 }
 
 /**
- * 회의 안건: ✕가 붙은 곳 먼저, 그다음 ⚠가 많은 곳(여행지 밖·이름 맞춤이면 ⚠ 하나로 셈, 같으면 고른 사람이 많은 곳), 최대 agendaMax개. 문장은 정해진 틀에 값만 넣음
+ * 회의 안건: 여행지 밖·이름 맞춤인 곳 먼저(사람이 확인하기로 한 곳, 10/19 결정 · 10/28 점검: 상한에 잘려 확인 없이 일정에 들어감), 그다음 ✕가 붙은 곳,
+ * ⚠가 많은 곳(같으면 고른 사람이 많은 곳), 최대 agendaMax개. 상한에 잘린 여행지 밖·이름 맞춤 곳은 메모로 남김. 문장은 정해진 틀에 값만 넣음
  * outside: 보드 장소 id → 여행지 밖 시·군·구 이름 · named: 보드 장소 id → 이름이 달라 AI가 맞춘 꼭 지킬 곳 문구
  * mustBy: 보드 장소 id → 그 곳이 꼭 지킬 곳인 에이전트 (고른 사람 자신의 ⚠·✕는 '꼭 지킬 곳이지만'으로 따로 적음) · notes: 장소가 없는 메모 (뒤에 붙임)
  */
@@ -119,13 +126,16 @@ export function agendaOf(
     .filter((x) => x.blocks.length + x.warns.length > 0 || x.outside || x.named)
     .sort(
       (a, b) =>
+        Number(!!b.outside || !!b.named) - Number(!!a.outside || !!a.named) ||
         b.blocks.length - a.blocks.length ||
         b.warns.length + Number(!!b.outside) + Number(!!b.named) - (a.warns.length + Number(!!a.outside) + Number(!!a.named)) ||
         b.c.proposedBy.length - a.c.proposedBy.length ||
         a.c.placeId.localeCompare(b.c.placeId),
     );
-  // 상한으로 잘린 '이름이 달라 AI가 맞춘 꼭 지킬 곳'은 메모로 남김 (AI가 맞춘 곳이 사람 확인 없이 빠지지 않게)
-  const cutNamed = items.slice(REACT.agendaMax).flatMap(({ c, named }) => (named ? [`${c.name} — ${named} (안건 상한 ${REACT.agendaMax}개를 넘어 메모로 남김)`] : []));
+  // 상한으로 잘린 여행지 밖 곳·'AI가 이름으로 맞춘 꼭 지킬 곳'은 메모로 남김 (사람 확인 없이 들어가거나 빠진 것을 알 수 있게)
+  const cutNamed = items
+    .slice(REACT.agendaMax)
+    .flatMap(({ c, outside, named }) => (outside || named ? [`${c.name} — ${[outside ? `여행지 밖(${outside})` : '', named ?? ''].filter(Boolean).join(' · ')} (안건 상한 ${REACT.agendaMax}개를 넘어 메모로 남김)`] : []));
   const shown = items
     .slice(0, REACT.agendaMax)
     .map(({ c, blocks, warns, outside, named }) => {
@@ -142,7 +152,7 @@ export function agendaOf(
 }
 
 /**
- * 4단계: 후보 보드의 장소마다 4명의 반응을 붙이고, ⚠·✕가 붙은 곳·여행지 밖에서 넣은 곳·이름이 달라 AI가 맞춘 꼭 지킬 곳을 회의 안건으로 정리함
+ * 4단계: 후보 보드의 장소마다 4명의 반응을 붙이고, ⚠·✕가 붙은 곳·여행지 밖에서 넣은 곳을 회의 안건으로, AI가 이름으로 맞춘 꼭 지킬 것·꼭 피할 것은 메모로 정리함
  * 반응은 코드 규칙(분류·혼잡·영업시간·하루 시간) + ai(에이전트 id → AI 반응, 사람이 쓴 말·바람을 AI가 소개글로 판단)를 합친 것 (더 무거운 쪽)
  */
 export function reactBoard(board: Board, pool: RetrieveResult, members: readonly MemberInput[], ai: ReadonlyMap<string, readonly AiReaction[]> = new Map()): Board {
@@ -164,14 +174,20 @@ export function reactBoard(board: Board, pool: RetrieveResult, members: readonly
   const outside = new Map([...pool.candidates, ...pool.lodgings].flatMap((c) => (c.outside ? [[placeIdOf(c.id), c.outsideMinutes !== undefined ? `${c.outside}, 편도 약 ${c.outsideMinutes}분` : c.outside] as const] : [])));
   const nick = new Map(members.map((m) => [m.memberId, m.nickname]));
   const onBoard = new Set(candidates.map((c) => c.placeId));
-  // 이름이 달라 AI가 맞춘 꼭 지킬 곳: 보드에 오른 곳은 장소 안건(5단계에서 사람이 맞는지 확인), 오르지 않았으면 메모
+  // AI가 이름으로 맞춘 꼭 지킬 곳·꼭 피할 곳: 메모로 보임 (REACT.nameMatchAgenda를 켜면 보드에 오른 꼭 지킬 곳은 5단계 사람 확인 안건)
   const named = new Map<string, string>();
   const namedNotes: string[] = [];
   for (const r of pool.nameMatches ?? []) {
-    const text = `이름이 달라 AI가 맞춘 ${nick.get(r.memberId) ?? r.memberId}의 꼭 지킬 곳 ('${r.keyword}')`;
-    const ids = (r.ids ?? []).map(placeIdOf).filter((id) => onBoard.has(id));
+    const who = nick.get(r.memberId) ?? r.memberId;
+    // 10/29 전 회의의 기록에는 type이 없음 (그때는 넣기 규칙만 남김)
+    if ((r.type ?? 'include') === 'avoid') {
+      namedNotes.push(`${who}의 꼭 피할 것 '${r.keyword}' → 후보에서 뺀 곳: ${r.places.join('·')} (AI가 맞춤)`);
+      continue;
+    }
+    const text = `AI가 이름으로 맞춘 ${who}의 꼭 지킬 곳 ('${r.keyword}')`;
+    const ids = REACT.nameMatchAgenda ? (r.ids ?? []).map(placeIdOf).filter((id) => onBoard.has(id)) : [];
     for (const id of ids) named.set(id, named.has(id) ? `${named.get(id)} · ${text}` : text);
-    if (!ids.length) namedNotes.push(`${nick.get(r.memberId) ?? r.memberId}의 꼭 지킬 것 '${r.keyword}' → ${r.places.join('·')} (이름이 달라 AI가 맞춤)`);
+    if (!ids.length) namedNotes.push(`${who}의 꼭 지킬 것 '${r.keyword}' → ${r.places.join('·')} (AI가 맞춤)`);
   }
   const mustBy = new Map(
     candidates.map((b) => {
