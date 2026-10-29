@@ -1,7 +1,7 @@
 import type { BaseCheckpointSaver } from '@langchain/langgraph';
 import { and, asc, desc, eq, gt, inArray, lt, notExists, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { meetingEvents, meetings, trips } from '../db/schema.js';
+import { meetingEvents, meetings, tripPlans, trips } from '../db/schema.js';
 import type { AccessGrant } from '../lib/access.js';
 import { ApiError } from '../lib/errors.js';
 import { newId } from '../lib/ids.js';
@@ -25,7 +25,15 @@ export type MeetingEventType =
   | 'plan.proposed'
   | 'round.started'
   | 'vote.cast'
-  | 'meeting.failed';
+  | 'meeting.agreed'
+  | 'meeting.failed'
+  // 14·15단계 (사람 선택·확정, API가 기록)
+  | 'choice.cast'
+  | 'plan.chosen'
+  | 'confirm.requested'
+  | 'confirm.cast'
+  | 'confirm.closed'
+  | 'plan.confirmed';
 
 /** 시험 화면에만 보내는 LLM 과정 이벤트 (요청 내용·받는 글자·원본 응답). DB에 기록하지 않음 */
 export type LlmTraceType = 'llm.request' | 'llm.delta' | 'llm.response';
@@ -81,7 +89,9 @@ export interface StartOptions {
 export async function startMeeting(db: Db, tripId: string, limits: MeetingLimits, opts: StartOptions = {}) {
   const { access } = opts;
   return db.transaction(async (tx) => {
-    await tx.select({ id: trips.id }).from(trips).where(eq(trips.id, tripId)).for('update');
+    const [trip] = await tx.select({ id: trips.id, status: trips.status }).from(trips).where(eq(trips.id, tripId)).for('update');
+    // 회의가 끝나 사람이 A·B를 고르거나 확정하는 여행은 공식 경로로 회의를 다시 하지 않음 (10/14 결정: 재회의 없음)
+    if (opts.official && (trip?.status === 'voting' || trip?.status === 'confirmed')) throw new ApiError('MEETING_IN_PROGRESS', '회의가 끝나 사람 선택·확정 단계인 여행임');
     const rows = await tx.select().from(meetings).where(eq(meetings.tripId, tripId)).orderBy(desc(meetings.runNo));
     const running = rows.find((m) => m.status === 'running' || (m.status === 'reviewing' && !opts.replaceReviewing));
     if (running) throw new ApiError('MEETING_IN_PROGRESS', `이미 진행 중인 회의가 있음 (${running.id})`);
@@ -204,6 +214,7 @@ export async function eventsAfter(db: Db, tripId: string, afterSeq: number): Pro
 /**
  * 끝난 지 keepDays일이 지난 회의의 단계 기록(체크포인트)을 지움. 회의 행·이벤트는 여행과 함께 남음
  * schema: 체크포인트가 있는 Postgres 스키마. 주면 기록이 아직 남은 회의만 골라 지움 (이미 지운 회의를 매일 다시 지우지 않게)
+ * 14·15단계에서 아직 고르거나 고치는 일정 표의 회의는 남김 (고칠 때 6단계 재료를 이 기록에서 읽음)
  */
 export async function pruneMeetingCheckpoints(db: Db, checkpointer: BaseCheckpointSaver, keepDays: number, schema?: string): Promise<number> {
   const before = new Date(Date.now() - keepDays * DAY_MS);
@@ -211,7 +222,19 @@ export async function pruneMeetingCheckpoints(db: Db, checkpointer: BaseCheckpoi
   const old = await db
     .select({ id: meetings.id })
     .from(meetings)
-    .where(and(inArray(meetings.status, ['done', 'failed']), lt(meetings.finishedAt, before), stored));
+    .where(
+      and(
+        inArray(meetings.status, ['done', 'failed']),
+        lt(meetings.finishedAt, before),
+        stored,
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(tripPlans)
+            .where(and(eq(tripPlans.meetingId, meetings.id), inArray(tripPlans.status, ['choosing', 'revising', 'voting']))),
+        ),
+      ),
+    );
   for (const m of old) await checkpointer.deleteThread(m.id);
   return old.length;
 }

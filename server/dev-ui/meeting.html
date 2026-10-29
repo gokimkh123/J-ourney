@@ -160,9 +160,9 @@ const STEPS = [
   { n: 10, name: '사회자', kind: 'code', live: true, desc: '다음 라운드에 말할 AI 고르기' },
   { n: 11, name: '평가 2–5라운드', kind: 'llm', live: true, desc: '부른 AI만 (최대 5라운드까지 되풀이)' },
   { n: 12, name: '집계', kind: 'code', live: true, desc: '통과 확인 · 끝나는 조건' },
-  { n: 13, name: '마무리', kind: 'llm', desc: 'A·B 설명 + 카카오' },
-  { n: 14, name: '사람 선택', kind: 'human', desc: '2안 중 하나' },
-  { n: 15, name: '확정', kind: 'end', desc: '일정 확정' },
+  { n: 13, name: '마무리', kind: 'llm', live: true, desc: 'A·B 이름·한 줄 설명(AI 1회) · 만족도·양보는 코드' },
+  { n: 14, name: '사람 선택', kind: 'human', live: true, desc: 'A·B 고르기(2:2는 방장) → 빼기·넣기·순서·식당 고치기' },
+  { n: 15, name: '확정', kind: 'end', live: true, desc: '모두 찬성하면 확정 · 한 명이라도 반대면 다시 고치기' },
 ];
 const KIND = { code: '코드', llm: 'LLM', human: '사람', end: '끝' };
 /* 서버 실행 방식: LLM_REPLAY면 LLM을 부르지 않고 지난 결과를 다시 씀 (GET /dev/meeting/mode) */
@@ -318,7 +318,7 @@ function showRetrieve() {
 const STATE_KEYS = [
   ['tripId', 'START'], ['conditions', 'prepare'], ['destination', 'prepare'], ['members', 'prepare'], ['pool', 'retrieve'], ['picks', 'pick'], ['board', 'gather'],
   ['reviewRequest', 'react'], ['reviewDecision', 'review'], ['plans', 'schedule'], ['planStates', 'schedule'], ['evaluation', 'evaluate'], ['rounds', 'evaluate'],
-  ['deliberation', 'tally'], ['changes', 'revise'], ['speakers', 'moderate'],
+  ['deliberation', 'tally'], ['changes', 'revise'], ['speakers', 'moderate'], ['final', 'finalize'],
 ];
 const STAGE_TEXT = { planning: '준비', searching: '후보 받음', picking: '고르는 중', done: '고름' };
 const NODE_VIEW = {
@@ -381,6 +381,10 @@ const NODE_VIEW = {
   moderate: {
     desc: '다음 라운드에 다시 평가할 AI를 고름: 통과 못 한 안에 조건부·반대를 낸 AI + 고친 뒤 자기 꼭 지킬 곳·좋아하는 곳이 빠진 AI. 나머지는 지난 평가를 그대로 두고 만족도만 다시 계산 → 평가로 돌아감 ↩ (코드, LLM 0회)',
     subs: (d) => (d?.rounds ?? []).slice(1).map((rd) => [`라운드 ${rd.round}에 말할 AI`, '', `${rd.speakers.length}명`]),
+  },
+  finalize: {
+    desc: '13단계 마무리: 두 안에 이름·한 줄 설명(LLM 1회, 못 쓰면 A안·B안)을 붙이고, 마지막 라운드의 만족도·평균과 사람마다 지키지 못한 꼭 지킬 것·걸리는 곳(양보)은 코드가 정리 → meeting.agreed → 14단계 일정 표를 엶',
+    subs: (d) => (d?.final ?? [null, null]).map((f, i) => [f ? `${f.label}안 · ${f.title}` : `${i ? 'B' : 'A'}안`, '', f ? `${f.source === 'llm' ? 'AI 이름' : '기본 이름'} · 평균 ${f.satisfaction.average.toFixed(2)}` : '']),
   },
   gather: {
     desc: '4명이 고른 곳을 후보 보드로 모음 (여러 명이 고른 곳은 함께 표시, 반응은 4단계에서)',
@@ -598,6 +602,12 @@ function onLlm(type, d) {
     } else if (type === 'llm.response') log(`${who} AI ← 평가 LLM 응답 (라운드 ${evalRound[d.agentId] ?? 1}, ${d.ms}ms, 입력 ${d.usage.input ?? '-'} / 출력 ${d.usage.output ?? '-'}토큰)`);
     return;
   }
+  // 13단계 이름 짓기 (회의 1번에 0–2회)
+  if (d.purpose === 'names_final') {
+    if (type === 'llm.request') log(`마무리 → A·B 이름·설명 LLM 요청 (${d.try}번째)`);
+    else if (type === 'llm.response') log(`마무리 ← LLM 응답 (${d.ms}ms, 입력 ${d.usage.input ?? '-'} / 출력 ${d.usage.output ?? '-'}토큰)`);
+    return;
+  }
   // 2단계 이름 맞추기 (회의 1번에 0–3회, 사람 카드 없이 기록만)
   if (d.purpose === 'names') {
     if (type === 'llm.request') log(`이름 맞추기 → LLM 요청 (꼭 지킬 것·꼭 피할 것의 장소·음식 이름 ${d.input.rules.length}개)`);
@@ -768,6 +778,7 @@ function showPicks(r) {
   if (cur >= 6) showPlans(r);
   if (cur === 7) showEval(r);
   if (cur >= 8) showRounds(r);
+  if (cur >= 13) showFinal(r);
   if (cur === 3) $('board3').innerHTML = `<h3>후보 보드 (${r.board.candidates.length}곳 · 반응은 4단계에서)</h3><div class="tw"><table><thead><tr><th>장소</th><th>고른 AI</th><th>수</th></tr></thead><tbody>${[...r.board.candidates].sort((a, b) => b.proposedBy.length - a.proposedBy.length).map((c) => `<tr><td>${esc(c.name)}</td><td>${c.proposedBy.map((id) => `<span class="pill">${esc(nick(id))}</span>`).join('')}</td><td class="n ${c.proposedBy.length > 1 ? 'best' : ''}">${c.proposedBy.length}</td></tr>`).join('')}</tbody></table></div>`;
   setKey('picks', `${r.picks.length}명`);
   setKey('board', `${r.board.candidates.length}곳`);
@@ -920,6 +931,7 @@ async function submitReview(close) {
       if (cur >= 6) showPlans(last3);
       if (cur === 7) showEval(last3);
       if (cur >= 8) showRounds(last3);
+      if (cur >= 13) showFinal(last3);
       setKey('reviewDecision', `남김 ${line.reviewDecision.kept.length} · 뺌 ${line.reviewDecision.dropped.length}`);
       // 이어서 실행도 라운드 고리 끝에서 멈추는 노드가 회의마다 달라 남은 '실행 중' 표시를 지움
       $('lg').querySelectorAll('.lg-node.run').forEach((el) => el.classList.remove('run'));
@@ -1147,6 +1159,177 @@ function showRounds(r) {
   setKey('rounds', `${rounds.length}개`);
 }
 
+/* 13–15단계: 회의가 끝나면 두 안의 이름·설명(AI 1회)과 만족도·양보(코드) → 사람이 A·B를 고르고 고친 뒤 모두 찬성하면 확정.
+   14·15단계는 앱과 같은 공식 API(/trips/{id}/plan…)를 그대로 부름 (LLM 0회, 고칠 때만 카카오 길찾기). 시연 여행이라 방장이 4명 몫을 memberId로 대신 냄 */
+let plan14 = null;
+let options14 = null;
+let members14 = null; // 화면을 새로 열어 회의 결과가 없을 때: GET /trips의 구성원
+const FINAL_TITLE = { 13: '13. 마무리', 14: '14. 사람 선택', 15: '15. 확정' };
+const PLAN_STATUS = { choosing: 'A·B 고르는 중', revising: '고른 안 고치는 중', voting: '확정 투표 중', confirmed: '확정됨' };
+function rules13() {
+  const f = graphShape?.rules?.finalize;
+  if (!f) return '<span class="note">규칙 값을 불러오는 중…</span>';
+  return `<div class="tw"><table><thead><tr><th>단계</th><th>규칙</th></tr></thead><tbody>
+    <tr><td>13 마무리</td><td>두 안의 이름(${f.titleMax}자)·한 줄 설명(${f.summaryMax}자)만 AI 1회 (형식이 틀리면 1번 더, 못 쓰면 'A안'·'B안', 두 이름이 같으면 B만 기본값) · 만족도·평균·통과는 마지막 라운드 값 그대로 · 양보 = 사람마다 그 안에서 못 지킨 꼭 지킬 것·⚠ 걸리는 곳 (코드)</td></tr>
+    <tr><td>14 고르기</td><td>4명이 A·B 중 하나 (다시 내면 덮어씀) · 모두 고르면 다수결, 2:2면 방장이 고른 안 · 방장 '정하기'는 고른 사람만으로 다수결</td></tr>
+    <tr><td>14 고치기</td><td>구성원 누구나, 고른 값만 받음: 빼기 · 넣기(일정에 없는 후보) · 다른 날로 · 순서 · 끼니 식당 바꾸기 → 6단계 계산으로 다시 짜고 version + 1 (LLM 0회) · 숙소는 바꾸지 않음 · 사람이 정한 순서는 그대로 둠</td></tr>
+    <tr><td>15 확정</td><td>방장이 지금 버전으로 확정 투표 시작 → 투표 중에는 고치지 않음 · 모두 찬성하면 확정(여행 상태 confirmed) · 한 명이라도 반대하면 다시 고치기</td></tr></tbody></table></div>`;
+}
+function renderFinal() {
+  const p = $('panel');
+  const kind = cur === 13 ? '<span class="k llm">LLM 1회 (이름·설명) · 나머지 코드</span>' : cur === 14 ? '<span class="k human">사람 · LLM 0회 · 고칠 때 카카오</span>' : '<span class="k end">사람 · LLM 0회</span>';
+  p.innerHTML = `<h2>${FINAL_TITLE[cur]} ${kind}</h2>
+    <p class="muted">1–12단계에 이어 실행됩니다. 회의가 끝나면 13단계가 두 안을 정리(meeting.agreed)하고, 14·15단계는 아래 일정 표에서 사람이 고르고·고치고·확정합니다. 회의를 다시 실행하면 일정 표도 새로 열립니다.</p>
+    <div id="rules13">${rules13()}</div>
+    <div class="row"><button class="btn primary" id="run3">${runText('1–13단계')}</button>
+      <label style="display:flex;flex-direction:row;align-items:center;gap:6px">보기 속도 <select id="speed3"><option value="1">실제 속도</option><option value="0.5">½ (느리게 재생)</option></select></label>
+      <span id="run3Msg" class="note"></span><span id="runsInfo" class="pill">실행 횟수 확인 중</span></div>
+    <div id="review5"></div>
+    <div id="final13"><div class="locked-box">실행하면 두 안의 이름·만족도·양보가 여기에 나옵니다.</div></div>
+    <div id="plan14"></div>
+    <details><summary>라운드 (7–12단계)</summary><div id="rounds8"></div></details>
+    <details><summary>후보 보드·AI가 고른 곳 (1–4단계)</summary><div id="board3"></div><div id="agents3" class="members"></div></details>`;
+  loadRuns();
+  $('run3').onclick = runMeeting;
+  if (last3) showPicks(last3);
+  else loadPlan14();
+}
+function finalHtml(final, members) {
+  const nick = (id) => esc(members?.find((m) => m.memberId === id)?.nickname ?? nick14(id));
+  return `<div class="plans">${final.map((f) => `<div class="plan"><h3>${esc(f.label)}안 · ${esc(f.title)} <span class="pill">${f.source === 'llm' ? 'AI 이름' : '기본 이름'}</span></h3>
+    ${f.summary ? `<p style="margin:0">${esc(f.summary)}</p>` : ''}
+    <p class="note" style="margin:0">평균 <b>${f.satisfaction.average.toFixed(2)}점</b> ${f.satisfaction.passed ? '<span class="ok">통과</span>' : '<span class="bad">통과 못 함</span>'} · v${f.version}</p>
+    <div class="tw"><table><thead><tr><th>구성원</th><th>만족도</th><th>양보 (못 지킨 꼭 지킬 것 · ⚠ 걸리는 곳)</th></tr></thead><tbody>${f.satisfaction.members.map((m) => {
+      const c = f.concessions.find((x) => x.memberId === m.memberId);
+      const give = c ? [...c.mustMissed.map((x) => `★ ${esc(x)}`), ...c.warned.map((x) => `⚠ ${esc(x)}`)] : [];
+      return `<tr><td>${nick(m.memberId)}</td><td class="n"><span class="${STANCE_CLASS[m.stance]}">${esc(m.stance)}</span> ${m.score}점</td><td>${give.length ? give.join(' · ') : '<span class="note">없음</span>'}</td></tr>`;
+    }).join('')}</tbody></table></div></div>`).join('')}</div>`;
+}
+function showFinal(r) {
+  const box = $('final13');
+  if (!box) return;
+  if (!r.final) { box.innerHTML = r.status === 'reviewing' ? '<div class="locked-box">사람 확인을 마치면 이어서 라운드를 돌고 마무리합니다.</div>' : '<div class="locked-box">이 회의는 마무리 전에 끝났습니다.</div>'; return; }
+  box.innerHTML = `<h3>13단계 결과 (meeting.agreed)</h3>${finalHtml(r.final, r.members)}`;
+  setKey('final', r.final.map((f) => f.title).join(' / '));
+  loadPlan14();
+}
+async function loadPlan14(msg) {
+  const box = $('plan14');
+  if (!box || !saved) return;
+  try {
+    plan14 = await api('GET', `/trips/${encodeURIComponent(saved.tripId)}/plan`);
+    if (!last3?.members?.length && !agents3.length && !members14) members14 = (await api('GET', `/trips/${encodeURIComponent(saved.tripId)}`)).members;
+    options14 = plan14.status === 'revising' ? await api('GET', `/trips/${encodeURIComponent(saved.tripId)}/plan/options`) : null;
+  } catch (err) {
+    plan14 = null;
+    box.innerHTML = String(err.message).startsWith('NOT_FOUND') ? '' : `<p class="bad">${esc(err.message)}</p>`;
+    return;
+  }
+  drawPlan14(msg);
+}
+const people14 = () =>
+  last3?.members?.length || agents3.length
+    ? (last3?.members?.length ? last3.members : agents3).map((m, i) => ({ memberId: m.memberId, nickname: m.nickname, host: i === 0 }))
+    : (members14 ?? []).map((m) => ({ memberId: m.id, nickname: m.nickname, host: m.isHost }));
+const nick14 = (id) => people14().find((m) => m.memberId === id)?.nickname ?? nameOfMember(id);
+function drawPlan14(msg) {
+  const box = $('plan14');
+  if (!box || !plan14) return;
+  const v = plan14;
+  const ppl = people14();
+  const labelOf = (planId) => v.candidates.find((c) => c.planId === planId)?.label ?? '?';
+  let html = `<h3>14·15단계 일정 표 · <span class="pill">${esc(PLAN_STATUS[v.status])}</span></h3>`;
+  if (!last3?.final) html += `<details><summary>13단계 두 안 (이름·만족도·양보)</summary>${finalHtml(v.candidates, last3?.members)}</details>`;
+  if (v.status === 'choosing') {
+    html += `<p class="note">시연 여행이라 방장이 4명 몫을 대신 냅니다 (앱은 각자 POST /trips/{id}/plan/choice). 응답 ${v.choice.answered}/${v.choice.total}</p>
+      <div class="tw"><table><thead><tr><th>구성원</th><th>고른 안</th><th>고르기</th></tr></thead><tbody>${ppl.map((m) => {
+        const mine = v.choice.votes.find((x) => x.memberId === m.memberId);
+        return `<tr><td>${esc(m.nickname)}${m.host ? ' (방장)' : ''}</td><td>${mine ? `<b>${esc(labelOf(mine.planId))}안</b>` : '<span class="note">아직</span>'}</td><td>${v.candidates.map((c) => `<button class="btn" data-pick="${esc(c.planId)}" data-m="${esc(m.memberId)}">${esc(c.label)}안 · ${esc(c.title)}</button>`).join(' ')}</td></tr>`;
+      }).join('')}</tbody></table></div>
+      <div class="row"><button class="btn" id="close14">방장 '정하기' (고른 사람만으로 다수결)</button></div>`;
+  } else {
+    const ch = v.choice.chosen;
+    html += `<p>고른 안: <b>${esc(ch.label)}안</b> · ${ch.by === 'all' ? '모두 고름' : "방장 '정하기'"} · A ${ch.votes.A} : B ${ch.votes.B}${ch.tie ? ' <span class="note">(같아서 방장이 고른 안, 방장이 안 골랐으면 만족도 평균이 높은 안)</span>' : ''} · 지금 <b>v${v.plan.version}</b>${v.edits.length ? ` · 사람이 고친 횟수 ${v.edits.length}` : ''}</p>`;
+    if (v.plan.changes?.length && v.edits.length) html += `<p class="note">마지막 고침: ${v.plan.changes.map(esc).join(' · ')}</p>`;
+    html += plan14Html(v.plan, v.status === 'revising');
+    if (v.status === 'revising') {
+      const add = options14?.sights ?? [];
+      html += `<div class="card"><h4 style="margin:0">넣기 (일정에 없는 후보 ${add.length}곳 · 점수 순)</h4>
+        <div class="row"><select id="add14">${add.map((x) => `<option value="${esc(x.placeId)}">${esc(x.name)}${x.mustFor.length ? ` ★${x.mustFor.length}` : ''}${x.likedBy.length ? ` 👍${x.likedBy.length}` : ''}${x.closedDays.length ? ` (쉬는 날 ${x.closedDays.map((d) => d + 1).join('·')}일째)` : ''}</option>`).join('')}</select>
+        <select id="addDay14">${v.plan.route.map((d, i) => `<option value="${i}">${d.day}일째</option>`).join('')}</select>
+        <button class="btn" id="addBtn14" ${add.length ? '' : 'disabled'}>넣기</button></div></div>
+        <div class="row"><button class="btn primary" id="confirm14">확정 투표 시작 (방장, 지금 v${v.plan.version})</button></div>`;
+    }
+    if (v.status === 'voting' || v.status === 'confirmed') {
+      html += `<h4>15단계 확정 투표 · v${v.confirm?.version ?? v.plan.version} · 응답 ${v.confirm?.answered ?? 0}/${v.confirm?.total ?? ppl.length}</h4>
+        <div class="tw"><table><thead><tr><th>구성원</th><th>투표</th>${v.status === 'voting' ? '<th>내기</th>' : ''}</tr></thead><tbody>${ppl.map((m) => {
+          const mine = v.confirm?.votes.find((x) => x.memberId === m.memberId);
+          return `<tr><td>${esc(m.nickname)}${m.host ? ' (방장)' : ''}</td><td>${mine ? (mine.decision === 'approve' ? '<span class="ok">찬성</span>' : '<span class="bad">반대</span>') : '<span class="note">아직</span>'}</td>${v.status === 'voting' ? `<td><button class="btn" data-vote="approve" data-m="${esc(m.memberId)}">찬성</button> <button class="btn" data-vote="reject" data-m="${esc(m.memberId)}">반대</button></td>` : ''}</tr>`;
+        }).join('')}</tbody></table></div>
+        ${v.status === 'confirmed' ? `<p class="ok"><b>확정됨</b> · ${esc(v.confirmedAt)} · 여행 상태 confirmed</p>` : '<p class="note">모두 찬성하면 확정, 한 명이라도 반대하면 다시 고치기로 돌아감</p>'}`;
+    }
+    if (v.edits.length) html += `<details><summary>고친 기록 ${v.edits.length}개</summary><ul>${v.edits.map((e) => `<li>v${e.version} · ${esc(nick14(e.by))} · ${esc(e.at)} · ${e.changes.map(esc).join(' · ')}</li>`).join('')}</ul></details>`;
+  }
+  html += `<p id="msg14" class="note">${msg ?? ''}</p>`;
+  box.innerHTML = html;
+  box.querySelectorAll('[data-pick]').forEach((b) => (b.onclick = () => act14('POST', '/plan/choice', { planId: b.dataset.pick, memberId: b.dataset.m })));
+  if ($('close14')) $('close14').onclick = () => act14('POST', '/plan/choice/close');
+  box.querySelectorAll('[data-ed]').forEach((b) => (b.onclick = () => edit14(b)));
+  box.querySelectorAll('select[data-meal]').forEach((sel) => (sel.onchange = () => sel.value && sendEdits([{ type: 'meal', itemId: sel.dataset.meal, placeId: sel.value === 'auto' ? null : sel.value }])));
+  box.querySelectorAll('select[data-move]').forEach((sel) => (sel.onchange = () => sel.value !== '' && sendEdits([{ type: 'move', itemId: sel.dataset.move, day: Number(sel.value) }])));
+  if ($('addBtn14')) $('addBtn14').onclick = () => sendEdits([{ type: 'add', placeId: $('add14').value, day: Number($('addDay14').value) }]);
+  if ($('confirm14')) $('confirm14').onclick = () => act14('POST', '/plan/confirm');
+  box.querySelectorAll('[data-vote]').forEach((b) => (b.onclick = () => act14('POST', '/plan/votes', { decision: b.dataset.vote, memberId: b.dataset.m })));
+}
+function plan14Html(p, editable) {
+  const days = p.route.map((d, di) => {
+    const sights = d.stops.filter((s) => s.kind === 'sight');
+    const rows = d.stops.map((s, k) => {
+      let ctl = '';
+      if (editable && s.kind !== 'lodging') {
+        ctl += ` <button class="btn" data-ed="remove" data-item="${esc(s.itemId)}" title="빼기">빼기</button>`;
+        if (s.kind === 'sight') {
+          const j = sights.indexOf(s);
+          if (j > 0) ctl += ` <button class="btn" data-ed="up" data-day="${di}" data-item="${esc(s.itemId)}" title="한 칸 앞으로">↑</button>`;
+          if (p.route.length > 1) ctl += ` <select data-move="${esc(s.itemId)}"><option value="">다른 날로</option>${p.route.map((x, i) => (i === di ? '' : `<option value="${i}">${x.day}일째</option>`)).join('')}</select>`;
+        }
+        if (s.kind === 'food' && s.meal) ctl += ` <select data-meal="${esc(s.itemId)}"><option value="">식당 바꾸기</option><option value="auto">다른 식당 (자동)</option>${(options14?.meals?.[s.itemId] ?? []).map((r) => `<option value="${esc(r.placeId)}">${esc(r.name)} (+${r.detourKm}km)</option>`).join('')}</select>`;
+      }
+      return legHtml(s.moveFromPrev) + stopHtml(s, k + 1).replace(/<\/div>$/, `${ctl}</div>`);
+    }).join('');
+    return `<div><h4 style="color:${DAY_COLOR[(d.day - 1) % 3]}">${d.day}일째 · ${esc(d.date)} · 이동 ${hm(d.summary.moveMinutes)}${d.summary.heavy ? ' <span class="warn">이동 많음</span>' : ''}</h4><div class="route">${rows}</div></div>`;
+  }).join('');
+  return `<div class="plan"><h3>${esc(p.label)}안 v${p.version} · ${p.lodging ? `🏨 ${esc(p.lodging.name)}` : '당일치기'}</h3>${routeSvg(p)}${days}
+    ${p.notes.length ? `<div><h4>메모</h4><ul style="margin:0;padding-left:18px">${p.notes.map((n) => `<li class="note">${esc(n)}</li>`).join('')}</ul></div>` : ''}</div>`;
+}
+function edit14(b) {
+  if (b.dataset.ed === 'remove') return sendEdits([{ type: 'remove', itemId: b.dataset.item }]);
+  // ↑: 그날 관광지 순서에서 한 칸 앞으로 (순서는 관광지만, 끼니·숙소 자리는 6단계 규칙)
+  const day = Number(b.dataset.day);
+  const ids = plan14.plan.route[day].stops.filter((s) => s.kind === 'sight').map((s) => s.itemId);
+  const j = ids.indexOf(b.dataset.item);
+  [ids[j - 1], ids[j]] = [ids[j], ids[j - 1]];
+  return sendEdits([{ type: 'reorder', day, itemIds: ids }]);
+}
+async function sendEdits(edits) {
+  const t0 = performance.now();
+  try {
+    const out = await api('POST', `/trips/${encodeURIComponent(saved.tripId)}/plan/edits`, { edits });
+    const k = out.kakao;
+    const n = k ? k.calls.transit + k.calls.walk + k.calls.car : 0;
+    const notes = out.results.map((x) => `<span class="${x.applied ? 'ok' : 'warn'}">${esc(x.note)}</span>`).join(' · ');
+    log(`14단계 고치기 → v${out.plan.version} · ${out.results.map((x) => x.note).join(' · ')} · 카카오 ${n}회 · LLM 0회`);
+    await loadPlan14(`${notes} · v${out.plan.version} · ${Math.round(performance.now() - t0)}ms · 카카오 ${n}회 (저장분 ${k?.cached ?? 0}) · LLM 0회`);
+  } catch (err) { if ($('msg14')) $('msg14').innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+}
+async function act14(method, path, body) {
+  try {
+    const v = await api(method, `/trips/${encodeURIComponent(saved.tripId)}${path}`, body);
+    log(`${path} → ${PLAN_STATUS[v.status]}`);
+    await loadPlan14();
+  } catch (err) { if ($('msg14')) $('msg14').innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+}
+
 function render() {
   renderSteps();
   if (cur === 1) renderStep1();
@@ -1157,6 +1340,7 @@ function render() {
   else if (cur === 6) renderStep6();
   else if (cur === 7) renderStep7();
   else if (cur >= 8 && cur <= 12) renderRounds();
+  else if (cur >= 13) renderFinal();
 }
 render();
 loadGraph();

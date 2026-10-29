@@ -109,11 +109,11 @@ describe('8·12단계 집계 (평균만 봄, 10/26 사용자 결정)', () => {
     expect(r3).toMatchObject({ next: 'revise', stalls: 0, best: { A: 6.5 } });
   });
 
-  it('실행 한 번의 노드 수 상한은 사람 확인 없이 최대 라운드까지 가는 가장 긴 길보다 여유 있게 큼 (24걸음 → LangGraph 기본 25는 노드 하나만 더해도 실패)', () => {
-    // 1라운드까지: 준비·후보 찾기·고르기·보드·반응·동선·평가·집계 (사람 확인·수정·사회자 뺌) + 라운드마다 수정·사회자·평가·집계
-    const firstRound = MEETING_NODES.filter((n) => !['review', 'revise', 'moderate'].includes(n.id)).length;
-    const longest = firstRound + ROUNDS.nodesPerRound * (MEETING_RULES.maxRounds.max - 1);
-    expect(longest).toBe(24);
+  it('실행 한 번의 노드 수 상한은 사람 확인 없이 최대 라운드까지 가는 가장 긴 길보다 여유 있게 큼 (마무리까지 25걸음 → LangGraph 기본 25에 닿음)', () => {
+    // 1라운드까지: 준비·후보 찾기·고르기·보드·반응·동선·평가·집계 (사람 확인·수정·사회자·마무리 뺌) + 라운드마다 수정·사회자·평가·집계 + 마무리
+    const firstRound = MEETING_NODES.filter((n) => !['review', 'revise', 'moderate', 'finalize'].includes(n.id)).length;
+    const longest = firstRound + ROUNDS.nodesPerRound * (MEETING_RULES.maxRounds.max - 1) + 1;
+    expect(longest).toBe(25);
     expect(MEETING_STEP_LIMIT).toBeGreaterThanOrEqual(longest + ROUNDS.stepsMargin);
   });
 });

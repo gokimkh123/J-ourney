@@ -2,7 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { MAX_MEMBERS, members, personas, trips } from '../db/schema.js';
+import { MAX_MEMBERS, members, personas, tripPlans, trips } from '../db/schema.js';
 import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken, newId, newInviteCode, newToken } from '../lib/ids.js';
@@ -158,6 +158,9 @@ export function tripRoutes(db: Db, deps: TripDeps) {
       if (!trip) return { trip: null, member: null };
       // 회의를 시작한 뒤 들어온 사람은 회의·사람 확인(인원수)에 들어가지 않으므로 받지 않음 (시험 경로 회의는 여행 상태를 바꾸지 않아 진행 중인 회의도 봄)
       if (trip.status !== 'preparing' || (await activeMeetingOf(tx, trip.id))) throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작된 여행에는 참여할 수 없음');
+      // 회의가 끝나 일정 표(14·15단계)가 열린 여행도 받지 않음: 고르기·확정 투표의 인원수가 바뀜 (시험 경로 여행은 상태가 preparing으로 남음)
+      if ((await tx.select({ id: tripPlans.tripId }).from(tripPlans).where(eq(tripPlans.tripId, trip.id))).length)
+        throw new ApiError('MEETING_IN_PROGRESS', '회의가 끝나 일정 표가 열린 여행에는 참여할 수 없음');
       const joined = await tx.select({ id: members.id }).from(members).where(eq(members.tripId, trip.id));
       if (joined.length >= MAX_MEMBERS) {
         throw new ApiError('TRIP_FULL', `참가 인원이 가득 참 (방장 포함 최대 ${MAX_MEMBERS}명)`);

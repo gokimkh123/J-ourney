@@ -155,6 +155,8 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
       outcome: s.deliberation?.outcome ?? null,
       /** 회의 규칙 (통과 기준 aiMinSatisfaction·최대 라운드) */
       rules: s.conditions?.rules ?? null,
+      /** 13단계 마무리: 두 안의 이름·설명·만족도·양보 (이 뒤 14·15단계는 GET /trips/{id}/plan) */
+      final: s.final ?? null,
       /** LLM_REPLAY로 실행함 (고른 결과마다 savedFrom이 있으면 지난 AI 결과, 없으면 규칙) */
       replay: !!s.saved,
     };

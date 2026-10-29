@@ -2,6 +2,8 @@ import { sql } from 'drizzle-orm';
 import { boolean, check, doublePrecision, index, integer, jsonb, pgTable, primaryKey, smallint, text, timestamp, unique } from 'drizzle-orm/pg-core';
 import type { Chip, MustKeepRule, PersonaAnswers, PersonaProfile, TraitResult } from '../persona/types.js';
 import type { ReviewChoice, StoredReview, TripConditions } from '../meeting/types.js';
+import type { FinalPlan } from '../meeting/finalize.js';
+import type { PlanProposal, PlanSets, PlanStates } from '../meeting/schedule.js';
 
 /** 참가 인원 상한 (방장 포함). 4명 초과 참가는 추후 유료 기능으로 둠 */
 export const MAX_MEMBERS = 4;
@@ -300,3 +302,35 @@ export const meetingEvents = pgTable(
   },
   (t) => [primaryKey({ columns: [t.tripId, t.seq] })],
 );
+
+/**
+ * 13–15단계 (명세서 4.5, v2.3): 회의가 끝나면 여행마다 1행을 엶. 사람이 A·B 중 고르고(14) 고친 안을 모두 찬성해 확정함(15)
+ * 같은 여행에서 회의를 다시 하면 새 회의 것으로 바꿈 (시험 경로)
+ * status: choosing A·B 고르는 중 · revising 고른 안을 고치는 중 · voting 확정 투표 중 · confirmed 확정
+ */
+export const tripPlans = pgTable('trip_plans', {
+  tripId: text('trip_id')
+    .primaryKey()
+    .references(() => trips.id, { onDelete: 'cascade' }),
+  meetingId: text('meeting_id')
+    .notNull()
+    .references(() => meetings.id, { onDelete: 'cascade' }),
+  status: text('status', { enum: ['choosing', 'revising', 'voting', 'confirmed'] }).notNull(),
+  /** 13단계 결과: A·B 두 안(그때의 마지막 버전, route 포함)과 이름·설명·만족도·양보 */
+  candidates: jsonb('candidates').$type<(FinalPlan & { plan: PlanProposal })[]>().notNull(),
+  /** 두 안의 재료 (고른 안을 고칠 때 이어서 씀) */
+  states: jsonb('states').$type<PlanStates>().notNull(),
+  /** 14단계: 사람마다 고른 안 (memberId → planId)과 정해진 안 */
+  choices: jsonb('choices').$type<Record<string, string>>().notNull().default({}),
+  chosen: jsonb('chosen').$type<{ planId: string; label: 'A' | 'B'; by: 'all' | 'host'; tie: boolean; votes: { A: number; B: number } }>(),
+  /** 고른 안의 지금 버전과 재료, 사람이 고친 기록 */
+  plan: jsonb('plan').$type<PlanProposal>(),
+  planState: jsonb('plan_state').$type<PlanSets>(),
+  edits: jsonb('edits').$type<{ version: number; by: string; at: string; changes: string[] }[]>().notNull().default([]),
+  /** 15단계: 확정 투표 (memberId → approve·reject)와 투표를 시작한 버전 */
+  votes: jsonb('votes').$type<Record<string, 'approve' | 'reject'>>().notNull().default({}),
+  voteVersion: integer('vote_version'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+});
+

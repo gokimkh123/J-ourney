@@ -22,7 +22,7 @@ import { type MemberInput, NO_NAME_ANSWER, RETRIEVE, retrieveCandidates } from '
 import { isAreaRule, isNameRule, ruleMatcher } from '../src/meeting/rules.js';
 import type { PersonaProfile } from '../src/persona/types.js';
 import type { TourClient } from '../src/tour/client.js';
-import { meetings, trips } from '../src/db/schema.js';
+import { meetings, tripPlans, trips } from '../src/db/schema.js';
 import { EventHub, LIVE, liveSocketServer } from '../src/meeting/live.js';
 import { PICK, type PickResult, ensureOwnLimits, ownConflictIds, pickTables, savedPickFor } from '../src/meeting/pick.js';
 import { REACT, agendaOf, overlapMinutes, reactBoard, reactionOf, reactionScore } from '../src/meeting/react.js';
@@ -48,6 +48,8 @@ const evalAnswer = (input: { plans: Record<string, string> }) => ({
   comment: '둘 다 좋아요!',
   requests: [],
 });
+/** 13단계 이름 짓기 가짜 답 (입력에 plans만 있고 me가 없음) */
+const namesAnswer = () => ({ a: { name: '바다 따라 힐링', desc: '바다를 따라 쉬엄쉬엄 도는 일정' }, b: { name: '시장 골목 먹방', desc: '시장과 골목을 돌며 먹는 일정' } });
 /** 7단계 평가에서 부른 LLM 수 (사람 확인을 기다리면 0) */
 const evalCalls = (r: { evaluation: { members: { llmCalls: number }[] } | null }) => r.evaluation?.members.reduce((a, m) => a + m.llmCalls, 0) ?? 0;
 
@@ -847,11 +849,12 @@ describe('회의 조건 API와 시험 경로', () => {
 
     // 그래프 칸: 실제 그래프 구조 (실행·외부 호출 없음), 터널 요청은 막음
     const graph = await call(app, 'GET', '/dev/meeting/graph');
-    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', 'react', 'review', 'schedule', 'evaluate', 'tally', 'revise', 'moderate', '__end__']);
+    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', 'react', 'review', 'schedule', 'evaluate', 'tally', 'revise', 'moderate', 'finalize', '__end__']);
+    expect(graph.body.edges).toContainEqual({ from: 'tally', to: 'finalize', conditional: true }); // 13단계 마무리 뒤 끝
+    expect(graph.body.edges).toContainEqual({ from: 'finalize', to: '__end__', conditional: false });
     // 8–10단계 고리: 평가 → 집계 → (끝 또는 수정) → 사회자 → 평가
     expect(graph.body.edges).toContainEqual({ from: 'evaluate', to: 'tally', conditional: false });
     expect(graph.body.edges).toContainEqual({ from: 'tally', to: 'revise', conditional: true });
-    expect(graph.body.edges).toContainEqual({ from: 'tally', to: '__end__', conditional: true });
     expect(graph.body.edges).toContainEqual({ from: 'revise', to: 'moderate', conditional: true });
     expect(graph.body.edges).toContainEqual({ from: 'moderate', to: 'evaluate', conditional: false });
     expect(graph.body.edges).toContainEqual({ from: 'react', to: 'review', conditional: true }); // 고를 안건이 있을 때만 사람 확인
@@ -882,6 +885,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
       // 2단계 이름 맞추기 요청 1번 (지은의 흰여울문화마을·현우의 돼지국밥): 목록에서 이름·메뉴에 그 말이 든 곳을 고름 (흰여울문화마을은 시험 자료에 없음)
       if (input.areas !== undefined) return areaAnswer(input);
       if (input.rules) return nameAnswer(input);
+      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) return { checks: [] }; // 4단계 AI 반응: 반응 없음
       const title: string = input.me.title;
@@ -931,8 +935,8 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const { status, lines } = await run(app, token);
     expect(status).toBe(200);
     const result = lines.find((l) => l.kind === 'result');
-    expect(result.llmCalls).toBe(4 + 1 + 4); // 고르기 4 + 이름 맞추기 1 (흰여울문화마을·돼지국밥을 한 번에) + 7단계 평가 4
-    expect(llm.calls).toBe(4 + 1 + 4);
+    expect(result.llmCalls).toBe(4 + 1 + 4 + 1); // 고르기 4 + 이름 맞추기 1 (흰여울문화마을·돼지국밥을 한 번에) + 7단계 평가 4 + 13단계 이름 짓기 1
+    expect(llm.calls).toBe(4 + 1 + 4 + 1);
     expect(evalCalls(result)).toBe(4);
     expect(result.picks).toHaveLength(4);
     const ids = new Set(result.retrieve.candidates.map((c: { id: string }) => c.id));
@@ -953,7 +957,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(events.slice(proposed, proposed + 2).map((e) => [e.type, e.data.label])).toEqual([['plan.proposed', 'A'], ['plan.proposed', 'B']]);
     const round = events.slice(proposed + 2);
     expect(round[0]).toMatchObject({ type: 'round.started', data: { round: 1, maxRounds: 5 } });
-    expect(round.slice(1).map((e) => e.type)).toEqual(Array(4).fill(['agent.message', 'vote.cast', 'vote.cast']).flat());
+    expect(round.slice(1).map((e) => e.type)).toEqual([...Array(4).fill(['agent.message', 'vote.cast', 'vote.cast']).flat(), 'meeting.agreed']); // 둘 다 통과 → 13단계 마무리
     expect(round.find((e) => e.type === 'vote.cast').data).toMatchObject({ round: 1, vote: 'yes', stance: '찬성' });
     expect(events.filter((e) => e.type === 'board.updated').at(-1).data.agenda.some((a: { placeId: string | null }) => a.placeId !== null)).toBe(false);
     expect(events.some((e) => e.type.startsWith('review.'))).toBe(false);
@@ -998,7 +1002,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(evals).toHaveLength(4);
     expect(evals[0].data.input.plans.A.split('\n')[0]).toBe('번호|장소|분류|오는 길|내 조건');
     expect(Object.keys(evals[0].data.input.facts.A)).toEqual(['기준', '꼭지킬것', '이동많은날']);
-    const traces = lines.filter((l) => l.kind === 'llm' && l.data.purpose !== 'names' && l.data.purpose !== 'eval');
+    const traces = lines.filter((l) => l.kind === 'llm' && l.data.purpose !== 'names' && l.data.purpose !== 'eval' && l.data.purpose !== 'names_final');
     expect(traces.filter((l) => l.type === 'llm.request')).toHaveLength(4);
     expect(traces.filter((l) => l.type === 'llm.response')).toHaveLength(4);
     const first = traces.find((l) => l.type === 'llm.request').data.agentId;
@@ -1015,13 +1019,14 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(again.body.events).toHaveLength(events.length - 2);
     expect(again.body.events.some((e: { type: string }) => e.type.startsWith('llm.'))).toBe(false);
     const [row] = await db.select().from(meetings);
-    expect(row).toMatchObject({ status: 'done', llmCalls: 4 + 1 + 4, runNo: 1 });
+    expect(row).toMatchObject({ status: 'done', llmCalls: 4 + 1 + 4 + 1, runNo: 1 });
   });
 
   it('4단계 AI 반응: 사람마다 LLM 1회로 다른 AI가 고른 곳에 반응하고, 근거가 있는 ⚠는 안건이 되어 5단계에서 멈춤 (근거를 지어낸 반응은 버림)', async () => {
     const llm = fakeLlm((input) => {
       if (input.areas !== undefined) return areaAnswer(input);
       if (input.rules) return nameAnswer(input);
+      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) {
         // 서연(싫어요: 오래 걷기)만 반응함
@@ -1061,6 +1066,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
   it('자기 조건에 걸린 곳을 고르면 그 AI만 1번 더 부르고, 그래도 고르면 코드가 걸리지 않는 곳으로 바꿈', async () => {
     // 나쁜 AI: 내 조건에 ⚠·✕가 붙은 곳을 먼저 고름
     const llm = fakeLlm((input) => {
+      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) return { checks: [] }; // 4단계 AI 반응: 반응 없음
       const rows = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|'));
@@ -1072,7 +1078,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const { app, token } = await readyTrip({ llm });
     const result = (await run(app, token)).lines.find((l) => l.kind === 'result');
     expect(result.picks.filter((p: { llmCalls: number }) => p.llmCalls === 2).length).toBeGreaterThan(0); // 걸린 곳을 고른 AI만 1번 더 (서연: 오래 걷기 싫어요 ↔ 장산)
-    expect(result.llmCalls).toBe(1 + 4 + result.picks.filter((p: { llmCalls: number }) => p.llmCalls === 2).length + reactCalls(result) + evalCalls(result));
+    expect(result.llmCalls).toBe(1 + 4 + result.picks.filter((p: { llmCalls: number }) => p.llmCalls === 2).length + reactCalls(result) + evalCalls(result) + 1); // + 13단계 이름 짓기
     // 최종 보드에는 고른 사람 자신의 ⚠·✕가 없음
     const self = result.board.candidates.flatMap((c: { proposedBy: string[]; reactions: { agentId: string; kind: string }[] }) => c.reactions.filter((r) => c.proposedBy.includes(r.agentId) && r.kind !== 'like'));
     expect(self).toEqual([]);
@@ -1088,7 +1094,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(byTitle['반짝반짝 탐험가']).toMatchObject({ source: 'rule', llmCalls: PICK.tries });
     const host = result.picks.find((p: { source: string; llmCalls: number }) => p.llmCalls === 2 && p.source === 'llm');
     expect(host).toBeDefined();
-    expect(result.llmCalls).toBe(1 + PICK.tries + 2 + 1 + 1 + reactCalls(result) + evalCalls(result)); // 이름 맞추기 1 + 고르기 + 4단계 AI 반응 + 7단계 평가
+    expect(result.llmCalls).toBe(1 + PICK.tries + 2 + 1 + 1 + reactCalls(result) + evalCalls(result) + 1); // 이름 맞추기 1 + 고르기 + 4단계 AI 반응 + 7단계 평가 + 13단계 이름 짓기
     const rulePick = byTitle['반짝반짝 탐험가'];
     const mine = result.retrieve.candidates.filter((c: { forMembers: string[] }) => c.forMembers.includes(rulePick.memberId));
     expect(rulePick.picks.every((x: { id: string }) => mine.some((c: { id: string }) => c.id === x.id))).toBe(true);
@@ -1098,7 +1104,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
   const roundLlm = () => {
     const base = pickLlm();
     return fakeLlm(async (input, n, system, schema) => {
-      if (!input.plans) return base.generateJson({ system, input, schema, schemaName: 'test' });
+      if (!input.plans || !input.me) return base.generateJson({ system, input, schema, schemaName: 'test' });
       const ans = evalAnswer(input);
       if (input.me.title !== '반짝반짝 탐험가' || input.round !== 1) return ans;
       const row = (input.plans.A as string).split('\n').find((l) => /^A\d+\|[^|(]+\|/.test(l))!;
@@ -1157,7 +1163,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const t = await readyTrip({ llm });
     await strictRules(t, { aiMinSatisfaction: 10, maxRounds: 5 });
     const first = (await run(t.app, t.token)).lines.find((l) => l.kind === 'result');
-    const round1 = first.llmCalls - roundCalls(first.rounds[1]);
+    const round1 = first.llmCalls - roundCalls(first.rounds[1]) - 1; // 2라운드 평가와 13단계 이름 짓기 1회를 뺀 수
     const capped = createApp({ db: t.db, rateLimitPerMinute: 1000, devUi: true, llm, meetingLlmCallsPerRun: round1 });
     const again = (await run(capped, t.token)).lines.find((l) => l.kind === 'result');
     expect(again.llmCalls).toBe(round1);
@@ -1174,7 +1180,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(result.rounds).toHaveLength(1);
     expect(result.outcome).toBe('max_rounds');
     expect(lines.filter((l) => l.kind === 'event').filter((e) => e.event.type === 'plan.proposed')).toHaveLength(2);
-    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node).slice(-2)).toEqual(['evaluate', 'tally']);
+    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node).slice(-3)).toEqual(['evaluate', 'tally', 'finalize']);
   });
 
   it('8–12단계 시뮬레이션: 무작위 AI 평가 답(입장·요청·형식 오류·긴 글)과 기준·최대 라운드로 회의 전체를 돌려도 라운드·이벤트·version·AI 횟수·끝난 까닭·꼭 지킬 것이 규칙대로', { timeout: 600_000 }, async () => {
@@ -1192,7 +1198,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
       const pick = <T,>(xs: readonly T[]) => xs[Math.floor(rnd() * xs.length)];
       const base = pickLlm();
       const llm = fakeLlm(async (input, n, system, schema) => {
-        if (!input.plans) return base.generateJson({ system, input, schema, schemaName: 'test' });
+        if (!input.plans || !input.me) return base.generateJson({ system, input, schema, schemaName: 'test' });
         if (rnd() < 0.05) return { ...evalAnswer(input), a: { why: '좋아요', stance: '약간 찬성' } }; // 형식 오류 → 1번 더
         const labels = Object.keys(input.plans);
         const codesOf = (l: string) => (input.plans[l] as string).split('\n').map((x) => x.split('|')[0]).filter((c) => /^[AB]\d+$/.test(c));
@@ -1287,7 +1293,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
   it('7단계 평가: 보기 밖의 입장은 형식 오류로 1번 더 부르고, 그래도 틀리면 그 사람만 규칙 평가 (만족도는 코드 계산)', async () => {
     const base = pickLlm();
     const llm = fakeLlm(async (input, n, system, schema) => {
-      if (input.plans && input.me.title === '반짝반짝 탐험가') return { ...evalAnswer(input), a: { why: '좋아요', stance: '약간 찬성' } };
+      if (input.plans && input.me?.title === '반짝반짝 탐험가') return { ...evalAnswer(input), a: { why: '좋아요', stance: '약간 찬성' } };
       return base.generateJson({ system, input, schema, schemaName: 'test' });
     });
     const { app, token } = await readyTrip({ llm });
@@ -1318,7 +1324,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const base = pickLlm();
     let tries = 0;
     const llm = fakeLlm(async (input, n, system, schema) => {
-      if (input.plans && input.me.title === '반짝반짝 탐험가' && ++tries === 1) return { ...evalAnswer(input), a: { why: '좋아요', stance: '약간 찬성' } };
+      if (input.plans && input.me?.title === '반짝반짝 탐험가' && ++tries === 1) return { ...evalAnswer(input), a: { why: '좋아요', stance: '약간 찬성' } };
       return base.generateJson({ system, input, schema, schemaName: 'test' });
     });
     const t = await readyTrip({ llm });
@@ -1745,6 +1751,7 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     fakeLlm((input) => {
       if (input.areas !== undefined) return areaAnswer(input);
       if (input.rules) return nameAnswer(input); // 2단계 이름 맞추기 (흰여울문화마을은 시험 자료에 없음)
+      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) return { checks: [] }; // 4단계 AI 반응: 반응 없음
       const rows = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|'));
@@ -1776,6 +1783,145 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
   type App = Awaited<ReturnType<typeof createTestApp>>['app'];
   const meetingOf = async (app: App, token: string, id: string) => (await call(app, 'GET', `/meetings/${id}`, undefined, token)).body.meeting;
   const waitStatus = (app: App, token: string, id: string, status: string) => until(() => meetingOf(app, token, id), (m) => m?.status === status, `회의 ${status}`);
+
+  it('13–15단계: 회의가 끝나면 두 안의 이름·만족도·양보(meeting.agreed)와 일정 표가 열리고, A·B 고르기(2:2는 방장) → 고치기(빼기·넣기·순서·식당) → 확정 투표(반대면 다시 고치기, 모두 찬성이면 확정)', async () => {
+    const { app, db, token, tripId, people } = await reviewTrip({ llm: jangsanLlm() });
+    const [host, jieun, hyunwoo, seoyeon] = people;
+    const id = (await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.meeting.id as string;
+    await waitStatus(app, token, id, 'reviewing');
+    expect((await call(app, 'GET', `/trips/${tripId}/plan`, undefined, token)).status).toBe(404); // 회의가 끝나기 전
+    await call(app, 'POST', `/meetings/${id}/review/close`, undefined, token);
+    await waitStatus(app, token, id, 'done');
+
+    // 13단계: meeting.agreed (이름·설명은 AI, 만족도·양보는 코드) → 일정 표 choosing, 여행 상태 voting, 회의를 다시 시작하지 않음
+    const all = (await call(app, 'GET', `/trips/${tripId}/events?afterSeq=0`, undefined, token)).body.events as { seq: number; type: string; data: Record<string, any> }[];
+    const agreed = all.find((e) => e.type === 'meeting.agreed')!;
+    expect(agreed.data).toMatchObject({ meetingId: id, outcome: 'passed', rounds: 1 });
+    expect(agreed.data.plans.map((p: { label: string; title: string; source: string }) => [p.label, p.title, p.source])).toEqual([
+      ['A', '바다 따라 힐링', 'llm'],
+      ['B', '시장 골목 먹방', 'llm'],
+    ]);
+    expect(agreed.data.plans[0].satisfaction.members).toHaveLength(4);
+    expect(agreed.data.plans[0].concessions.map((c: { memberId: string }) => c.memberId)).toEqual(people.map((p) => p.id));
+    expect((await call(app, 'GET', `/trips/${tripId}`, undefined, token)).body.trip.status).toBe('voting');
+    expect((await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.error.code).toBe('MEETING_IN_PROGRESS');
+    const invite = (await call(app, 'GET', `/trips/${tripId}`, undefined, token)).body.trip.inviteCode as string;
+    expect((await call(app, 'POST', `/invites/${invite}/join`, { nickname: '늦은사람' })).body.error.code).toBe('MEETING_IN_PROGRESS'); // 인원수가 바뀌지 않게
+    let view = (await call(app, 'GET', `/trips/${tripId}/plan`, undefined, token)).body;
+    expect(view).toMatchObject({ status: 'choosing', meetingId: id, choice: { answered: 0, total: 4, chosen: null }, plan: null, confirm: null });
+    const [A, B] = view.candidates;
+    expect([A.title, B.title]).toEqual(['바다 따라 힐링', '시장 골목 먹방']);
+
+    // 14단계 고르기: 방장 A · 지은 B(방장이 대신) · 현우 A(직접) · 서연 B(방장이 대신) → 2:2 → 방장이 고른 A
+    await db.update(members).set({ tokenHash: hashToken('tok_hyunwoo') }).where(eq(members.id, hyunwoo.id));
+    const edits = (body: unknown, tok = token) => call(app, 'POST', `/trips/${tripId}/plan/edits`, body, tok);
+    expect((await edits({ edits: [{ type: 'remove', itemId: 'itm_x' }] })).body.error.code).toBe('PLAN_LOCKED'); // 고르기 전
+    expect((await call(app, 'POST', `/trips/${tripId}/plan/choice`, { planId: A.planId, memberId: seoyeon.id }, 'tok_hyunwoo')).status).toBe(403); // 남의 몫은 방장만
+    expect((await call(app, 'POST', `/trips/${tripId}/plan/choice`, { planId: 'pln_없음' }, token)).body.error.code).toBe('VALIDATION_ERROR');
+    await call(app, 'POST', `/trips/${tripId}/plan/choice`, { planId: A.planId }, token);
+    await call(app, 'POST', `/trips/${tripId}/plan/choice`, { planId: B.planId, memberId: jieun.id }, token);
+    await call(app, 'POST', `/trips/${tripId}/plan/choice`, { planId: A.planId }, 'tok_hyunwoo');
+    view = (await call(app, 'POST', `/trips/${tripId}/plan/choice`, { planId: B.planId, memberId: seoyeon.id }, token)).body;
+    expect(view).toMatchObject({ status: 'revising', choice: { answered: 4, chosen: { label: 'A', planId: A.planId, tie: true, by: 'all', votes: { A: 2, B: 2 } } } });
+    expect(view.plan).toMatchObject({ planId: A.planId, version: A.version });
+    expect((await call(app, 'POST', `/trips/${tripId}/plan/choice`, { planId: B.planId }, token)).body.error.code).toBe('VOTE_CLOSED');
+
+    // 14단계 고치기 (구성원 누구나, 고른 값만): 고칠 때마다 같은 planId에 version + 1, 반영 못 한 것은 까닭
+    type Stop = { itemId: string; placeId: string; name: string; kind: string; meal: string | null };
+    type Plan = { version: number; route: { stops: Stop[] }[]; changes?: string[] };
+    const sightsOf = (p: Plan) => p.route[0].stops.filter((x) => x.kind === 'sight');
+    const lodging = view.plan.route[0].stops.find((x: Stop) => x.kind === 'lodging');
+    let out = (await edits({ edits: [{ type: 'remove', itemId: lodging.itemId }] })).body;
+    expect(out.results).toEqual([{ plan: 'A', applied: false, note: '반영 못 함: 숙소는 여기서 바꿀 수 없음' }]);
+    expect(out.plan.version).toBe(A.version);
+    const first = sightsOf(view.plan)[0];
+    out = (await edits({ edits: [{ type: 'remove', itemId: first.itemId }] }, 'tok_hyunwoo')).body;
+    expect(out.results).toEqual([{ plan: 'A', applied: true, note: `1일째 ${first.name} 뺌` }]);
+    expect(out.plan).toMatchObject({ planId: A.planId, version: A.version + 1, changes: [`1일째 ${first.name} 뺌`] });
+    expect(out.edits.at(-1)).toMatchObject({ version: A.version + 1, by: hyunwoo.id });
+    // 넣을 보기: 일정에 없는 관광지 (방금 뺀 곳도 다시 넣을 수 있음), 끼니마다 바꿀 식당
+    const options = (await call(app, 'GET', `/trips/${tripId}/plan/options`, undefined, token)).body;
+    const back = options.sights.find((x: { placeId: string }) => x.placeId === first.placeId);
+    expect(back).toMatchObject({ name: first.name });
+    expect(Object.keys(options.meals).length).toBeGreaterThan(0);
+    out = (await edits({ edits: [{ type: 'add', placeId: first.placeId, day: 1 }, { type: 'add', placeId: first.placeId, day: 0 }] })).body;
+    expect(out.results).toEqual([
+      { plan: 'A', applied: true, note: `2일째 ${first.name} 넣음` },
+      { plan: 'A', applied: false, note: '반영 못 함: 이미 일정에 있는 곳' },
+    ]);
+    expect(out.plan.route[1].stops.map((x: Stop) => x.placeId)).toContain(first.placeId);
+    // 다른 날로 옮기기 (같은 날이면 반영하지 않음) · 순서는 그날 관광지를 모두 한 번씩 적어야 함
+    const moved = out.plan.route[1].stops.find((x: Stop) => x.placeId === first.placeId);
+    out = (await edits({ edits: [{ type: 'move', itemId: moved.itemId, day: 1 }, { type: 'reorder', day: 0, itemIds: [sightsOf(out.plan)[0].itemId] }] })).body;
+    expect(out.results).toEqual([
+      { plan: 'A', applied: false, note: '반영 못 함: 이미 그날에 있음' },
+      { plan: 'A', applied: false, note: '반영 못 함: 그날 관광지를 모두 한 번씩 적어야 함' },
+    ]);
+    out = (await edits({ edits: [{ type: 'move', itemId: moved.itemId, day: 0 }] })).body;
+    expect(out.results).toEqual([{ plan: 'A', applied: true, note: `${first.name} 2일째 → 1일째` }]);
+    expect(sightsOf(out.plan).map((x: Stop) => x.placeId)).toContain(first.placeId);
+    const reversed = [...sightsOf(out.plan)].reverse();
+    out = (await edits({ edits: [{ type: 'reorder', day: 0, itemIds: reversed.map((x) => x.itemId) }] })).body;
+    expect(sightsOf(out.plan).map((x: Stop) => x.name)).toEqual(reversed.map((x) => x.name)); // 사람이 정한 순서 그대로
+    expect(out.plan.version).toBe(A.version + 4);
+    const meal = out.plan.route.flatMap((d: { stops: Stop[] }) => d.stops).find((x: Stop) => x.kind === 'food' && x.meal);
+    if (meal) {
+      out = (await edits({ edits: [{ type: 'meal', itemId: meal.itemId, placeId: null }] })).body;
+      expect(out.results[0]).toMatchObject({ applied: true });
+      expect(out.plan.route.flatMap((d: { stops: Stop[] }) => d.stops).some((x: Stop) => x.placeId === meal.placeId)).toBe(false);
+    }
+    const version = out.plan.version;
+
+    // 15단계 확정: 방장만 시작, 투표 중에는 고치지 않음, 한 명이라도 반대하면 다시 고치기
+    expect((await call(app, 'POST', `/trips/${tripId}/plan/confirm`, undefined, 'tok_hyunwoo')).status).toBe(403);
+    view = (await call(app, 'POST', `/trips/${tripId}/plan/confirm`, undefined, token)).body;
+    expect(view).toMatchObject({ status: 'voting', confirm: { version, answered: 0, total: 4 } });
+    expect((await edits({ edits: [{ type: 'remove', itemId: first.itemId }] })).body.error.code).toBe('PLAN_LOCKED');
+    await call(app, 'POST', `/trips/${tripId}/plan/votes`, { decision: 'approve' }, token);
+    view = (await call(app, 'POST', `/trips/${tripId}/plan/votes`, { decision: 'reject' }, 'tok_hyunwoo')).body;
+    expect(view).toMatchObject({ status: 'revising', confirm: null });
+    await call(app, 'POST', `/trips/${tripId}/plan/confirm`, undefined, token);
+    await call(app, 'POST', `/trips/${tripId}/plan/votes`, { decision: 'approve' }, token);
+    await call(app, 'POST', `/trips/${tripId}/plan/votes`, { decision: 'approve', memberId: jieun.id }, token);
+    await call(app, 'POST', `/trips/${tripId}/plan/votes`, { decision: 'approve' }, 'tok_hyunwoo');
+    view = (await call(app, 'POST', `/trips/${tripId}/plan/votes`, { decision: 'approve', memberId: seoyeon.id }, token)).body;
+    expect(view).toMatchObject({ status: 'confirmed', confirm: { version, answered: 4 }, plan: { planId: A.planId, version } });
+    expect(view.confirmedAt).toBeTruthy();
+    expect((await call(app, 'GET', `/trips/${tripId}`, undefined, token)).body.trip.status).toBe('confirmed');
+    expect((await call(app, 'POST', `/trips/${tripId}/plan/votes`, { decision: 'approve' }, token)).body.error.code).toBe('VOTE_CLOSED');
+
+    // 이벤트: 회의 이벤트 흐름(seq)에 이어서 14·15단계를 기록함
+    const tail = (await call(app, 'GET', `/trips/${tripId}/events?afterSeq=${agreed.seq}`, undefined, token)).body.events.map((e: { type: string }) => e.type);
+    const edited = meal ? 5 : 4;
+    expect(tail).toEqual([
+      ...Array(4).fill('choice.cast'),
+      'plan.chosen',
+      ...Array(edited).fill('plan.proposed'),
+      'confirm.requested',
+      'confirm.cast',
+      'confirm.cast',
+      'confirm.closed',
+      'confirm.requested',
+      ...Array(4).fill('confirm.cast'),
+      'plan.confirmed',
+    ]);
+  });
+
+  it('14단계 방장 정하기: 고른 사람만으로 다수결 (방장만, 정한 뒤에는 VOTE_CLOSED)', async () => {
+    const { app, db, token, tripId, people } = await reviewTrip({ llm: jangsanLlm() });
+    const [, jieun, hyunwoo] = people;
+    const id = (await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.meeting.id as string;
+    await waitStatus(app, token, id, 'reviewing');
+    await call(app, 'POST', `/meetings/${id}/review/close`, undefined, token);
+    await waitStatus(app, token, id, 'done');
+    const [, B] = (await call(app, 'GET', `/trips/${tripId}/plan`, undefined, token)).body.candidates;
+    await db.update(members).set({ tokenHash: hashToken('tok_hyunwoo') }).where(eq(members.id, hyunwoo.id));
+    await call(app, 'POST', `/trips/${tripId}/plan/choice`, { planId: B.planId, memberId: jieun.id }, token);
+    expect((await call(app, 'POST', `/trips/${tripId}/plan/choice/close`, undefined, 'tok_hyunwoo')).status).toBe(403);
+    const view = (await call(app, 'POST', `/trips/${tripId}/plan/choice/close`, undefined, token)).body;
+    expect(view).toMatchObject({ status: 'revising', choice: { answered: 1, total: 4, chosen: { label: 'B', by: 'host', tie: false, votes: { A: 0, B: 1 } } }, plan: { planId: B.planId } });
+    expect((await call(app, 'POST', `/trips/${tripId}/plan/choice/close`, undefined, token)).body.error.code).toBe('VOTE_CLOSED');
+  });
 
   it('고를 안건이 있으면 멈추고, 응답·덮어쓰기·대리 응답 뒤 방장 마감(2:2는 방장)으로 정해 이어서 실행함 (LLM 횟수 그대로)', async () => {
     const { app, db, token, tripId, people } = await reviewTrip({ llm: jangsanLlm() });
@@ -1819,13 +1965,13 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     const done = await waitStatus(app, token, id, 'done');
     expect(done.review.decision.votes.find((v: { placeId: string }) => v.placeId === item.placeId)).toEqual({ placeId: item.placeId, keep: 2, drop: 2, tie: true, kept: false });
     expect(done.review.decision).toMatchObject({ closedBy: 'host', responded: [host.id, jieun.id, hyunwoo.id], defaulted: [seoyeon.id] });
-    expect(done.llmCalls).toBe(waiting.llmCalls + 4); // 5·6단계는 LLM 0회, 이어서 7단계 평가 4명 1회씩
+    expect(done.llmCalls).toBe(waiting.llmCalls + 4 + 1); // 5·6단계는 LLM 0회, 이어서 7단계 평가 4명 1회씩 + 13단계 이름 짓기 1
 
     // 이벤트: review.requested → review.cast ×4(덮어쓰기 포함) → review.closed → board.updated(장산 빠짐), seq는 이어짐
     const { events } = (await call(app, 'GET', `/trips/${tripId}/events?afterSeq=0`, undefined, token)).body;
     expect(events.map((e: { seq: number }) => e.seq)).toEqual(events.map((_: unknown, i: number) => i + 1));
     const tail = events.slice(events.findIndex((e: { type: string }) => e.type === 'review.requested'));
-    expect(tail.map((e: { type: string }) => e.type)).toEqual(['review.requested', 'review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated', 'plan.proposed', 'plan.proposed', 'round.started', ...Array(4).fill(['agent.message', 'vote.cast', 'vote.cast']).flat()]);
+    expect(tail.map((e: { type: string }) => e.type)).toEqual(['review.requested', 'review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated', 'plan.proposed', 'plan.proposed', 'round.started', ...Array(4).fill(['agent.message', 'vote.cast', 'vote.cast']).flat(), 'meeting.agreed']);
     expect(tail[0].data).toMatchObject({ meetingId: id, total: 4, items: waiting.review.items });
     expect(tail[4].data).toMatchObject({ memberId: hyunwoo.id, answered: 3, total: 4 });
     expect(tail[5].data).toMatchObject({ meetingId: id, dropped: [item.placeId] });
@@ -2098,8 +2244,8 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     const responses = people.map((p, i) => ({ memberId: p.id, choices: second.review.items.map((it: { placeId: string }) => ({ placeId: it.placeId, keep: i !== 0 })) }));
     const { status, lines } = await ndjsonOf('/dev/meeting/review', { meetingId: second.meetingId, responses });
     expect(status).toBe(200);
-    expect(lines.filter((l) => l.kind === 'event').map((l) => l.event.type)).toEqual(['review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated', 'plan.proposed', 'plan.proposed', 'round.started', ...Array(4).fill(['agent.message', 'vote.cast', 'vote.cast']).flat()]);
-    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node)).toEqual(['review', 'schedule', 'evaluate', 'tally']); // 둘 다 통과라 집계에서 끝남
+    expect(lines.filter((l) => l.kind === 'event').map((l) => l.event.type)).toEqual(['review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated', 'plan.proposed', 'plan.proposed', 'round.started', ...Array(4).fill(['agent.message', 'vote.cast', 'vote.cast']).flat(), 'meeting.agreed']);
+    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node)).toEqual(['review', 'schedule', 'evaluate', 'tally', 'finalize']); // 둘 다 통과라 집계 뒤 마무리
     const end = lines.find((l) => l.kind === 'result');
     expect(end).toMatchObject({ status: 'done', reviewDecision: { closedBy: 'all', dropped: [] } });
   }, STEP5_TIMEOUT_MS);
@@ -2204,6 +2350,7 @@ describe('접근 키 (ACCESS_KEYS): 키가 있는 서버는 키를 낸 터널 �
     fakeLlm((input) => {
       if (input.areas !== undefined) return areaAnswer(input);
       if (input.rules) return nameAnswer(input);
+      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) return { checks: [] };
       const ids = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|')[0]).slice(0, PICK.count);
@@ -2306,7 +2453,7 @@ describe('접근 키 (ACCESS_KEYS): 키가 있는 서버는 키를 낸 터널 �
 });
 
 describe('매일 정리 · 체크포인트 연결 풀', () => {
-  it('끝난 회의 기록은 기록이 남은 회의만 지움 (이미 지운 회의를 매일 다시 지우지 않음) · 보관 날 수가 지난 길찾기는 지움', async () => {
+  it('끝난 회의 기록은 기록이 남은 회의만 지움 (이미 지운 회의를 매일 다시 지우지 않음, 아직 고르거나 고치는 일정 표의 회의는 남김) · 보관 날 수가 지난 길찾기는 지움', async () => {
     const t = await createTestApp();
     const host = await call(t.app, 'POST', '/trips', { title: '부산', nickname: '민수' });
     const tripId = host.body.trip.id as string;
@@ -2315,11 +2462,13 @@ describe('매일 정리 · 체크포인트 연결 풀', () => {
       { id: 'mtg_old_kept', tripId, runNo: 1, status: 'done', finishedAt: old },
       { id: 'mtg_old_gone', tripId, runNo: 2, status: 'failed', finishedAt: old },
       { id: 'mtg_recent', tripId, runNo: 3, status: 'done', finishedAt: new Date() },
+      { id: 'mtg_old_open', tripId, runNo: 4, status: 'done', finishedAt: old },
     ]);
-    // 체크포인트 표 흉내: 기록이 남은 회의는 mtg_old_kept·mtg_recent뿐 (mtg_old_gone은 이미 지움)
+    await t.db.insert(tripPlans).values({ tripId, meetingId: 'mtg_old_open', status: 'revising', candidates: [], states: { A: { sets: [], banned: [] }, B: { sets: [], banned: [] } } as never });
+    // 체크포인트 표 흉내: 기록이 남은 회의는 mtg_old_kept·mtg_recent·mtg_old_open (mtg_old_gone은 이미 지움)
     await t.db.execute(sql`create schema lg_test`);
     await t.db.execute(sql`create table lg_test.checkpoints (thread_id text not null)`);
-    await t.db.execute(sql`insert into lg_test.checkpoints values ('mtg_old_kept'), ('mtg_recent')`);
+    await t.db.execute(sql`insert into lg_test.checkpoints values ('mtg_old_kept'), ('mtg_recent'), ('mtg_old_open')`);
     const deleted: string[] = [];
     const saver = { deleteThread: async (id: string) => void deleted.push(id) } as unknown as BaseCheckpointSaver;
     expect(await pruneMeetingCheckpoints(t.db, saver, 30, 'lg_test')).toBe(1);

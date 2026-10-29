@@ -567,3 +567,14 @@ export function carryEval(m: MemberInput, prev: MemberEval, plans: PlanProposal[
   });
   return { memberId: m.memberId, agentId: prev.agentId, source: prev.source, llmCalls: 0, recorded: false, carried: true, plans: views, comment: prev.comment, requests, fixes, facts };
 }
+
+/** 13단계 양보 내역 (코드, 7단계 사실표와 같은 잣대): 사람마다 안별로 지키지 못한 꼭 지킬 것(규칙 이름표)과 내 조건에 걸리는 곳(⚠·✕) */
+export function concessionsOf(m: MemberInput, plans: PlanProposal[], pool: RetrieveResult, board: Board, decision: ReviewDecision | null): { plan: PlanLabel; mustMissed: string[]; warned: string[] }[] {
+  const table = evalTable(m, plans, pool, board, decision);
+  return plans.map((p) => {
+    const f = planFacts(m, p, table);
+    const rows = [...table.rows.values()].filter((r) => r.plan === p.label && (r.kind === 'warn' || r.kind === 'block'));
+    return { plan: p.label, mustMissed: f.musts.filter((x) => !x.kept).map((x) => m.mustKeep[x.rule].label), warned: [...new Set(rows.map((r) => r.name))] };
+  });
+}
+
