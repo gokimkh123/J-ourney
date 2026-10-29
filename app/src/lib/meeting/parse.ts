@@ -1,13 +1,17 @@
 import { normalizeServerEvent } from './normalize.ts';
-import { MEETING_EVENT_TYPES, REVIEW_EVENT_TYPES } from './types.ts';
-import type { MeetingEventType, ReviewEventType, ServerEvent } from './types.ts';
+import { MEETING_EVENT_TYPES, PLAN_FLOW_EVENT_TYPES, REVIEW_EVENT_TYPES } from './types.ts';
+import type { MeetingEventType, PlanFlowEventType, ReviewEventType, ServerEvent } from './types.ts';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isMeetingEventType(type: unknown): type is MeetingEventType | ReviewEventType {
-  return (MEETING_EVENT_TYPES as readonly unknown[]).includes(type) || (REVIEW_EVENT_TYPES as readonly unknown[]).includes(type);
+function isMeetingEventType(type: unknown): type is MeetingEventType | ReviewEventType | PlanFlowEventType {
+  return (
+    (MEETING_EVENT_TYPES as readonly unknown[]).includes(type) ||
+    (REVIEW_EVENT_TYPES as readonly unknown[]).includes(type) ||
+    (PLAN_FLOW_EVENT_TYPES as readonly unknown[]).includes(type)
+  );
 }
 
 export function parseEvent(text: string): ServerEvent | null {

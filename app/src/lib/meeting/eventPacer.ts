@@ -15,9 +15,10 @@ export type EventPacer = {
   dispose(): void;
 };
 
-/** ping과 사람 확인(review.*)은 늦추지 않는다. 그 밖에는 목업 재생과 같은 쉬는 시간. */
+/** ping과 사람이 한 일(review.*, 고르기, 확정 투표)은 늦추지 않는다. 그 밖에는 목업 재생과 같은 쉬는 시간. */
 export function paceDelayMs(event: ServerEvent, state?: MeetingState): number {
   if (event.type === 'ping' || event.type.startsWith('review.')) return 0;
+  if (event.type === 'choice.cast' || event.type === 'plan.chosen' || event.type.startsWith('confirm.') || event.type === 'plan.confirmed') return 0;
   return eventDelayMs(event as MeetingEvent, state);
 }
 

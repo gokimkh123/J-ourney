@@ -5,6 +5,7 @@ import type {
   MeetingEvent,
   ReviewEvent,
   MeetingState,
+  PlanFlowEvent,
   RouteDay,
   ServerEvent,
   TimelineItem,
@@ -184,6 +185,19 @@ function reduce(state: MeetingState, event: MeetingEvent): MeetingState {
   }
 }
 
+/** 명세 v2.3 사람 고르기·확정 부결. 고르기 현황은 일정 표(GET /plan)가 원본이라 상태에는 담지 않고 seq만 받는다. */
+function reducePlanFlow(state: MeetingState, event: PlanFlowEvent): MeetingState {
+  switch (event.type) {
+    case 'choice.cast':
+    case 'plan.chosen':
+      return state;
+    // 한 명이라도 반대하면 서버는 다시 고치기로 돌아간다. 확정 투표 전(합의 뒤)으로 되돌린다.
+    case 'confirm.closed':
+      if (state.phase !== 'confirming') return state;
+      return { ...state, phase: 'agreed', confirmVotes: {} };
+  }
+}
+
 function reduceReview(state: MeetingState, event: ReviewEvent): MeetingState {
   switch (event.type) {
     case 'review.requested': {
@@ -213,6 +227,9 @@ export function applyEvent(state: MeetingState, event: ServerEvent): ApplyResult
   const next = { ...state, lastSeq: event.seq };
   if (event.type === 'review.requested' || event.type === 'review.cast' || event.type === 'review.closed') {
     return { state: reduceReview(next, event), gap: false };
+  }
+  if (event.type === 'choice.cast' || event.type === 'plan.chosen' || event.type === 'confirm.closed') {
+    return { state: reducePlanFlow(next, event), gap: false };
   }
   return { state: reduce(next, event), gap: false };
 }

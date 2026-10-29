@@ -21,6 +21,14 @@ export const REVIEW_EVENT_TYPES = ['review.requested', 'review.cast', 'review.cl
 
 export type ReviewEventType = (typeof REVIEW_EVENT_TYPES)[number];
 
+/**
+ * 명세 v2.3: 회의가 끝난 뒤 사람이 A·B를 고르고(choice.cast·plan.chosen) 확정 투표가 부결되면(confirm.closed) 오는 이벤트.
+ * 실서버만 보낸다. 모르는 이벤트로 버리면 seq가 비어 보여 다시 붙기를 되풀이하다 끊기므로 반드시 받아 둔다.
+ */
+export const PLAN_FLOW_EVENT_TYPES = ['choice.cast', 'plan.chosen', 'confirm.closed'] as const;
+
+export type PlanFlowEventType = (typeof PLAN_FLOW_EVENT_TYPES)[number];
+
 export type MeetingKind = 'meeting' | 'renegotiation';
 export type ResearchStage = 'planning' | 'searching' | 'picking' | 'done';
 export type ResearchTool = 'tourSearch' | 'tourRank' | 'crowd' | 'price' | 'distance';
@@ -204,6 +212,21 @@ export type ConfirmCastEvent = EventBase<
 
 export type PlanConfirmedEvent = EventBase<'plan.confirmed', { planId: string }>;
 
+export type ChoiceCastEvent = EventBase<
+  'choice.cast',
+  { memberId: string; planId: string; answered: number; total: number }
+>;
+
+export type PlanChosenEvent = EventBase<
+  'plan.chosen',
+  { planId: string; label: 'A' | 'B'; by: 'all' | 'host'; tie: boolean; votes: { A: number; B: number }; version: number }
+>;
+
+export type ConfirmClosedEvent = EventBase<
+  'confirm.closed',
+  { planId: string; version: number; result: 'rejected'; by: string }
+>;
+
 export type MeetingEvent =
   | MeetingStartedEvent
   | ResearchProgressEvent
@@ -218,6 +241,8 @@ export type MeetingEvent =
   | ConfirmRequestedEvent
   | ConfirmCastEvent
   | PlanConfirmedEvent;
+
+export type PlanFlowEvent = ChoiceCastEvent | PlanChosenEvent | ConfirmClosedEvent;
 
 export type ReviewItemData = { placeId: string; name: string; text: string; consequence: string | null };
 export type ReviewVoteData = { placeId: string; keep: number; drop: number; kept: boolean; tie: boolean };
@@ -250,7 +275,7 @@ export type PingEvent = {
   data?: undefined;
 };
 
-export type ServerEvent = MeetingEvent | ReviewEvent | PingEvent;
+export type ServerEvent = MeetingEvent | ReviewEvent | PlanFlowEvent | PingEvent;
 
 export type MeetingPhase =
   | 'idle'
