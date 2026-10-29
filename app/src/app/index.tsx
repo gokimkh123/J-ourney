@@ -1,6 +1,7 @@
+import * as Clipboard from "expo-clipboard";
 import { useRouter, type Href } from "expo-router";
-import { useCallback, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Alert, ScrollView, Share, StyleSheet, Switch, View } from "react-native";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { AccessibilityInfo, Alert, ScrollView, Share, StyleSheet, Switch, View } from "react-native";
 
 import {
   AppText,
@@ -238,6 +239,28 @@ function TripHome() {
     }
   };
 
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copyTimer.current !== null) clearTimeout(copyTimer.current);
+    },
+    [],
+  );
+
+  // 초대 코드만 복사한다(안내 문구는 공유 버튼이 붙인다). 복사했다는 표시는 버튼 글자를 잠깐 바꿔 보여 준다.
+  const onCopy = async () => {
+    try {
+      await Clipboard.setStringAsync(code);
+    } catch {
+      return;
+    }
+    setCopied(true);
+    AccessibilityInfo.announceForAccessibility("초대 코드를 복사했어요");
+    if (copyTimer.current !== null) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(false), 2000);
+  };
+
   const members = info?.members ?? [];
 
   const onLeave = () => {
@@ -273,7 +296,8 @@ function TripHome() {
             <AppText variant="bodyStrong" selectable accessibilityLabel={`초대 코드 ${code.split("").join(" ")}`}>
               {code}
             </AppText>
-            <Button label="공유" variant="secondary" size="sm" onPress={() => void onShare()} />
+            <Button label={copied ? "복사됨" : "복사"} variant="secondary" size="xs" accessibilityHint="초대 코드를 복사해요" onPress={() => void onCopy()} />
+            <Button label="공유" variant="secondary" size="xs" onPress={() => void onShare()} />
           </View>
         </View>
 
@@ -496,7 +520,7 @@ const createStyles = (t: Theme) =>
       backgroundColor: t.colors.surfaceSunken,
     },
     switchText: { flex: 1, gap: spacing.xxs },
-    codeRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    codeRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.sm },
     track: { flexDirection: "row" },
     trackItem: { flex: 1, alignItems: "center", gap: spacing.xs },
     trackLineRow: { flexDirection: "row", alignItems: "center", alignSelf: "stretch" },
