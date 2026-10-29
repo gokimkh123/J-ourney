@@ -14,9 +14,13 @@ const STATUS = {
   VOTE_CLOSED: 409,
   REVIEW_CLOSED: 409,
   REVISE_LIMIT: 409,
+  /** 14·15단계: 지금 단계에서 할 수 없는 일 (A·B를 고르기 전에 고치기, 확정 투표 중·확정 뒤 고치기, 다른 사람이 먼저 고침) */
+  PLAN_LOCKED: 409,
   PAYLOAD_TOO_LARGE: 413,
   RATE_LIMITED: 429,
   INTERNAL_ERROR: 500,
+  /** AI가 필요한 확인을 지금 할 수 없음 (하루 AI 상한·오류·AI 0번 모드에 녹화 없음·접근 키 없는 바깥 요청) — 잠시 뒤 다시 */
+  AI_UNAVAILABLE: 503,
 } as const;
 
 export type ErrorCode = keyof typeof STATUS;

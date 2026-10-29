@@ -1,3 +1,5 @@
+import { config } from '../config.js';
+
 /** TourAPI 응답의 항목 한 개 (값은 모두 문자열로 옴) */
 export type TourItem = Record<string, string>;
 
@@ -47,7 +49,7 @@ export interface TourClientOptions {
 /** TourAPI 호출기. 오류 문구에는 키와 요청 주소를 넣지 않음 */
 export function createTourClient(opts: TourClientOptions): TourClient {
   const doFetch: TourFetch = opts.fetch ?? ((url, init) => fetch(url, init));
-  const timeoutMs = opts.timeoutMs ?? 20000;
+  const timeoutMs = opts.timeoutMs ?? config.tourTimeoutMs;
   // 키 원문과 주소에 넣은 형태(퍼센트 인코딩) 모두 가림
   const mask = (text: string) => text.split(opts.serviceKey).join('***').split(encodeURIComponent(opts.serviceKey)).join('***');
 

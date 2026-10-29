@@ -4,6 +4,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import pg from 'pg';
 import postgres from 'postgres';
+import { config } from '../config.js';
 import * as schema from './schema.js';
 
 /** 운영(postgres.js)과 시험(PGlite)이 함께 쓰는 DB 타입 */
@@ -14,7 +15,7 @@ export const migrationsFolder = fileURLToPath(new URL('../../drizzle', import.me
 
 /** DATABASE_URL로 접속하고 아직 적용하지 않은 마이그레이션을 실행함 */
 export async function connectDb(url: string): Promise<Db> {
-  const client = postgres(url, { max: 10, onnotice: () => {} });
+  const client = postgres(url, { max: config.dbPoolMax, onnotice: () => {} });
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder });
   return db;

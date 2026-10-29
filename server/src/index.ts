@@ -8,6 +8,7 @@ import { liveSocketServer } from './meeting/live.js';
 import { failInterruptedMeetings, pruneMeetingCheckpoints } from './meeting/runs.js';
 import { createTourClient } from './tour/client.js';
 import { tryConsumeTourCall } from './tour/usage.js';
+import { DAY_MS } from './lib/time.js';
 import { kakaoQuota, kakaoRouter, pruneRouteCache } from './meeting/route.js';
 
 if (!config.databaseUrl) console.warn('DATABASE_URL이 없어 DB 없이 실행함 (/health만 동작)');
@@ -64,7 +65,6 @@ console.log(`카카오 길찾기: ${routeClient ? '켬' : '없음 (저장된 길
 // 회의 단계 저장: LangGraph 체크포인트를 별도 스키마(langgraph)에 둠 (우리 표와 섞이지 않게)
 // 하루 한 번 정리: 끝난 지 오래된 회의 기록 · 보관 날 수가 지난 길찾기 (서버 시작을 늦추지 않게 기다리지 않음)
 const CHECKPOINT_SCHEMA = 'langgraph';
-const DAY_MS = 86400000;
 let checkpointer: PostgresSaver | undefined;
 if (db && config.databaseUrl) {
   checkpointer = new PostgresSaver(checkpointPool(config.databaseUrl, config.checkpointPoolMax), undefined, { schema: CHECKPOINT_SCHEMA });

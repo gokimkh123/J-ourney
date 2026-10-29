@@ -2,16 +2,21 @@ import { and, asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { MAX_MEMBERS, members, personas, trips } from '../db/schema.js';
+import { MAX_MEMBERS, members, personas, tripPlans, trips } from '../db/schema.js';
 import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken, newId, newInviteCode, newToken } from '../lib/ids.js';
 import { failureLimit } from '../lib/rate-limit.js';
 import { parseBody } from '../lib/validate.js';
 import { activeMeetingOf } from '../meeting/runs.js';
-import { DestinationError, resolveDestination } from '../meeting/regions.js';
+import type { LlmClient } from '../llm/client.js';
+import type { LlmRecorder } from '../llm/record.js';
+import { tryConsumeLlmCall } from '../llm/usage.js';
+import { type AccessKey, accessOf } from '../lib/access.js';
+import { DestinationError, DestinationUnavailable, resolveDestination } from '../meeting/destination.js';
+import { MEETING_RULES } from '../meeting/rounds.js';
 import { DEMO_SEEDS, seedPersona } from '../persona/seeds.js';
-import { todayKst } from '../lib/time.js';
+import { DAY_MS, todayKst } from '../lib/time.js';
 import { memberView, tripView } from './views.js';
 
 /** 입력 길이 상한 (명세서 4.2) */
@@ -19,6 +24,8 @@ const TITLE_MAX = 40;
 const NICKNAME_MAX = 20;
 /** IP 하나가 1분에 틀릴 수 있는 초대 코드 수 (넘으면 그 1분 동안 초대 조회·참여를 막음, 6자리 코드 맞추기 방지) */
 const INVITE_MISSES_PER_MINUTE = 20;
+/** 새 초대 코드가 이미 쓰였으면 다시 만드는 횟수 */
+const INVITE_CODE_TRIES = 5;
 
 const nickname = z.string().trim().min(1, '닉네임을 입력해야 함').max(NICKNAME_MAX, `닉네임은 ${NICKNAME_MAX}자 이하여야 함`);
 const createTripBody = z.object({
@@ -34,6 +41,7 @@ const TRANSPORT_MAX = 40;
 const BUDGET_MAX = 10_000_000;
 /** 한 번의 회의로 짜는 여행 일수 상한 */
 export const MAX_TRIP_DAYS = 3;
+const R = MEETING_RULES;
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '날짜는 YYYY-MM-DD 형식이어야 함');
 const realDay = (d: string) => new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
 const conditionsBody = z
@@ -45,15 +53,30 @@ const conditionsBody = z
     transport: z.string().trim().max(TRANSPORT_MAX, `이동 수단은 ${TRANSPORT_MAX}자 이하여야 함`).nullable().default(null),
     moveMode: z.enum(['transit', 'car'], { message: '현지 이동 수단은 transit(대중교통) 또는 car(자차)여야 함' }).default('transit'),
     rules: z
-      .object({ aiMinSatisfaction: z.number().min(1).max(10).default(7), maxRounds: z.number().int().min(1).max(5).default(5) })
-      .default({ aiMinSatisfaction: 7, maxRounds: 5 }),
+      .object({
+        aiMinSatisfaction: z.number().min(R.aiMinSatisfaction.min).max(R.aiMinSatisfaction.max).default(R.aiMinSatisfaction.default),
+        maxRounds: z.number().int().min(R.maxRounds.min).max(R.maxRounds.max).default(R.maxRounds.default),
+      })
+      .default({ aiMinSatisfaction: R.aiMinSatisfaction.default, maxRounds: R.maxRounds.default }),
   })
   .refine((b) => realDay(b.startDate) && realDay(b.endDate), { message: '없는 날짜임' })
   .refine((b) => b.endDate >= b.startDate, { message: '끝나는 날은 시작하는 날과 같거나 뒤여야 함' })
-  .refine((b) => (Date.parse(b.endDate) - Date.parse(b.startDate)) / 86400000 + 1 <= MAX_TRIP_DAYS, { message: `여행은 ${MAX_TRIP_DAYS}일 이하여야 함` });
+  .refine((b) => (Date.parse(b.endDate) - Date.parse(b.startDate)) / DAY_MS + 1 <= MAX_TRIP_DAYS, { message: `여행은 ${MAX_TRIP_DAYS}일 이하여야 함` });
+
+/**
+ * 여행지 확인에 쓰는 LLM (10/29: 방장이 쓴 여행지 글은 LLM이 공식 지역 목록에서 고름, destination.ts)
+ * 접근 키가 있는 서버에서 키 없는 바깥 요청은 LLM을 부르지 않고 녹화된 같은 글의 답만 씀 (성향 카드와 같은 규칙), 키를 낸 요청은 live
+ */
+export interface TripDeps {
+  llm: LlmClient | null;
+  recorder?: LlmRecorder | null;
+  live?: { llm: LlmClient; recorder: LlmRecorder } | null;
+  llmDailyLimit: number;
+  accessKeys?: readonly AccessKey[];
+}
 
 /** 1번 묶음: 여행 생성·초대·참여·상세 (명세서 4.2) */
-export function tripRoutes(db: Db) {
+export function tripRoutes(db: Db, deps: TripDeps) {
   const r = new Hono<AuthEnv>();
   const auth = requireMember(db);
   const inviteMisses = failureLimit(INVITE_MISSES_PER_MINUTE);
@@ -70,7 +93,7 @@ export function tripRoutes(db: Db) {
     ).map((row) => memberView(row.member, row.title));
 
   async function unusedInviteCode() {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < INVITE_CODE_TRIES; i++) {
       const code = newInviteCode();
       const [taken] = await db.select({ id: trips.id }).from(trips).where(eq(trips.inviteCode, code)).limit(1);
       if (!taken) return code;
@@ -135,6 +158,9 @@ export function tripRoutes(db: Db) {
       if (!trip) return { trip: null, member: null };
       // 회의를 시작한 뒤 들어온 사람은 회의·사람 확인(인원수)에 들어가지 않으므로 받지 않음 (시험 경로 회의는 여행 상태를 바꾸지 않아 진행 중인 회의도 봄)
       if (trip.status !== 'preparing' || (await activeMeetingOf(tx, trip.id))) throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작된 여행에는 참여할 수 없음');
+      // 회의가 끝나 일정 표(14·15단계)가 열린 여행도 받지 않음: 고르기·확정 투표의 인원수가 바뀜 (시험 경로 여행은 상태가 preparing으로 남음)
+      if ((await tx.select({ id: tripPlans.tripId }).from(tripPlans).where(eq(tripPlans.tripId, trip.id))).length)
+        throw new ApiError('MEETING_IN_PROGRESS', '회의가 끝나 일정 표가 열린 여행에는 참여할 수 없음');
       const joined = await tx.select({ id: members.id }).from(members).where(eq(members.tripId, trip.id));
       if (joined.length >= MAX_MEMBERS) {
         throw new ApiError('TRIP_FULL', `참가 인원이 가득 참 (방장 포함 최대 ${MAX_MEMBERS}명)`);
@@ -160,7 +186,7 @@ export function tripRoutes(db: Db) {
     return c.json({ trip: tripView(trip), members: await listMembers(trip.id), conditions: trip.conditions ?? null });
   });
 
-  // 회의 조건 저장 (방장, 회의 시작 전): 목적지 글자를 법정동 코드로 바꿔 함께 저장함
+  // 회의 조건 저장 (방장, 회의 시작 전): 방장이 쓴 여행지를 LLM이 공식 지역 목록에서 골라 법정동 코드로 함께 저장함 (코드는 글자를 비교하지 않음)
   r.put('/trips/:tripId/conditions', auth, async (c) => {
     const me = c.get('member');
     const [trip] = await db.select().from(trips).where(eq(trips.id, c.req.param('tripId'))).limit(1);
@@ -170,11 +196,17 @@ export function tripRoutes(db: Db) {
     if (trip.status !== 'preparing') throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작되어 조건을 바꿀 수 없음');
     const body = await parseBody(c, conditionsBody);
     if (body.startDate < todayKst()) throw new ApiError('VALIDATION_ERROR', '시작하는 날은 오늘이거나 그 뒤여야 함');
+    const keys = deps.accessKeys ?? [];
+    const access = keys.length ? accessOf(c, keys) : null;
+    const keyed = access?.kind === 'key';
+    const llm = keyed ? (deps.live?.llm ?? deps.llm) : access?.kind === 'none' ? null : deps.llm;
+    const recorder = keyed ? (deps.live?.recorder ?? deps.recorder) : deps.recorder;
     let destination;
     try {
-      destination = await resolveDestination(db, body.destination);
+      destination = await resolveDestination(db, body.destination, { llm, recorder, reserve: () => tryConsumeLlmCall(db, deps.llmDailyLimit) });
     } catch (err) {
       if (err instanceof DestinationError) throw new ApiError('VALIDATION_ERROR', err.message);
+      if (err instanceof DestinationUnavailable) throw new ApiError('AI_UNAVAILABLE', err.message);
       throw err;
     }
     // 목적지를 찾는 사이 회의가 시작됐으면 저장하지 않음 (회의 시작이 여행 행을 잠그고 상태를 바꾸므로 조건부로 저장)
