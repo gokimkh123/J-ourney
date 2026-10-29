@@ -14,6 +14,8 @@ const STATUS = {
   VOTE_CLOSED: 409,
   REVIEW_CLOSED: 409,
   REVISE_LIMIT: 409,
+  /** 14·15단계: 지금 단계에서 할 수 없는 일 (A·B를 고르기 전에 고치기, 확정 투표 중·확정 뒤 고치기, 다른 사람이 먼저 고침) */
+  PLAN_LOCKED: 409,
   PAYLOAD_TOO_LARGE: 413,
   RATE_LIMITED: 429,
   INTERNAL_ERROR: 500,

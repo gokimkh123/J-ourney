@@ -1,7 +1,7 @@
 import { Annotation, type BaseCheckpointSaver, END, START, Send, StateGraph, getWriter, interrupt } from '@langchain/langgraph';
 import { asc, eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { MIN_MEMBERS, members, personas, regions, trips } from '../db/schema.js';
+import { MIN_MEMBERS, meetings, members, personas, regions, trips } from '../db/schema.js';
 import { ApiError } from '../lib/errors.js';
 import type { LlmClient } from '../llm/client.js';
 import type { LlmRecorder } from '../llm/record.js';
@@ -17,7 +17,8 @@ import { applyReview, reviewRequestOf } from './review.js';
 import { ROUTE, type RouteClient, type RouteMeter, cachedRouter, newRouteMeter } from './route.js';
 import { type PlanProposal, type PlanStates, SCHEDULE, type ScheduleInput, revisePlans, schedulePlans } from './schedule.js';
 import { type MeetingEventDraft, type MeetingLimits, agentIdOf, reserveMeetingLlm } from './runs.js';
-import { EVAL, type EvalRound, type MemberEval, type PlanLabel, type RoundDiff, acceptEval, carryEval, evalRequest, ruleEval } from './evaluate.js';
+import { EVAL, type EvalRound, type MemberEval, type PlanLabel, type RoundDiff, acceptEval, carryEval, concessionsOf, evalRequest, ruleEval } from './evaluate.js';
+import { FINALIZE, type FinalPlan, namePlans } from './finalize.js';
 import { type AppliedEdit, type Deliberation, MEETING_RULES, ROUNDS, type RoundRecord, decide, editKey, hurtBy, planDiff, requestsFor, revertPolish, roundMember, speakersOf, tallyOf } from './rounds.js';
 import type { Board, ResolvedDestination, ReviewDecision, ReviewRequest, TripConditions } from './types.js';
 
@@ -72,6 +73,8 @@ export const MeetingState = Annotation.Root({
   diff: Annotation<RoundDiff | null>({ reducer: (_a, b) => b, default: () => null }),
   /** 라운드 고리 상태: 다음 일·끝난 까닭·반영한 요청·나아짐·다듬기 전 상태 */
   deliberation: Annotation<Deliberation | null>({ reducer: (_a, b) => b, default: () => null }),
+  /** 13단계 결과: 두 안의 이름·설명·만족도·양보 (14단계 사람 선택으로 넘김) */
+  final: Annotation<FinalPlan[] | null>({ reducer: (_a, b) => b, default: () => null }),
 });
 export type MeetingStateType = typeof MeetingState.State;
 
@@ -457,6 +460,61 @@ async function revise(deps: MeetingDeps, state: MeetingStateType): Promise<Parti
   };
 }
 
+/**
+ * 13단계 마무리: 두 안에 이름·한 줄 설명(AI 1회, 못 쓰면 'A안'·'B안')을 붙이고, 마지막 라운드의 만족도와 사람마다의 양보 내역(코드)을 모아 meeting.agreed로 알림
+ * 이 뒤 사람이 A·B 중 고름 (14단계, 회의 실행기가 여행의 일정 표를 엶)
+ */
+async function finalize(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const plans = state.plans!.plans;
+  const ev = state.evaluation!;
+  const meetingId = state.meetingId;
+  const names = await namePlans(plans, {
+    llm: deps.llm ?? null,
+    recorder: deps.recorder,
+    reserve: () => (meetingId && deps.limits ? reserveMeetingLlm(deps.db, meetingId, deps.limits) : Promise.resolve(false)),
+    emit: deps.traceLlm ? emit : undefined,
+  });
+  const t = tallyOf(ev, plans, state.conditions!.rules.aiMinSatisfaction);
+  const gave = new Map(state.members.map((m) => [m.memberId, concessionsOf(m, plans, evalPool(state), state.board!, state.reviewDecision ?? null)]));
+  const final: FinalPlan[] = plans.map((p) => {
+    const tally = t.find((x) => x.plan === p.label)!;
+    return {
+      planId: p.planId,
+      label: p.label,
+      version: p.version,
+      title: names[p.label].title,
+      summary: names[p.label].summary,
+      source: names[p.label].source,
+      satisfaction: {
+        average: tally.average,
+        passed: tally.passed,
+        members: ev.members.map((e) => {
+          const v = e.plans.find((x) => x.plan === p.label)!;
+          return { memberId: e.memberId, agentId: e.agentId, score: v.score, stance: v.stance };
+        }),
+      },
+      concessions: state.members.map((m) => {
+        const c = gave.get(m.memberId)!.find((x) => x.plan === p.label)!;
+        return { memberId: m.memberId, mustMissed: c.mustMissed, warned: c.warned };
+      }),
+    };
+  });
+  const [row] = meetingId ? await deps.db.select({ startedAt: meetings.startedAt }).from(meetings).where(eq(meetings.id, meetingId)) : [];
+  emit({
+    type: 'meeting.agreed',
+    data: {
+      meetingId,
+      outcome: state.deliberation?.outcome ?? null,
+      rounds: state.round,
+      durationSec: row ? Math.round((Date.now() - row.startedAt.getTime()) / 1000) : null,
+      proposalCount: plans.reduce((a, p) => a + p.version, 0),
+      editCount: state.rounds.reduce((a, r) => a + r.applied.filter((x) => x.applied).length, 0),
+      plans: final,
+    },
+  });
+  return { final };
+}
+
 /** 10단계 사회자 (코드, LLM 0회): 다음 라운드에 다시 평가할 AI를 정함 (다음 round.started의 speakers로 알림) */
 function moderate(state: MeetingStateType): Partial<MeetingStateType> {
   const last = state.rounds.at(-1)!;
@@ -477,6 +535,7 @@ export const MEETING_NODES = [
   { id: 'tally', step: 8, label: '집계 (2–5라운드는 12단계)', kind: 'code' },
   { id: 'revise', step: 9, label: '수정', kind: 'code' },
   { id: 'moderate', step: 10, label: '사회자', kind: 'code' },
+  { id: 'finalize', step: 13, label: '마무리 (이름·만족도·양보)', kind: 'llm' },
 ] as const;
 
 /**
@@ -492,13 +551,13 @@ export async function meetingGraphShape() {
   return {
     nodes: Object.keys(graph.nodes).map((id) => ({ id, step: meta.get(id)?.step ?? null, label: meta.get(id)?.label ?? id, kind: meta.get(id)?.kind ?? 'edge' })),
     edges: graph.edges.map((e) => ({ from: e.source, to: e.target, conditional: !!e.conditional })),
-    rules: { react: REACT, schedule: SCHEDULE, route: ROUTE, evaluate: EVAL, rounds: ROUNDS },
+    rules: { react: REACT, schedule: SCHEDULE, route: ROUTE, evaluate: EVAL, rounds: ROUNDS, finalize: FINALIZE },
   };
 }
 
 /**
  * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건 → (고를 안건이 있으면) 사람 확인 → 동선 짜기 A·B
- * → 평가 → 집계 → (통과 못 한 안이 있거나 다듬을 요청이 남으면) 수정 → 사회자 → 평가 … (최대 라운드까지, 끝나면 그때의 A·B를 사람에게)
+ * → 평가 → 집계 → (통과 못 한 안이 있거나 다듬을 요청이 남으면) 수정 → 사회자 → 평가 … (최대 라운드까지) → 마무리(이름·만족도·양보) → 끝 (사람이 A·B 중 고름)
  * upTo 'retrieve'면 2단계에서 멈춤 (LLM 0회 시험용). 사람 확인은 멈췄다 이어서 실행하므로 체크포인트 저장(checkpointer)이 있어야 함
  */
 export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' } = {}) {
@@ -524,6 +583,7 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
     .addNode('tally', tally)
     .addNode('revise', (s) => revise(deps, s))
     .addNode('moderate', moderate)
+    .addNode('finalize', (s) => finalize(deps, s))
     .addConditionalEdges(
       'retrieve',
       (s) =>
@@ -549,8 +609,9 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
     .addEdge('review', 'schedule')
     .addEdge('schedule', 'evaluate')
     .addEdge('evaluate', 'tally')
-    .addConditionalEdges('tally', (s) => (s.deliberation?.next === 'end' ? END : 'revise'), ['revise', END])
-    .addConditionalEdges('revise', (s) => (s.deliberation?.next === 'end' ? END : 'moderate'), ['moderate', END])
+    .addConditionalEdges('tally', (s) => (s.deliberation?.next === 'end' ? 'finalize' : 'revise'), ['revise', 'finalize'])
+    .addConditionalEdges('revise', (s) => (s.deliberation?.next === 'end' ? 'finalize' : 'moderate'), ['moderate', 'finalize'])
     .addEdge('moderate', 'evaluate')
+    .addEdge('finalize', END)
     .compile({ checkpointer: deps.checkpointer });
 }

@@ -7,6 +7,7 @@ import type { Member } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { stableJson } from '../lib/stable.js';
 import { nowKst } from '../lib/time.js';
+import { openPlans } from './choose.js';
 import { MEETING_STEP_LIMIT, type MeetingStateType, type SavedResults, type buildMeetingGraph, loadMeetingInput } from './graph.js';
 import type { SavedNameMatch } from './names.js';
 import type { PickResult } from './pick.js';
@@ -97,6 +98,8 @@ export function meetingService({ db, graph, limits, publisher, replay = false, l
         observer?.event?.(requested);
         return { status: 'reviewing', state };
       }
+      // 13단계까지 끝나면 여행의 일정 표를 엶 (14단계 사람 고르기). 열지 못하면 회의를 실패로 둠 (아래 catch)
+      await openPlans(db, meeting.tripId, meeting.id, state);
       await finishMeeting(db, meeting.id, 'done');
       return { status: 'done', state };
     } catch (err) {
