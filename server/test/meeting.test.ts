@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { serve } from '@hono/node-server';
@@ -846,7 +847,13 @@ describe('회의 조건 API와 시험 경로', () => {
 
     // 그래프 칸: 실제 그래프 구조 (실행·외부 호출 없음), 터널 요청은 막음
     const graph = await call(app, 'GET', '/dev/meeting/graph');
-    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', 'react', 'review', 'schedule', 'evaluate', '__end__']);
+    expect(graph.body.nodes.map((n: { id: string }) => n.id)).toEqual(['__start__', 'prepare', 'retrieve', 'pick', 'gather', 'react', 'review', 'schedule', 'evaluate', 'tally', 'revise', 'moderate', '__end__']);
+    // 8–10단계 고리: 평가 → 집계 → (끝 또는 수정) → 사회자 → 평가
+    expect(graph.body.edges).toContainEqual({ from: 'evaluate', to: 'tally', conditional: false });
+    expect(graph.body.edges).toContainEqual({ from: 'tally', to: 'revise', conditional: true });
+    expect(graph.body.edges).toContainEqual({ from: 'tally', to: '__end__', conditional: true });
+    expect(graph.body.edges).toContainEqual({ from: 'revise', to: 'moderate', conditional: true });
+    expect(graph.body.edges).toContainEqual({ from: 'moderate', to: 'evaluate', conditional: false });
     expect(graph.body.edges).toContainEqual({ from: 'react', to: 'review', conditional: true }); // 고를 안건이 있을 때만 사람 확인
     expect(graph.body.edges).toContainEqual({ from: 'react', to: 'schedule', conditional: true }); // 없으면 바로 6단계
     expect(graph.body.edges).toContainEqual({ from: 'review', to: 'schedule', conditional: false });
@@ -1085,6 +1092,196 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const rulePick = byTitle['반짝반짝 탐험가'];
     const mine = result.retrieve.candidates.filter((c: { forMembers: string[] }) => c.forMembers.includes(rulePick.memberId));
     expect(rulePick.picks.every((x: { id: string }) => mine.some((c: { id: string }) => c.id === x.id))).toBe(true);
+  });
+
+  /** 8–10단계 시험용 평가 답: 1라운드에 '반짝반짝 탐험가'만 A안에 반대하며 A안의 태그 없는 첫 관광지를 빼 달라고 함, 그 밖은 모두 찬성·요청 없음 */
+  const roundLlm = () => {
+    const base = pickLlm();
+    return fakeLlm(async (input, n, system, schema) => {
+      if (!input.plans) return base.generateJson({ system, input, schema, schemaName: 'test' });
+      const ans = evalAnswer(input);
+      if (input.me.title !== '반짝반짝 탐험가' || input.round !== 1) return ans;
+      const row = (input.plans.A as string).split('\n').find((l) => /^A\d+\|[^|(]+\|/.test(l))!;
+      return { ...ans, a: { why: '여기는 별로예요', stance: '반대' }, requests: [{ plan: 'A', type: 'avoid', place: row.split('|')[0], to: '-', reason: '별로예요' }] };
+    });
+  };
+  const strictRules = (t: Awaited<ReturnType<typeof readyTrip>>, rules: { aiMinSatisfaction: number; maxRounds: number }) =>
+    call(t.app, 'PUT', `/trips/${t.tripId}/conditions`, { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-08', rules }, t.token);
+  const roundCalls = (r: { members: { llmCalls: number }[] }) => r.members.reduce((a, m) => a + m.llmCalls, 0);
+
+  it('8–10단계: 통과 못 한 안은 요청대로 고쳐 다시 짜고(plan.proposed version 2), 사회자가 고른 AI만 2라운드에 말함 (나머지는 지난 평가를 그대로 두고 만족도만 다시 계산)', async () => {
+    const llm = roundLlm();
+    const t = await readyTrip({ llm });
+    expect((await strictRules(t, { aiMinSatisfaction: 10, maxRounds: 5 })).status).toBe(200); // 기준 10점: 모두 찬성이어도 거의 통과 못 함
+    const { lines } = await run(t.app, t.token);
+    const result = lines.find((l) => l.kind === 'result');
+    expect(result.status).toBe('done');
+    expect(result.rounds).toHaveLength(2);
+    const [r1, r2] = result.rounds;
+    expect(r1.tally.some((x: { passed: boolean }) => !x.passed)).toBe(true);
+    const unhappy = result.members.find((m: { title: string }) => m.title === '반짝반짝 탐험가').memberId;
+    const asked = r1.members.find((m: { memberId: string }) => m.memberId === unhappy).requests[0];
+    expect(r1.applied.filter((a: { applied: boolean }) => a.applied)).toEqual([expect.objectContaining({ by: unhappy, plan: 'A', type: 'avoid', note: expect.stringMatching(/^A안 \d일째 .+ 뺌/) })]);
+    expect(r1.next).toBe('revise');
+    expect(r2.speakers).toContain(unhappy);
+    expect(result.outcome).toBe('no_change'); // 2라운드는 모두 찬성·요청 없음 → 반영할 것이 없어 그때의 A·B를 넘김
+
+    const events = lines.filter((l) => l.kind === 'event').map((l) => l.event);
+    const proposed = events.filter((e) => e.type === 'plan.proposed');
+    expect(proposed.map((e) => [e.data.label, e.data.version])).toEqual([
+      ['A', 1],
+      ['B', 1],
+      ['A', 2],
+    ]);
+    expect(proposed[2].data.planId).toBe(proposed[0].data.planId);
+    expect(proposed[2].data.changes).toEqual([r1.applied.find((a: { applied: boolean }) => a.applied).note.replace(/^A안 /, '')]);
+    expect(proposed[2].data.route.flatMap((d: { stops: { placeId: string }[] }) => d.stops.map((x) => x.placeId))).not.toContain(asked.placeId);
+    // 2라운드: round.started(말할 AI) 뒤 말한 AI만 한마디, 투표는 모두 (그대로 둔 AI는 carried)
+    const at = events.findIndex((e) => e.type === 'round.started' && e.data.round === 2);
+    expect(at).toBeGreaterThan(events.indexOf(proposed[2]));
+    const speakers = new Set<string>(events[at].data.speakers);
+    const round2 = events.slice(at + 1);
+    expect(round2.filter((e) => e.type === 'agent.message').map((e) => e.data.agentId).sort()).toEqual([...speakers].sort());
+    const votes = round2.filter((e) => e.type === 'vote.cast');
+    expect(votes).toHaveLength(8);
+    for (const v of votes) expect(v.data).toMatchObject({ round: 2, carried: !speakers.has(v.data.agentId) });
+    expect(events.filter((e) => e.type === 'vote.cast' && e.data.round === 1).every((e) => e.data.carried === false)).toBe(true);
+    // AI 횟수: 2라운드는 말한 사람만 1번씩
+    expect(roundCalls(r2)).toBe(speakers.size);
+    expect(result.llmCalls).toBe(llm.calls);
+    for (const m of r2.members.filter((x: { memberId: string }) => !speakers.has(`agt_${x.memberId.replace(/^mem_/, '')}`))) expect(m).toMatchObject({ carried: true, llmCalls: 0 });
+  });
+
+  it('AI 상한: 2라운드에 회의 AI 상한이 남지 않으면 말할 사람은 규칙 평가로 대신하고 상한(limit)으로 표시함', async () => {
+    const llm = roundLlm();
+    const t = await readyTrip({ llm });
+    await strictRules(t, { aiMinSatisfaction: 10, maxRounds: 5 });
+    const first = (await run(t.app, t.token)).lines.find((l) => l.kind === 'result');
+    const round1 = first.llmCalls - roundCalls(first.rounds[1]);
+    const capped = createApp({ db: t.db, rateLimitPerMinute: 1000, devUi: true, llm, meetingLlmCallsPerRun: round1 });
+    const again = (await run(capped, t.token)).lines.find((l) => l.kind === 'result');
+    expect(again.llmCalls).toBe(round1);
+    const r2 = again.rounds[1];
+    for (const id of r2.speakers) expect(r2.members.find((m: { memberId: string }) => m.memberId === id)).toMatchObject({ source: 'rule', llmCalls: 0, fixes: [{ kind: 'limit', plan: null }] });
+  });
+
+  it('최대 라운드가 1이면 1라운드 집계에서 통과 못 해도 끝냄 (max_rounds, 그때의 A·B를 넘김)', async () => {
+    const llm = roundLlm();
+    const t = await readyTrip({ llm });
+    await strictRules(t, { aiMinSatisfaction: 10, maxRounds: 1 });
+    const { lines } = await run(t.app, t.token);
+    const result = lines.find((l) => l.kind === 'result');
+    expect(result.rounds).toHaveLength(1);
+    expect(result.outcome).toBe('max_rounds');
+    expect(lines.filter((l) => l.kind === 'event').filter((e) => e.event.type === 'plan.proposed')).toHaveLength(2);
+    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node).slice(-2)).toEqual(['evaluate', 'tally']);
+  });
+
+  it('8–12단계 시뮬레이션: 무작위 AI 평가 답(입장·요청·형식 오류·긴 글)과 기준·최대 라운드로 회의 전체를 돌려도 라운드·이벤트·version·AI 횟수·끝난 까닭·꼭 지킬 것이 규칙대로', { timeout: 600_000 }, async () => {
+    const N = Number(process.env.SIM_MEETINGS ?? 6);
+    const problems: string[] = [];
+    const outcomes: Record<string, number> = {};
+    for (let k = 0; k < N; k++) {
+      let seed = 7000 + k;
+      const rnd = () => {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+        return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+      };
+      const pick = <T,>(xs: readonly T[]) => xs[Math.floor(rnd() * xs.length)];
+      const base = pickLlm();
+      const llm = fakeLlm(async (input, n, system, schema) => {
+        if (!input.plans) return base.generateJson({ system, input, schema, schemaName: 'test' });
+        if (rnd() < 0.05) return { ...evalAnswer(input), a: { why: '좋아요', stance: '약간 찬성' } }; // 형식 오류 → 1번 더
+        const labels = Object.keys(input.plans);
+        const codesOf = (l: string) => (input.plans[l] as string).split('\n').map((x) => x.split('|')[0]).filter((c) => /^[AB]\d+$/.test(c));
+        const cands = (input.candidates as string).split('\n').slice(1).map((x) => x.split('|')[0]);
+        const view = () => ({ why: rnd() < 0.1 ? '아주 긴 이유'.repeat(12) : '이유는 이래요', stance: pick(['찬성', '조건부', '반대']) });
+        const requests = Array.from({ length: Math.floor(rnd() * 3) }, () => {
+          const plan = pick(labels);
+          const type = pick(['include', 'avoid', 'replace', 'move']);
+          const own = codesOf(plan);
+          const other = codesOf(labels.find((l) => l !== plan) ?? plan);
+          const place = type === 'include' ? (cands.length ? pick(cands) : '-') : type === 'move' && rnd() < 0.4 ? '-' : rnd() < 0.1 ? pick(other) : pick(own);
+          return { plan, type, place, to: type === 'replace' && cands.length ? pick(cands) : '-', reason: rnd() < 0.1 ? 'plans 칸의 A3' : '바꿔 주세요' };
+        });
+        return { ...Object.fromEntries(labels.map((l) => [l.toLowerCase(), view()])), comment: rnd() < 0.1 ? '말이 너무 길어요'.repeat(10) : '좋아요!', requests };
+      });
+      const t = await readyTrip({ llm });
+      const rules = { aiMinSatisfaction: 5 + Math.floor(rnd() * 6), maxRounds: 1 + Math.floor(rnd() * 5) };
+      await call(t.app, 'PUT', `/trips/${t.tripId}/conditions`, { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-08', rules }, t.token);
+      const { status, lines } = await run(t.app, t.token);
+      const tag = `회의 ${k} (기준 ${rules.aiMinSatisfaction} · 최대 ${rules.maxRounds})`;
+      const result = lines.find((l) => l.kind === 'result');
+      if (status !== 200 || !result || result.status !== 'done') {
+        problems.push(`${tag}: 끝나지 않음 ${JSON.stringify(lines.find((l) => l.kind === 'error') ?? result?.status)}`);
+        continue;
+      }
+      const rounds = result.rounds as { round: number; speakers: string[]; members: { memberId: string; carried?: boolean; source: string; llmCalls: number; plans: { plan: string; stance: string; score: number }[]; facts: { plan: string; musts: { rule: number; kept: boolean }[] }[] }[]; tally: { plan: string; average: number; passed: boolean }[]; next: string | null; outcome: string | null; applied: { plan: string; type: string; applied: boolean; placeId: string | null; toId: string | null }[]; hurt: string[]; reverted: string[]; restored?: string[] }[];
+      outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
+      const last = rounds.at(-1)!;
+      if (rounds.length < 1 || rounds.length > rules.maxRounds) problems.push(`${tag}: 라운드 ${rounds.length}개`);
+      if (result.outcome === 'passed' && !last.tally.every((x) => x.passed)) problems.push(`${tag}: passed인데 통과 못 한 안`);
+      if (['max_rounds', 'stalled', 'no_change'].includes(result.outcome) && last.tally.every((x) => x.passed)) problems.push(`${tag}: ${result.outcome}인데 둘 다 통과`);
+      if (result.outcome === 'max_rounds' && rounds.length !== rules.maxRounds) problems.push(`${tag}: max_rounds인데 라운드 ${rounds.length}`);
+      if (!['passed', 'max_rounds', 'stalled', 'no_change'].includes(result.outcome)) problems.push(`${tag}: 끝난 까닭 ${result.outcome}`);
+      // 이벤트: 라운드마다 round.started(말할 AI) · 말한 AI만 한마디 · 모두 투표 (되돌린 안은 투표를 다시 보냄)
+      const events = lines.filter((l) => l.kind === 'event').map((l) => l.event);
+      const starts = events.filter((e) => e.type === 'round.started');
+      if (starts.length !== rounds.length) problems.push(`${tag}: round.started ${starts.length} ≠ 라운드 ${rounds.length}`);
+      rounds.forEach((rd, i) => {
+        const agt = (id: string) => `agt_${id.replace(/^mem_/, '')}`;
+        if (JSON.stringify(starts[i]?.data.speakers) !== JSON.stringify(rd.speakers.map(agt))) problems.push(`${tag} 라운드 ${rd.round}: speakers가 기록과 다름`);
+        const said = events.filter((e) => e.type === 'agent.message' && e.data.round === rd.round).length;
+        if (said !== rd.members.filter((m) => !m.carried).length) problems.push(`${tag} 라운드 ${rd.round}: 한마디 ${said}개`);
+        const votes = events.filter((e) => e.type === 'vote.cast' && e.data.round === rd.round).length;
+        if (votes !== rd.members.length * (2 + (rd.restored ?? []).length)) problems.push(`${tag} 라운드 ${rd.round}: 투표 ${votes}개`);
+        for (const m of rd.members) if (m.carried && m.llmCalls !== 0) problems.push(`${tag} 라운드 ${rd.round}: 그대로 둔 AI가 LLM ${m.llmCalls}회`);
+        for (const l of ['A', 'B']) {
+          const n = rd.applied.filter((a) => a.plan === l && a.applied).length;
+          if (n > 3) problems.push(`${tag} 라운드 ${rd.round} ${l}: ${n}개 반영`);
+        }
+        // 사회자: 통과 못 한 안에 조건부·반대를 낸 AI는 다음 라운드에 반드시 말함 (다듬기 라운드 제외)
+        const next = rounds[i + 1];
+        if (next && rd.next === 'revise') {
+          const failed = new Set(rd.tally.filter((x) => !x.passed).map((x) => x.plan));
+          for (const m of rd.members) if (m.plans.some((v) => failed.has(v.plan) && v.stance !== '찬성') && !next.speakers.includes(m.memberId)) problems.push(`${tag} 라운드 ${next.round}: 불만인 ${m.memberId}가 빠짐`);
+        }
+      });
+      // 같은 요청은 회의에서 한 번만 반영
+      const keys = rounds.flatMap((rd) => rd.applied.filter((a) => a.applied).map((a) => `${a.plan}|${a.type}|${a.placeId}|${a.toId}`));
+      if (new Set(keys).size !== keys.length) problems.push(`${tag}: 같은 요청을 두 번 반영`);
+      // version: 안마다 1씩 오르고 결과의 안이 마지막 plan.proposed와 같음
+      for (const p of result.plans) {
+        const vs = events.filter((e) => e.type === 'plan.proposed' && e.data.planId === p.planId).map((e) => e.data.version);
+        if (vs.some((v: number, i: number) => v !== i + 1)) problems.push(`${tag} ${p.label}: version ${vs.join(',')}`);
+        if (vs.at(-1) !== p.version) problems.push(`${tag} ${p.label}: 결과 version ${p.version} ≠ 마지막 이벤트 ${vs.at(-1)}`);
+        const sightIds = p.route.flatMap((d: { stops: { kind: string; placeId: string }[] }) => d.stops.filter((x) => x.kind === 'sight').map((x) => x.placeId));
+        if (new Set(sightIds).size !== sightIds.length) problems.push(`${tag} ${p.label}: 같은 관광지가 두 번`);
+      }
+      // AI 횟수: 회의 상한 안, 모두 셈
+      if (result.llmCalls !== llm.calls) problems.push(`${tag}: LLM 기록 ${result.llmCalls} ≠ 부른 수 ${llm.calls}`);
+      if (result.llmCalls > 40) problems.push(`${tag}: LLM ${result.llmCalls}회 (상한 40)`);
+      // 꼭 지킬 것: 1라운드에 지킨 규칙은 마지막 라운드에도 지킴
+      for (const m of rounds[0].members)
+        for (const f of m.facts)
+          for (const x of f.musts.filter((y) => y.kept)) {
+            const now = last.members.find((y) => y.memberId === m.memberId)?.facts.find((y) => y.plan === f.plan)?.musts.find((y) => y.rule === x.rule);
+            if (now && !now.kept) problems.push(`${tag} ${f.plan}: ${m.memberId}의 꼭 지킬 것 ${x.rule}을 잃음`);
+          }
+      // 다듬기를 되돌렸으면 그 안의 평균은 다듬기 전과 같음
+      if (last.reverted.length && rounds.length > 1)
+        for (const l of last.reverted) {
+          const before = rounds.at(-2)!.tally.find((x) => x.plan === l)!.average;
+          const after = last.tally.find((x) => x.plan === l)!.average;
+          if (Math.abs(before - after) > 1e-9) problems.push(`${tag} ${l}: 되돌렸는데 평균 ${before} → ${after}`);
+        }
+    }
+    // 이 PC에서 크게 돌릴 때 끝난 까닭 분포를 파일로 남김 (시험 출력은 console을 감춤)
+    if (process.env.SIM_OUT) writeFileSync(process.env.SIM_OUT, JSON.stringify({ outcomes, problems }, null, 2));
+    expect(problems).toEqual([]);
+    expect(Object.values(outcomes).reduce((a, b) => a + b, 0)).toBe(N);
   });
 
   it('7단계 평가: 보기 밖의 입장은 형식 오류로 1번 더 부르고, 그래도 틀리면 그 사람만 규칙 평가 (만족도는 코드 계산)', async () => {
@@ -1902,7 +2099,7 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     const { status, lines } = await ndjsonOf('/dev/meeting/review', { meetingId: second.meetingId, responses });
     expect(status).toBe(200);
     expect(lines.filter((l) => l.kind === 'event').map((l) => l.event.type)).toEqual(['review.cast', 'review.cast', 'review.cast', 'review.cast', 'review.closed', 'board.updated', 'plan.proposed', 'plan.proposed', 'round.started', ...Array(4).fill(['agent.message', 'vote.cast', 'vote.cast']).flat()]);
-    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node)).toEqual(['review', 'schedule', 'evaluate']);
+    expect(lines.filter((l) => l.kind === 'node').map((l) => l.node)).toEqual(['review', 'schedule', 'evaluate', 'tally']); // 둘 다 통과라 집계에서 끝남
     const end = lines.find((l) => l.kind === 'result');
     expect(end).toMatchObject({ status: 'done', reviewDecision: { closedBy: 'all', dropped: [] } });
   }, STEP5_TIMEOUT_MS);
@@ -1982,6 +2179,18 @@ describe('LLM 녹화·재생 (지문)', () => {
     expect(await only.replay({ ...req, schema: z.object({ answer: z.number() }) })).toBeNull();
     await only.record(req, { answer: '나' }); // 같은 지문은 덮어쓰지 않음
     expect(await only.replay(req)).toEqual({ answer: '가' });
+  });
+
+  it('답 형식이 바뀌어 지금 형식에 맞지 않는 녹화는 같은 지문의 새 답으로 바꿈 (다시 녹화해도 계속 못 쓰는 일이 없게, 10/29)', async () => {
+    const { db } = await createTestApp();
+    const req = { system: '지시', input: { a: 1 }, schema: z.object({ answer: z.string() }), schemaName: 'test_purpose' };
+    await llmRecorder(db, 'm1', 'fill').record(req, { answer: '가' });
+    const narrower = { ...req, schema: z.object({ answer: z.enum(['나']) }) };
+    const fill = llmRecorder(db, 'm1', 'fill');
+    expect(await fill.replay(narrower)).toBeNull();
+    await fill.record(narrower, { answer: '나' });
+    expect(await fill.replay(narrower)).toEqual({ answer: '나' });
+    expect(await db.select().from(llmRecords)).toHaveLength(1);
   });
 });
 

@@ -147,8 +147,14 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
       plans: s.plans?.plans ?? null,
       /** 6단계에서 카카오를 실제로 부른 수(기능별)·저장된 구간을 쓴 수·못 쓴 수 */
       kakao: s.plans?.kakao ?? null,
-      /** 7단계 평가 1라운드 (사람마다 입장·이유·한마디·요청·만족도·코드가 고친 것, 사람 확인을 기다리면 null) */
+      /** 가장 최근 라운드의 평가 (사람마다 입장·이유·한마디·요청·만족도·코드가 고친 것, 사람 확인을 기다리면 null) */
       evaluation: s.evaluation ?? null,
+      /** 8–12단계 라운드마다: 말한 AI·그때의 두 안·평가·집계(평균·통과)·반영해 본 수정·다음 일 */
+      rounds: s.rounds ?? [],
+      /** 라운드 고리가 끝난 까닭 (passed·max_rounds·stalled·no_change, 사람 확인을 기다리면 null) */
+      outcome: s.deliberation?.outcome ?? null,
+      /** 회의 규칙 (통과 기준 aiMinSatisfaction·최대 라운드) */
+      rules: s.conditions?.rules ?? null,
       /** LLM_REPLAY로 실행함 (고른 결과마다 savedFrom이 있으면 지난 AI 결과, 없으면 규칙) */
       replay: !!s.saved,
     };

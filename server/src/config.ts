@@ -38,9 +38,10 @@ export const config = {
   meetingLlmTimeoutMs: num('MEETING_LLM_TIMEOUT_MS', 15000),
   /**
    * 회의 실행 1회에서 부를 수 있는 LLM 횟수 (넘으면 규칙으로 대신함, 하루 상한과 별도로 셈)
-   * 1–6단계 최대 13회(고르기 4×2·이름 맞추기 1·반응 4) + 7단계 평가 4–8회(사람마다 1회, 형식이 틀리면 1번 더) → 30 (10/28 7단계와 함께 올림)
+   * 1–6단계 최대 17회(고르기 4×2·이름 맞추기 3·지역 맞추기 2·반응 4) + 평가 1–5라운드(라운드마다 다시 말할 사람만 1회, 형식이 틀리면 1번 더):
+   * 10/17 시험판 301회의 실측 평가 LLM 회의당 평균 약 6회·최대 20회 → 17 + 20 = 37 → 40 (10/29 8–10단계와 함께 올림, 사용자 승인). 넘으면 그 사람은 규칙 평가(시험 화면 '상한')
    */
-  meetingLlmCallsPerRun: num('MEETING_LLM_CALLS_PER_RUN', 30),
+  meetingLlmCallsPerRun: num('MEETING_LLM_CALLS_PER_RUN', 40),
   /** 앱 표(Drizzle)용 DB 연결 수 */
   dbPoolMax: num('DB_POOL_MAX', 10),
   /** 회의 단계 저장(LangGraph 체크포인트)용 DB 연결 수 */

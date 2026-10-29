@@ -56,6 +56,8 @@ const MODE_TEXT: Record<LegMode, string> = { walk: '도보', bus: '버스', subw
 const MEAL_TEXT = { lunch: '점심', dinner: '저녁' } as const;
 /** 빼거나 바꿀 수 없는 곳·이동에 코드가 붙이는 표시 (설명문 4번이 같은 말로 가리킴) */
 const FIXED_TEXT = '바꿀 수 없음';
+/** 2라운드부터: 지난 라운드의 수정으로 이 안에 새로 들어온 곳에 코드가 붙이는 표시 (10/29 검증29: 바뀐 안을 두고 지난 이유를 그대로 쓰는 일이 있어 바뀐 곳을 표에서 보이게 함) */
+const FRESH_TEXT = '새로 들어옴';
 
 const SYSTEM = `너는 단체 여행 회의에서 한 사람(me)을 대신하는 AI 캐릭터다. 코드가 짠 일정안을 me의 입장에서 평가한다.
 
@@ -122,8 +124,14 @@ export interface MemberEval {
   /** 코드가 고친 것 (시험 화면 '코드가 고침'): 종류와 안 */
   fixes: { kind: FixKind; plan: PlanLabel | null }[];
   facts: PlanFacts[];
+  /** 10단계 사회자가 다시 부르지 않아 지난 라운드의 입장·이유·한마디를 그대로 둠 (만족도는 바뀐 일정으로 다시 계산, LLM 0회) */
+  carried?: boolean;
 }
-export type FixKind = 'failed' | 'code' | 'protected' | 'stance' | 'rule_request' | 'why' | 'comment' | 'reason';
+/**
+ * limit: 회의 1번 AI 상한·하루 상한에 닿아 부르지 못하고 규칙 평가로 대신함 · no_llm: AI 0번 모드(LLM_REPLAY)에서 녹화된 같은 요청이 없어 규칙 평가
+ * move_auto: '바꿀 수 없음' 곳을 가리킨 긴 이동 줄이기를 그 안에서 줄일 수 있는 가장 긴 이동으로 바꿈
+ */
+export type FixKind = 'failed' | 'limit' | 'no_llm' | 'code' | 'protected' | 'move_auto' | 'stance' | 'rule_request' | 'why' | 'comment' | 'reason';
 export interface EvalRequest {
   plan: PlanLabel;
   type: RequestType;
@@ -164,6 +172,9 @@ const markText = (mark: { kind: ReactionKind; reason: string } | null) => (!mark
 
 const legText = (leg: MoveLeg | null) => (!leg ? '-' : leg.minutes === null || !leg.mode ? '정보 없음' : `${MODE_TEXT[leg.mode]} ${leg.minutes}분`);
 
+/** 2라운드부터: 지난 라운드의 9단계 수정으로 안마다 새로 들어온 곳·빠진 곳 (plc_ id, 코드가 앞뒤 안을 비교해 만듦) */
+export type RoundDiff = Partial<Record<PlanLabel, { added: string[]; removed: string[] }>>;
+
 /** 표 한 장: 일정안 A·B와 넣을 후보 C, 번호 → 줄 */
 export interface EvalTable {
   rows: Map<string, Row>;
@@ -175,7 +186,7 @@ export interface EvalTable {
  * 표를 만듦 (사람마다): 일정안 줄은 번호|장소|분류|오는 길|내 조건, 후보 줄은 번호|장소|분류|내 조건
  * 후보: 두 안에 없고 사람이 빼지 않았고 ✕가 없는 2단계 후보를 보드 점수·인기 순으로, 같은 소분류는 candidatesPerKind곳까지 + 이 사람의 빠진 꼭 지킬 것을 채울 곳
  */
-export function evalTable(m: MemberInput, plans: PlanProposal[], pool: RetrieveResult, board: Board, decision: ReviewDecision | null): EvalTable {
+export function evalTable(m: MemberInput, plans: PlanProposal[], pool: RetrieveResult, board: Board, decision: ReviewDecision | null, diff: RoundDiff | null = null): EvalTable {
   const byId = new Map([...pool.candidates, ...pool.lodgings].map((c) => [placeIdOf(c.id), c]));
   const kept = new Set(decision?.kept ?? []);
   const rows = new Map<string, Row>();
@@ -205,7 +216,8 @@ export function evalTable(m: MemberInput, plans: PlanProposal[], pool: RetrieveR
         const fixed = fixedStop(s);
         rows.set(code, { code, plan: plan.label, placeId: s.placeId, name: s.name, fixed, kind: mark?.kind ?? null, musts: mustRules(c, m) });
         // 못 바꾸는 곳도 표에 적음 (10/28 실제 시험: 표시가 없어 AI가 사람이 남긴 곳·꼭 지킬 곳을 바꾸자고 해 코드가 버림)
-        const tags = [s.kind === 'lodging' ? '숙소' : s.meal ? MEAL_TEXT[s.meal] : s.night ? '야경' : null, fixed ? FIXED_TEXT : null].filter(Boolean);
+        const fresh = !!diff?.[plan.label]?.added.includes(s.placeId);
+        const tags = [s.kind === 'lodging' ? '숙소' : s.meal ? MEAL_TEXT[s.meal] : s.night ? '야경' : null, fixed ? FIXED_TEXT : null, fresh ? FRESH_TEXT : null].filter(Boolean);
         return [code, `${s.name}${tags.length ? ` (${tags.join('·')})` : ''}`, s.category, legText(s.moveFromPrev), markText(mark)].map(cell).join('|');
       });
       return [...day, ...stops].join('\n');
@@ -306,7 +318,7 @@ const hasProblem = (f: PlanFacts) => f.musts.some((x) => !x.kept) || (!!f.limit?
  * 6단계 안 메모(plan.notes)는 넣지 않음: '○○ 뺌 — 이동 97분'처럼 이미 뺀 곳의 이동을 적은 글이라
  * 10/28 실제 시험에서 AI 4명 중 3명이 그 안에 있는 이동으로 읽음. 판단에 쓰는 사실은 이 칸과 표에 모두 있음
  */
-function factsText(m: MemberInput, f: PlanFacts, plan: PlanProposal, table: EvalTable) {
+function factsText(m: MemberInput, f: PlanFacts, plan: PlanProposal, table: EvalTable, diff: RoundDiff | null = null) {
   const nameOf = (placeId: string) => [...table.rows.values()].find((r) => r.plan === plan.label && r.placeId === placeId)?.name ?? '';
   const l = f.longest;
   const move = !l
@@ -318,16 +330,28 @@ function factsText(m: MemberInput, f: PlanFacts, plan: PlanProposal, table: Eval
     기준: [move],
     꼭지킬것: f.musts.map((x) => `${m.mustKeep[x.rule].label}: ${x.kept ? '지킴' : '못 지킴'}`),
     이동많은날: f.heavyDays.length ? f.heavyDays.map((d) => `${d}일째`).join('·') : '없음',
+    // 2라운드부터만 (1라운드 입력은 7단계 그대로): 이 안이 지난 라운드 뒤 바뀌었는지, 바뀌었으면 새로 들어온 곳·빠진 곳 수
+    ...(diff ? { 지난라운드뒤: changedText(diff[plan.label]) } : {}),
   };
 }
+const changedText = (d: { added: string[]; removed: string[] } | undefined) => (!d || (!d.added.length && !d.removed.length) ? '그대로' : `바뀜 (새로 들어옴 ${d.added.length}곳 · 빠짐 ${d.removed.length}곳)`);
 
 /** 이 사람의 평가 요청: 표·사실과 답 형식표 (place·to는 이 표에 실제로 있는 번호만 보기로 줌) */
-export function evalRequest(m: MemberInput, plans: PlanProposal[], pool: RetrieveResult, board: Board, decision: ReviewDecision | null, extra: { round: number; others?: string[]; changes?: string[] } = { round: 1 }) {
-  const table = evalTable(m, plans, pool, board, decision);
+export function evalRequest(
+  m: MemberInput,
+  plans: PlanProposal[],
+  pool: RetrieveResult,
+  board: Board,
+  decision: ReviewDecision | null,
+  extra: { round: number; others?: string[]; changes?: string[]; diff?: RoundDiff | null } = { round: 1 },
+) {
+  const diff = extra.diff ?? null;
+  const table = evalTable(m, plans, pool, board, decision, diff);
   const facts = plans.map((p) => planFacts(m, p, table));
   const labels = plans.map((p) => p.label) as [PlanLabel, ...PlanLabel[]];
   const codes = [...table.rows.keys()];
   const candidateCodes = codes.filter((c) => table.rows.get(c)!.plan === null);
+
   const view = z.object({ why: z.string().describe(`${EVAL.whyMax}자 이내, 표의 사실로`), stance: z.enum(STANCES) });
   const schema = z.object({
     ...Object.fromEntries(labels.map((l) => [l.toLowerCase(), view])),
@@ -337,7 +361,11 @@ export function evalRequest(m: MemberInput, plans: PlanProposal[], pool: Retriev
         z.object({
           plan: z.enum(labels),
           type: z.enum(REQUEST_TYPES),
-          place: z.enum([NONE, ...codes] as [string, ...string[]]).describe(`include는 후보 번호(C…), avoid·replace·move는 그 안의 번호, 없으면 ${NONE}`),
+          // 보기에는 모든 번호를 둠: '바꿀 수 없음' 번호를 보기에서 빼 보니 AI가 그 번호를 고집해 형식 오류 → 예비 모델로 넘어감 (10/29 다시 녹화 33번 중 3번).
+          // 그래서 설명으로 알리고, 그런 요청은 코드가 버리거나 긴 이동 줄이기면 줄일 수 있는 가장 긴 이동으로 바꿈 (acceptEval). 이 설명은 녹화 지문에 들어가지 않음
+          place: z
+            .enum([NONE, ...codes] as [string, ...string[]])
+            .describe(`include는 후보 번호(C…), avoid·replace·move는 그 안의 번호, 없으면 ${NONE}. '${FIXED_TEXT}' 곳의 번호는 쓰지 않음 (코드가 버림)`),
           to: z.enum([NONE, ...candidateCodes] as [string, ...string[]]).describe(`replace일 때 넣을 후보 번호, 그 밖은 ${NONE}`),
           reason: z.string().describe(`${EVAL.reasonMax}자 이내`),
         }),
@@ -356,7 +384,7 @@ export function evalRequest(m: MemberInput, plans: PlanProposal[], pool: Retriev
         round: extra.round,
         me: { title: m.title, likes, dislikes, mustKeep, wishes: m.wishes ?? [] },
         plans: Object.fromEntries(plans.map((p) => [p.label, table.text.plans[p.label]])),
-        facts: Object.fromEntries(plans.map((p, i) => [p.label, factsText(m, facts[i], p, table)])),
+        facts: Object.fromEntries(plans.map((p, i) => [p.label, factsText(m, facts[i], p, table, diff)])),
         candidates: table.text.candidates,
         ...(extra.others?.length ? { others: extra.others } : {}),
         ...(extra.changes?.length ? { changes: extra.changes } : {}),
@@ -439,7 +467,7 @@ export function ruleEval(m: MemberInput, plans: PlanProposal[], table: EvalTable
 /**
  * AI 답 확인 (그림의 코드 확인 ②–⑦). 코드는 고른 값과 사실표만 봄
  * ② 번호 종류: include는 후보(C), avoid·replace·move는 그 안의 번호, replace의 to는 후보 → 아니면 그 요청을 버림
- * ③ 못 바꾸는 곳: 꼭 지킬 곳·숙소·사람이 남긴 곳을 빼거나 바꾸자는 요청, 바꿀 수 없는 긴 이동을 줄이자는 요청은 버림
+ * ③ 못 바꾸는 곳: 꼭 지킬 곳·숙소·사람이 남긴 곳을 빼거나 바꾸자는 요청, 바꿀 수 없는 긴 이동을 줄이자는 요청은 버림 (긴 이동 줄이기가 못 바꾸는 곳을 가리키면 그 안에서 줄일 수 있는 가장 긴 이동으로 바꿈)
  * ④ 입장: 꼭 지킬 것 못 지킴·바꿀 수 있는 이동 기준 넘음인데 찬성 → 조건부
  * ⑤ 요청 보충: 조건부·반대인데 그 안의 요청이 없으면 규칙 요청
  * ⑥ 보이는 글: 번호 → 장소 이름, 칸 이름이 나오거나 너무 길면 규칙 문장
@@ -463,16 +491,21 @@ export function acceptEval(m: MemberInput, plans: PlanProposal[], table: EvalTab
       continue;
     }
     const f = facts[plans.findIndex((p) => p.label === r.plan)];
-    const fixedPlace = r.type !== 'include' && !!place?.fixed;
-    const fixedMove = r.type === 'move' && (!f.longest || f.longest.fixed) && !place;
+    // 긴 이동 줄이기가 '바꿀 수 없음' 곳을 가리키면 그 곳 대신 그 안에서 줄일 수 있는 가장 긴 이동으로 (요청 종류·사실표만 봄, 10/29 검증29: 버린 요청 66건의 많은 수)
+    const canMove = !!f.longest && !f.longest.fixed;
+    const moveAuto = r.type === 'move' && !!place?.fixed && canMove;
+    const fixedPlace = r.type !== 'include' && !!place?.fixed && !moveAuto;
+    const fixedMove = r.type === 'move' && !canMove && (!place || place.fixed);
     if (fixedPlace || fixedMove) {
       fixes.push({ kind: 'protected', plan: r.plan });
       continue;
     }
-    const key = `${r.plan}|${r.type}|${place?.placeId ?? ''}|${to?.placeId ?? ''}`;
+    if (moveAuto) fixes.push({ kind: 'move_auto', plan: r.plan });
+    const placeId = moveAuto ? null : (place?.placeId ?? null);
+    const key = `${r.plan}|${r.type}|${placeId ?? ''}|${to?.placeId ?? ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    requests.push({ plan: r.plan, type: r.type, placeId: place?.placeId ?? null, toId: to?.placeId ?? null, reason: r.reason, auto: false });
+    requests.push({ plan: r.plan, type: r.type, placeId, toId: to?.placeId ?? null, reason: r.reason, auto: false });
   }
   // AI가 낸 요청은 최대 수까지만 받고, 규칙 요청은 그 뒤에 요청이 없는 안에만 붙임 (조건부·반대인 안마다 요청이 하나는 남게)
   requests.splice(EVAL.requestsPerMember);
@@ -504,4 +537,33 @@ export function acceptEval(m: MemberInput, plans: PlanProposal[], table: EvalTab
   const comment = shownText(draft.comment, table, EVAL.commentHardMax);
   if (comment === null) fixes.push({ kind: 'comment', plan: null });
   return { memberId: m.memberId, agentId: agentIdOf(m.memberId), source: 'llm', llmCalls: 0, recorded: false, plans: views, comment: comment ?? ruleComment(views), requests, fixes, facts };
+}
+
+/**
+ * 10단계 사회자가 다시 부르지 않은 사람 (LLM 0회): 지난 라운드의 입장·한마디를 그대로 두고, 바뀐 일정의 사실표로 만족도를 다시 계산함
+ * 코드 확인 ④⑤는 같음: 찬성할 수 없게 바뀐 안은 조건부 + 규칙 요청. 요청은 바뀌지 않은 안의 것만 남김 (바뀐 안의 요청은 이미 반영했거나 지난 일정 기준)
+ * 이유: 바뀌지 않은 안은 지난 글 그대로, 바뀐 안은 사실표로 만든 규칙 문장 (지난 일정을 두고 쓴 글이 새 일정에 붙지 않게)
+ */
+export function carryEval(m: MemberInput, prev: MemberEval, plans: PlanProposal[], table: EvalTable, facts: PlanFacts[], changed: ReadonlySet<PlanLabel>): MemberEval {
+  const fixes: MemberEval['fixes'] = [];
+  const requests = prev.requests.filter((r) => !changed.has(r.plan));
+  const views = plans.map((p, i) => {
+    const f = facts[i];
+    const before = prev.plans.find((v) => v.plan === p.label);
+    let stance: Stance = before?.stance ?? '조건부';
+    if (stance === '찬성' && hasProblem(f)) {
+      stance = '조건부';
+      fixes.push({ kind: 'stance', plan: p.label });
+    }
+    if (stance !== '찬성' && !requests.some((r) => r.plan === p.label)) {
+      const add = ruleRequests(m, f, table);
+      if (add.length) {
+        requests.push(...add);
+        fixes.push({ kind: 'rule_request', plan: p.label });
+      }
+    }
+    const why = before && !changed.has(p.label) ? before.why : ruleWhy(m, f, table);
+    return { plan: p.label, planId: p.planId, stance, why, score: satisfaction(f, stance) };
+  });
+  return { memberId: m.memberId, agentId: prev.agentId, source: prev.source, llmCalls: 0, recorded: false, carried: true, plans: views, comment: prev.comment, requests, fixes, facts };
 }

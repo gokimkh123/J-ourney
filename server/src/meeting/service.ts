@@ -7,7 +7,7 @@ import type { Member } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { stableJson } from '../lib/stable.js';
 import { nowKst } from '../lib/time.js';
-import { type MeetingStateType, type SavedResults, type buildMeetingGraph, loadMeetingInput } from './graph.js';
+import { MEETING_STEP_LIMIT, type MeetingStateType, type SavedResults, type buildMeetingGraph, loadMeetingInput } from './graph.js';
 import type { SavedNameMatch } from './names.js';
 import type { PickResult } from './pick.js';
 import { tallyReview } from './review.js';
@@ -63,7 +63,7 @@ export function meetingService({ db, graph, limits, publisher, replay = false, l
       // 이전 단계의 상태를 읽을 수 있음 (10/28 점검: 시계를 5초 되돌리면 보드 없는 상태 · 사람 확인 없음으로 읽혀 'done'이 됨)
       let state: MeetingStateType | null = null;
       let pending: ReviewRequest | null = null;
-      const stream = await graph.stream(input as never, { ...configOf(meeting.id), streamMode: ['custom', 'updates', 'values'] });
+      const stream = await graph.stream(input as never, { ...configOf(meeting.id), recursionLimit: MEETING_STEP_LIMIT, streamMode: ['custom', 'updates', 'values'] });
       for await (const [mode, chunk] of stream as AsyncIterable<[string, unknown]>) {
         if (mode === 'custom') {
           const e = chunk as MeetingEventDraft;

@@ -14,8 +14,11 @@ export const ROUTE = {
   cacheDays: 7,
   /** 저장 열쇠의 좌표 자릿수 (소수 넷째 자리 ≈ 11m, 같은 장소가 계산 중 조금 달라져도 같은 열쇠) */
   keyDigits: 4,
-  /** 회의 한 번에 카카오를 실제로 부르는 상한 (저장된 결과는 세지 않음). 넘으면 그 구간은 '정보 없음'. 3일·하루 6곳 A·B가 처음이면 약 200번 */
-  perMeeting: 300,
+  /**
+   * 회의 한 번에 카카오를 실제로 부르는 상한 (저장된 결과는 세지 않음, 9단계 라운드까지 누적). 넘으면 그 구간은 '정보 없음'
+   * 3일·하루 6곳 A·B가 처음이면 약 200번 + 9단계 수정 1건에 새 구간 약 10번(순서 비교 쌍·가는 길·끼니) × 라운드마다 최대 6건 × 4라운드 ≈ 240번 → 450 (10/29)
+   */
+  perMeeting: 450,
   /** 자동차 길찾기에서 출발·도착 지점 주변 도로의 교통 장애(유고)로 경로를 못 찾은 결과 코드. 잠깐의 일이라 '경로 없음'으로 저장하지 않음 (10/23 확인: 106 '도착 지점 주변의 도로에 유고 정보가 있음') */
   carIncidentCodes: [105, 106],
   /** 대중교통 구간에 보여 주는 노선 수 */
@@ -177,8 +180,10 @@ export const newRouteMeter = (): RouteMeter => ({ calls: { transit: 0, walk: 0, 
  * 저장해 다시 쓰는 길찾기: ROUTE.cacheDays 안의 같은 구간은 카카오를 부르지 않음. 회의 한 번에 ROUTE.perMeeting번까지만 실제로 부름
  * inner가 null이면(키 없음) 저장된 결과만 쓰고 없으면 RouteUnavailable
  * 회의 안에서 같은 구간은 한 번만 읽거나 부름 (A·B안이 같은 구간을 동시에 물어도 같은 결과를 기다림, 못 쓴 구간도 다시 부르지 않음)
+ * meter는 회의 전체의 누적 수 (9단계가 라운드마다 새로 만들어도 회의당 상한이 이어지게), failed는 이 회의에서 못 쓴 구간 (저장하지 않는 교통 장애·한도 등,
+ * 라운드마다 다시 짤 때 같은 구간을 다시 부르지 않게 회의 상태에 이어서 둠, 10/29)
  */
-export function cachedRouter(db: Db, inner: RouteClient | null, meter: RouteMeter, now: () => Date = () => new Date()): RouteClient {
+export function cachedRouter(db: Db, inner: RouteClient | null, meter: RouteMeter, now: () => Date = () => new Date(), failed: Set<string> = new Set()): RouteClient {
   const fresh = (fetchedAt: Date) => now().getTime() - fetchedAt.getTime() < ROUTE.cacheDays * DAY_MS;
   const seen = new Map<string, { job: Promise<unknown>; at: Date }>();
   function through<T>(mode: 'transit' | 'walk' | 'car', a: Point, b: Point, ask: (r: RouteClient) => Promise<T | null>): Promise<T | null> {
@@ -206,9 +211,15 @@ export function cachedRouter(db: Db, inner: RouteClient | null, meter: RouteMete
       meter.cached++;
       return row.result as T | null;
     }
+    // 이 회의에서 못 쓴 구간은 카카오를 다시 부르지 않음 (그 사이 다른 회의가 저장해 두었으면 위에서 저장된 것을 씀)
+    if (failed.has(key)) {
+      meter.unavailable++;
+      throw new RouteUnavailable('이 회의에서 이미 못 쓴 구간');
+    }
     const used = meter.calls.transit + meter.calls.walk + meter.calls.car;
     if (!inner || used >= ROUTE.perMeeting) {
       meter.unavailable++;
+      failed.add(key);
       throw new RouteUnavailable(inner ? '회의당 길찾기 상한' : '카카오 키 없음');
     }
     meter.calls[mode]++;
@@ -221,6 +232,7 @@ export function cachedRouter(db: Db, inner: RouteClient | null, meter: RouteMete
       return result;
     } catch (err) {
       meter.unavailable++;
+      failed.add(key);
       throw err instanceof RouteUnavailable ? err : new RouteUnavailable(err instanceof Error ? err.message : String(err));
     }
   }

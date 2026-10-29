@@ -14,6 +14,7 @@ import type { LlmRecorder } from '../llm/record.js';
 import { tryConsumeLlmCall } from '../llm/usage.js';
 import { type AccessKey, accessOf } from '../lib/access.js';
 import { DestinationError, DestinationUnavailable, resolveDestination } from '../meeting/destination.js';
+import { MEETING_RULES } from '../meeting/rounds.js';
 import { DEMO_SEEDS, seedPersona } from '../persona/seeds.js';
 import { DAY_MS, todayKst } from '../lib/time.js';
 import { memberView, tripView } from './views.js';
@@ -40,14 +41,6 @@ const TRANSPORT_MAX = 40;
 const BUDGET_MAX = 10_000_000;
 /** 한 번의 회의로 짜는 여행 일수 상한 */
 export const MAX_TRIP_DAYS = 3;
-/**
- * 회의 규칙 기본값·범위 (명세서 B1·4.4 rules). 통과 기준은 구성원 AI 예상 만족도 평균 (10/26 사용자 결정)
- * aiMinSatisfaction 7: NPS 0–6 비추천 경계를 근거로 씀 (Reichheld 2003, HBR 81(12)) · maxRounds: 포스터·명세서의 최대 5라운드
- */
-export const MEETING_RULES = {
-  aiMinSatisfaction: { default: 7, min: 1, max: 10 },
-  maxRounds: { default: 5, min: 1, max: 5 },
-} as const;
 const R = MEETING_RULES;
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '날짜는 YYYY-MM-DD 형식이어야 함');
 const realDay = (d: string) => new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;

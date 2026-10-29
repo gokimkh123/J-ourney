@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EVAL, type EvalDraft, type PlanFacts, acceptEval, evalRequest, ruleEval, satisfaction } from '../src/meeting/evaluate.js';
+import { EVAL, type EvalDraft, type PlanFacts, acceptEval, carryEval, evalRequest, ruleEval, satisfaction } from '../src/meeting/evaluate.js';
 import type { Candidate, MemberInput, RetrieveResult } from '../src/meeting/retrieve.js';
 import type { MoveLeg, PlanProposal, PlanStop } from '../src/meeting/schedule.js';
 import type { Board, ReviewDecision } from '../src/meeting/types.js';
@@ -264,5 +264,58 @@ describe('7단계 평가: 코드 확인 (AI 글은 읽지 않고 고른 값과 �
     expect(out.plans.map((p) => p.stance)).toEqual(['조건부', '찬성']);
     expect(out.requests).toHaveLength(1);
     expect(out.requests[0]).toMatchObject({ plan: 'A', type: 'avoid', auto: true });
+  });
+});
+
+describe('11단계: 사회자가 다시 부르지 않은 사람 (지난 평가를 그대로, LLM 0회)', () => {
+  it('입장·한마디는 그대로 두고 만족도는 바뀐 일정의 사실표로 다시 계산, 찬성할 수 없게 바뀐 안은 조건부 + 규칙 요청, 바뀐 안의 이유는 규칙 문장', () => {
+    const { table, facts } = setup();
+    const prev = acceptEval(minji, [A, B], table, facts, answer());
+    expect(prev.plans.map((v) => v.stance)).toEqual(['조건부', '찬성']);
+    // B안 v2: 감천문화마을(⚠ 혼잡)이 67분 걸려 들어옴 → 이동 기준(40분) 넘음
+    const B2: PlanProposal = { ...B, version: 2, route: [{ ...B.route[0], stops: [...B.route[0].stops, stop(P.gamcheon, 67)] }] };
+    const next = evalRequest(minji, [A, B2], pool, board, null);
+    const carried = carryEval(minji, prev, [A, B2], next.table, next.facts, new Set(['B'] as const));
+    expect(carried).toMatchObject({ carried: true, llmCalls: 0, recorded: false, comment: prev.comment });
+    expect(carried.plans[0]).toMatchObject({ plan: 'A', stance: '조건부', why: prev.plans[0].why, score: prev.plans[0].score });
+    expect(carried.plans[1]).toMatchObject({ plan: 'B', stance: '조건부', score: satisfaction(next.facts[1], '조건부') });
+    expect(carried.plans[1].why).not.toBe(prev.plans[1].why);
+    expect(carried.fixes).toEqual([
+      { kind: 'stance', plan: 'B' },
+      { kind: 'rule_request', plan: 'B' },
+    ]);
+    // A안(바뀌지 않음)의 요청은 남고, B안에는 규칙 요청 (⚠ 곳 빼기)
+    expect(carried.requests.map((r) => [r.plan, r.type, r.auto])).toEqual([
+      ['A', 'replace', false],
+      ['B', 'avoid', true],
+    ]);
+  });
+});
+
+describe('검증29 뒤 고침 (10/29)', () => {
+  it("'바꿀 수 없음' 곳을 가리킨 요청: 빼기·바꾸기는 버리고, 긴 이동 줄이기는 그 안에서 줄일 수 있는 가장 긴 이동으로 바꿈 (답 형식은 그대로라 형식 오류 없음)", () => {
+    const { req, table, facts } = setup();
+    expect(table.rows.get('A2')).toMatchObject({ name: '기장 돼지국밥집', fixed: true }); // 이 안에서 돼지국밥을 채우는 곳은 하나뿐
+    const draft = answer({
+      requests: [
+        { plan: 'A', type: 'avoid', place: 'A2', to: '-', reason: '빼 주세요' },
+        { plan: 'A', type: 'move', place: 'A2', to: '-', reason: '이동이 길어요' },
+      ],
+    });
+    expect(req.schema.safeParse(draft).success).toBe(true);
+    const e = acceptEval(minji, [A, B], table, facts, draft);
+    expect(e.requests).toEqual([expect.objectContaining({ plan: 'A', type: 'move', placeId: null, auto: false })]);
+    expect(e.fixes).toEqual(expect.arrayContaining([{ kind: 'protected', plan: 'A' }, { kind: 'move_auto', plan: 'A' }]));
+    expect(facts[0].longest).toMatchObject({ fixed: false, out: 'plc_4' }); // 9단계가 이 사실표로 감천문화마을 쪽 긴 이동을 줄임
+  });
+
+  it("2라운드부터 지난 수정으로 새로 들어온 곳에 '(새로 들어옴)', 사실 칸에 안마다 '바뀜'·'그대로'를 코드가 적음 (1라운드 입력은 그대로)", () => {
+    const first = evalRequest(minji, [A, B], pool, board, null);
+    expect(JSON.stringify(first.req.input)).not.toContain('새로 들어옴');
+    expect(first.req.input.facts.A).not.toHaveProperty('지난라운드뒤');
+    const next = evalRequest(minji, [A, B], pool, board, null, { round: 2, changes: ['A안 1일째 오랑대공원 넣음'], diff: { A: { added: ['plc_3'], removed: ['plc_9'] }, B: { added: [], removed: [] } } });
+    expect(next.req.input.plans.A.split('\n').find((l: string) => l.startsWith('A3|'))).toMatch(/^A3\|오랑대공원 \(새로 들어옴\)\|/);
+    expect(next.req.input.facts.A.지난라운드뒤).toBe('바뀜 (새로 들어옴 1곳 · 빠짐 1곳)');
+    expect(next.req.input.facts.B.지난라운드뒤).toBe('그대로');
   });
 });

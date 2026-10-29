@@ -41,7 +41,14 @@ export function llmRecorder(db: Db, model: string, mode: ReplayMode): LlmRecorde
     },
     async record(req, value, attempt = 1) {
       try {
-        await db.insert(llmRecords).values({ key: keyOf(req, attempt), purpose: req.schemaName, model, attempt, response: value }).onConflictDoNothing();
+        const key = keyOf(req, attempt);
+        // 같은 요청의 녹화가 이미 있고 지금 답 형식에 맞으면 그대로 둠. 형식이 바뀌어 맞지 않는 녹화는 새 답으로 바꿈 (그대로 두면 다시 녹화해도 계속 못 씀, 10/29)
+        const [row] = await db.select({ response: llmRecords.response }).from(llmRecords).where(eq(llmRecords.key, key)).limit(1);
+        if (row && req.schema.safeParse(row.response).success) return;
+        await db
+          .insert(llmRecords)
+          .values({ key, purpose: req.schemaName, model, attempt, response: value })
+          .onConflictDoUpdate({ target: llmRecords.key, set: { response: value as never } });
       } catch (err) {
         console.warn('LLM 녹화 실패 (회의·카드는 그대로 진행):', err instanceof Error ? err.message : err);
       }

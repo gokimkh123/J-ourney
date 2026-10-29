@@ -15,9 +15,10 @@ import { acceptReactions, reactRequest } from './react-ai.js';
 import { type Candidate, type MemberInput, type RetrieveResult, retrieveCandidates } from './retrieve.js';
 import { applyReview, reviewRequestOf } from './review.js';
 import { ROUTE, type RouteClient, type RouteMeter, cachedRouter, newRouteMeter } from './route.js';
-import { type PlanProposal, SCHEDULE, schedulePlans } from './schedule.js';
+import { type PlanProposal, type PlanStates, SCHEDULE, type ScheduleInput, revisePlans, schedulePlans } from './schedule.js';
 import { type MeetingEventDraft, type MeetingLimits, agentIdOf, reserveMeetingLlm } from './runs.js';
-import { EVAL, type EvalRound, type MemberEval, acceptEval, evalRequest, ruleEval } from './evaluate.js';
+import { EVAL, type EvalRound, type MemberEval, type PlanLabel, type RoundDiff, acceptEval, carryEval, evalRequest, ruleEval } from './evaluate.js';
+import { type AppliedEdit, type Deliberation, MEETING_RULES, ROUNDS, type RoundRecord, decide, editKey, hurtBy, planDiff, requestsFor, revertPolish, roundMember, speakersOf, tallyOf } from './rounds.js';
 import type { Board, ResolvedDestination, ReviewDecision, ReviewRequest, TripConditions } from './types.js';
 
 /**
@@ -49,10 +50,28 @@ export const MeetingState = Annotation.Root({
   reviewRequest: Annotation<ReviewRequest | null>(),
   /** 5단계 결과: 사람 4명이 남김·뺌을 정한 결과 (다수결, 같으면 방장) */
   reviewDecision: Annotation<ReviewDecision | null>(),
-  /** 6단계 결과: A·B 두 안(경로·가는 길·식당)과 이 회의에서 부른 카카오 길찾기 수, 두 안에 들어간 DB 보충 식당(7단계가 표시를 봄, 10/28 전 회의에는 없음) */
-  plans: Annotation<{ plans: PlanProposal[]; kakao: RouteMeter; extras?: Candidate[] } | null>(),
-  /** 7단계 결과: 사람마다 A·B 입장·이유·한마디·요청과 코드가 계산한 만족도 (코드가 고친 것 포함) */
+  /**
+   * 6·9단계 결과: A·B 두 안(경로·가는 길·식당)과 이 회의에서 부른 카카오 길찾기 수(라운드까지 누적), 두 안에 들어간 DB 보충 식당(7단계가 표시를 봄, 10/28 전 회의에는 없음),
+   * 이 회의에서 못 쓴 길찾기 구간(9단계가 다시 짤 때 다시 부르지 않음, 10/29 전 회의에는 없음)
+   */
+  plans: Annotation<{ plans: PlanProposal[]; kakao: RouteMeter; extras?: Candidate[]; failedRoutes?: string[] } | null>(),
+  /** 7·11단계 결과 (가장 최근 라운드): 사람마다 A·B 입장·이유·한마디·요청과 코드가 계산한 만족도 (코드가 고친 것·지난 평가를 그대로 둔 사람 포함) */
   evaluation: Annotation<EvalRound | null>(),
+  // 8–12단계 라운드 고리 (10/29). 10/29 전에 사람 확인에서 멈춘 회의도 이어서 돌 수 있게 모두 기본값을 둠
+  /** 지금 라운드 (평가할 때마다 1씩, 1라운드 = 7단계) */
+  round: Annotation<number>({ reducer: (_a, b) => b, default: () => 0 }),
+  /** 라운드마다 누가 말했고 어떻게 평가·집계·수정했는지 (시험 화면용) */
+  rounds: Annotation<RoundRecord[]>({ reducer: (_a, b) => b, default: () => [] }),
+  /** 6·9단계 두 안의 재료 (id만): 9단계 수정이 이어서 씀 */
+  planStates: Annotation<PlanStates | null>({ reducer: (_a, b) => b, default: () => null }),
+  /** 10단계 사회자가 정한 다음 라운드에 말할 사람 (memberId). null이면 모두 */
+  speakers: Annotation<string[] | null>({ reducer: (_a, b) => b, default: () => null }),
+  /** 지난 라운드에 바뀐 것 (9단계가 쓴 글, 다음 평가 입력의 changes) */
+  changes: Annotation<string[]>({ reducer: (_a, b) => b, default: () => [] }),
+  /** 지난 라운드의 9단계로 안마다 새로 들어온 곳·빠진 곳 (다음 평가 표의 '새로 들어옴'·사실 칸의 '바뀜') */
+  diff: Annotation<RoundDiff | null>({ reducer: (_a, b) => b, default: () => null }),
+  /** 라운드 고리 상태: 다음 일·끝난 까닭·반영한 요청·나아짐·다듬기 전 상태 */
+  deliberation: Annotation<Deliberation | null>({ reducer: (_a, b) => b, default: () => null }),
 });
 export type MeetingStateType = typeof MeetingState.State;
 
@@ -245,41 +264,58 @@ async function review(state: MeetingStateType): Promise<Partial<MeetingStateType
  */
 async function schedule(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
   const kakao = newRouteMeter();
-  const { plans, extras } = await schedulePlans(deps.db, cachedRouter(deps.db, deps.router ?? null, kakao), {
-    meetingId: state.meetingId,
-    pool: state.pool!,
-    board: state.board!,
-    members: state.members,
-    decision: state.reviewDecision ?? null,
-    moveMode: state.conditions?.moveMode ?? 'transit',
-  });
+  const failed = new Set<string>();
+  const { plans, extras, states } = await schedulePlans(deps.db, cachedRouter(deps.db, deps.router ?? null, kakao, undefined, failed), scheduleInput(state));
   for (const plan of plans) emit({ type: 'plan.proposed', data: plan });
-  return { plans: { plans, kakao, extras } };
+  return { plans: { plans, kakao, extras, failedRoutes: [...failed] }, planStates: states };
 }
+const scheduleInput = (state: MeetingStateType): ScheduleInput => ({
+  meetingId: state.meetingId,
+  pool: state.pool!,
+  board: state.board!,
+  members: state.members,
+  decision: state.reviewDecision ?? null,
+  moveMode: state.conditions?.moveMode ?? 'transit',
+});
+/** 7단계 표에 쓰는 후보: 2단계 후보 + 두 안에 들어간 DB 보충 식당 */
+const evalPool = (state: MeetingStateType) => {
+  const extras = state.plans!.extras ?? [];
+  return extras.length ? { ...state.pool!, candidates: [...state.pool!.candidates, ...extras] } : state.pool!;
+};
 
 /**
  * 7단계 평가 1라운드: 사람마다 LLM 1회(4명 동시에)로 A·B 입장·이유·한마디·고칠 요청을 받음 (10/27 계획 그림, 10/28 사용자 승인)
  * 답 형식표가 입장·요청 종류·표 번호를 보기로만 받게 하고, 코드는 그 고른 값과 사실표만 확인함 (AI가 쓴 글은 보여 주기만 함). 만족도는 코드가 계산
  * 순서: 녹화된 같은 요청의 답 → 회의 LLM 상한 안에서 부름(부른 답은 녹화) → 형식이 틀리면 1번 더 → 그래도 못 쓰면 규칙 평가
  */
-async function evaluateOne(deps: MeetingDeps, state: MeetingStateType, m: MemberInputOf): Promise<MemberEval> {
+async function evaluateOne(deps: MeetingDeps, state: MeetingStateType, m: MemberInputOf, extra: Parameters<typeof evalRequest>[5]): Promise<MemberEval> {
   const plans = state.plans!.plans;
   const minSat = state.conditions!.rules.aiMinSatisfaction;
-  const extras = state.plans!.extras ?? [];
-  const pool = extras.length ? { ...state.pool!, candidates: [...state.pool!.candidates, ...extras] } : state.pool!;
-  const { table, facts, req } = evalRequest(m, plans, pool, state.board!, state.reviewDecision ?? null);
+  const { table, facts, req } = evalRequest(m, plans, evalPool(state), state.board!, state.reviewDecision ?? null, extra);
   const agentId = agentIdOf(m.memberId);
   const meetingId = state.meetingId;
   let calls = 0;
   let tried = false;
+  let limited = false;
   // 녹화된 답을 먼저 모두 봄: 녹화할 때 첫 시도가 형식·오류로 실패해 두 번째 답만 녹화된 경우도 LLM 없이 다시 씀 (fill에서도 첫 시도를 다시 부르지 않음)
   for (let attempt = 1; attempt <= EVAL.tries; attempt++) {
     const replayed = await deps.recorder?.replay(req, attempt);
     if (replayed) return { ...acceptEval(m, plans, table, facts, replayed), llmCalls: 0, recorded: true };
   }
+  let noLlm = false;
   for (let attempt = 1; attempt <= EVAL.tries; attempt++) {
     const llm = deps.llm;
-    if (!llm || !meetingId || !deps.limits || !(await reserveMeetingLlm(deps.db, meetingId, deps.limits))) break;
+    // AI 0번 모드(LLM_REPLAY): 녹화된 같은 요청이 없으면 규칙 평가 (2라운드부터는 입력에 지난 라운드 말·바뀐 것이 들어가 녹화가 거의 없음)
+    if (!llm) {
+      noLlm = true;
+      break;
+    }
+    if (!meetingId || !deps.limits) break;
+    // 회의 1번 AI 상한·하루 상한에 닿으면 규칙 평가 (시험 화면에 '상한'으로 보임)
+    if (!(await reserveMeetingLlm(deps.db, meetingId, deps.limits))) {
+      limited = true;
+      break;
+    }
     calls++;
     tried = true;
     try {
@@ -296,20 +332,136 @@ async function evaluateOne(deps: MeetingDeps, state: MeetingStateType, m: Member
       console.warn(`7단계 평가 LLM ${attempt}번째 실패:`, err instanceof Error ? err.message.slice(0, 200) : err);
     }
   }
-  return { ...ruleEval(m, plans, table, facts, minSat, tried ? [{ kind: 'failed', plan: null }] : []), llmCalls: calls };
+  const fixes: MemberEval['fixes'] = [
+    ...(tried ? [{ kind: 'failed' as const, plan: null }] : []),
+    ...(limited ? [{ kind: 'limit' as const, plan: null }] : []),
+    ...(noLlm ? [{ kind: 'no_llm' as const, plan: null }] : []),
+  ];
+  return { ...ruleEval(m, plans, table, facts, minSat, fixes), llmCalls: calls };
 }
 type MemberInputOf = MeetingStateType['members'][number];
 
-/** 7단계 노드: round.started → 사람마다 평가(동시에) → agent.message(한마디)·vote.cast(안마다 찬성 yes, 조건부·반대 no, 만족도) */
+/** 라운드 기록용 두 안 요약 (날마다 장소 이름) */
+const planBrief = (plans: readonly PlanProposal[]) => plans.map((p) => ({ label: p.label, planId: p.planId, version: p.version, days: p.route.map((d) => d.stops.map((s) => s.name)) }));
+const voteOf = (e: MemberEval, v: MemberEval['plans'][number], round: number): MeetingEventDraft => ({
+  type: 'vote.cast',
+  data: { planId: v.planId, agentId: e.agentId, round, vote: v.stance === '찬성' ? 'yes' : 'no', score: v.score, stance: v.stance, reason: v.why, carried: !!e.carried },
+});
+
+/**
+ * 7·11단계 평가 노드: round.started(이번에 말할 AI) → 말할 사람마다 평가(동시에, LLM) · 나머지는 지난 평가를 그대로 두고 만족도만 바뀐 일정으로 다시 계산(LLM 0)
+ * → agent.message(말한 사람의 한마디) · vote.cast(모두, 안마다 찬성 yes·조건부·반대 no, 만족도, 지난 평가를 그대로 둔 사람은 carried)
+ * 1라운드 입력은 7단계 그대로 (녹화가 맞도록 others·changes를 넣지 않음). 2라운드부터 다른 AI가 지난번에 한 말과 지난 라운드에 바뀐 것을 넣음
+ */
 async function evaluate(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
-  const round = 1;
-  emit({ type: 'round.started', data: { round, maxRounds: state.conditions!.rules.maxRounds } });
-  const members = await Promise.all(state.members.map((m) => evaluateOne(deps, state, m)));
+  const round = (state.round ?? 0) + 1;
+  const prev = round > 1 ? state.evaluation : null;
+  const speakers = prev && state.speakers ? state.speakers : state.members.map((m) => m.memberId);
+  emit({ type: 'round.started', data: { round, maxRounds: state.conditions!.rules.maxRounds, speakers: speakers.map(agentIdOf) } });
+  const plans = state.plans!.plans;
+  const seen = new Map((state.rounds.at(-1)?.plans ?? []).map((p) => [p.label, p.version]));
+  const changed = new Set<PlanLabel>(plans.filter((p) => seen.has(p.label) && seen.get(p.label) !== p.version).map((p) => p.label));
+  const lastSaid = new Map((prev?.members ?? []).map((e) => [e.memberId, e.comment]));
+  const members = await Promise.all(
+    state.members.map((m) => {
+      const before = prev?.members.find((e) => e.memberId === m.memberId);
+      if (prev && before && !speakers.includes(m.memberId)) {
+        const { table, facts } = evalRequest(m, plans, evalPool(state), state.board!, state.reviewDecision ?? null);
+        return carryEval(m, before, plans, table, facts, changed);
+      }
+      const others = state.members.filter((o) => o.memberId !== m.memberId).map((o) => `${o.title}: ${lastSaid.get(o.memberId) || '-'}`);
+      return evaluateOne(deps, state, m, prev ? { round, others, changes: state.changes, diff: state.diff } : { round });
+    }),
+  );
   for (const e of members) {
-    emit({ type: 'agent.message', data: { agentId: e.agentId, round, text: e.comment } });
-    for (const v of e.plans) emit({ type: 'vote.cast', data: { planId: v.planId, agentId: e.agentId, round, vote: v.stance === '찬성' ? 'yes' : 'no', score: v.score, stance: v.stance, reason: v.why } });
+    if (!e.carried) emit({ type: 'agent.message', data: { agentId: e.agentId, round, text: e.comment } });
+    for (const v of e.plans) emit(voteOf(e, v, round));
   }
-  return { evaluation: { round, members } };
+  const record: RoundRecord = { round, speakers, plans: planBrief(plans), members: members.map(roundMember), tally: [], next: null, outcome: null, applied: [], hurt: [], reverted: [], restored: [] };
+  return { round, evaluation: { round, members }, rounds: [...state.rounds, record] };
+}
+
+/** 라운드 기록의 마지막(지금 라운드)만 고침 */
+const withLast = (rounds: readonly RoundRecord[], patch: Partial<RoundRecord>) => rounds.map((r, i) => (i === rounds.length - 1 ? { ...r, ...patch } : r));
+
+/**
+ * 8·12단계 집계 (코드, LLM 0회): 안마다 구성원 만족도 평균 ≥ 기준(aiMinSatisfaction)이면 통과 → 다음 일(수정·다듬기·끝)을 정함 (rounds.decide)
+ * 다듬어 본 라운드면 다듬은 안의 평균이 다듬기 전보다 떨어졌을 때 그 안을 다듬기 전으로 되돌리고 끝냄 (10/19 사용자 결정).
+ * 되돌린 안은 plan.proposed(version + 1, 내용은 다듬기 전)와 그 안의 vote.cast(다듬기 전 점수, carried)를 다시 보냄
+ */
+async function tally(state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const rules = state.conditions!.rules;
+  const evaluation = state.evaluation!;
+  const t = tallyOf(evaluation, state.plans!.plans, rules.aiMinSatisfaction);
+  const snap = state.deliberation?.polish;
+  if (!snap) {
+    const polishable = requestsFor('polish', evaluation, t, new Set(state.deliberation?.tried ?? [])).length > 0;
+    const d = decide(state.deliberation ?? null, t, state.round, rules.maxRounds, polishable);
+    return { deliberation: d, rounds: withLast(state.rounds, { tally: t, next: d.next, outcome: d.outcome }) };
+  }
+  // 다듬어 본 라운드: 평균이 떨어진 안은 되돌리고, 다듬지 않은 안은 다듬기 전 평가를 씀 → 끝 (바꾼 상태 칸만 돌려줌, 체크포인트가 커지지 않게)
+  const back = revertPolish(snap, { plans: state.plans!.plans, extras: state.plans!.extras ?? [], states: state.planStates! }, evaluation, t);
+  const d: Deliberation = { ...state.deliberation!, next: 'end', outcome: 'passed', polish: null, reverted: back.reverted };
+  if (!back.restored.length) return { deliberation: d, rounds: withLast(state.rounds, { tally: t, next: d.next, outcome: d.outcome }) };
+  for (const p of back.plans.filter((x) => back.reverted.includes(x.label))) emit({ type: 'plan.proposed', data: p });
+  for (const e of back.evaluation.members) for (const v of e.plans.filter((x) => back.restored.includes(x.plan))) emit(voteOf({ ...e, carried: true }, v, state.round));
+  const final = tallyOf(back.evaluation, back.plans, rules.aiMinSatisfaction);
+  return {
+    plans: { ...state.plans!, plans: back.plans, extras: back.extras },
+    planStates: back.states,
+    evaluation: back.evaluation,
+    deliberation: d,
+    rounds: withLast(state.rounds, { tally: final, next: d.next, outcome: d.outcome, reverted: back.reverted, restored: back.restored, members: back.evaluation.members.map(roundMember), plans: planBrief(back.plans) }),
+  };
+}
+
+/**
+ * 9단계 수정 (코드, LLM 0회): 집계가 정한 요청을 그 안의 만족도가 낮은 사람 것부터 반영하고, 바뀐 안만 6단계 계산(카카오 길찾기)으로 다시 짜 plan.proposed(version + 1)로 보냄
+ * 반영한 것이 없으면 끝 (수정: no_change, 다듬기: 다듬지 않고 passed). 다듬기면 다듬기 전 상태를 남겨 집계가 되돌릴 수 있게 함
+ */
+async function revise(deps: MeetingDeps, state: MeetingStateType): Promise<Partial<MeetingStateType>> {
+  const d = state.deliberation!;
+  const mode = d.next === 'polish' ? 'polish' : 'revise';
+  const last = state.rounds.at(-1)!;
+  const before = state.plans!;
+  const edits = requestsFor(mode, state.evaluation!, last.tally, new Set(d.tried));
+  if (!edits.length) {
+    // 반영할 요청이 없으면 재료를 다시 읽지 않고 끝 (수정: no_change, 다듬기: 다듬지 않고 passed)
+    const outcome = mode === 'polish' ? 'passed' : 'no_change';
+    return { deliberation: { ...d, next: 'end', outcome }, rounds: withLast(state.rounds, { next: 'end', outcome }) };
+  }
+  // 카카오 수는 회의 전체로 이어서 셈 (회의당 상한 ROUTE.perMeeting이 라운드마다 처음부터 다시 시작하지 않게), 못 쓴 구간은 다시 부르지 않음
+  const kakao: RouteMeter = { ...before.kakao, calls: { ...before.kakao.calls } };
+  const failed = new Set(before.failedRoutes ?? []);
+  const out = await revisePlans(deps.db, cachedRouter(deps.db, deps.router ?? null, kakao, undefined, failed), scheduleInput(state), { plans: before.plans, states: state.planStates! }, edits, {
+    changesPerPlan: ROUNDS.changesPerPlan,
+  });
+  const applied: AppliedEdit[] = edits.map((e, i) => ({ ...out.results[i], by: e.by, type: e.type, placeId: e.placeId, toId: e.toId }));
+  const tried = [...d.tried, ...edits.filter((_, i) => out.results[i].applied).map(editKey)];
+  if (!out.changed.length) {
+    const outcome = mode === 'polish' ? 'passed' : 'no_change';
+    return { deliberation: { ...d, tried, next: 'end', outcome }, rounds: withLast(state.rounds, { applied, next: 'end', outcome }) };
+  }
+  for (const p of out.plans.filter((x) => out.changed.includes(x.label))) emit({ type: 'plan.proposed', data: p });
+  const polish =
+    mode === 'polish'
+      ? { averages: Object.fromEntries(last.tally.map((x) => [x.plan, x.average])), plans: before.plans, states: state.planStates!, extras: before.extras ?? [], evaluation: state.evaluation!, touched: out.changed }
+      : null;
+  return {
+    plans: { plans: out.plans, kakao, extras: out.extras, failedRoutes: [...failed] },
+    planStates: out.states,
+    changes: applied.filter((a) => a.applied).map((a) => a.note),
+    diff: planDiff(before.plans, out.plans),
+    deliberation: { ...d, tried, polish },
+    rounds: withLast(state.rounds, { applied, hurt: hurtBy(before.plans, out.plans) }),
+  };
+}
+
+/** 10단계 사회자 (코드, LLM 0회): 다음 라운드에 다시 평가할 AI를 정함 (다음 round.started의 speakers로 알림) */
+function moderate(state: MeetingStateType): Partial<MeetingStateType> {
+  const last = state.rounds.at(-1)!;
+  const appliedBy = new Set(last.applied.filter((a) => a.applied).map((a) => a.by));
+  return { speakers: speakersOf(state.deliberation?.polish ? 'polish' : 'revise', state.members, state.evaluation!, last.tally, last.hurt, appliedBy) };
 }
 
 /** 회의 그래프의 노드 이름과 단계 (시험 화면의 그래프 칸에 씀) */
@@ -321,8 +473,17 @@ export const MEETING_NODES = [
   { id: 'react', step: 4, label: '반응·안건', kind: 'llm' },
   { id: 'review', step: 5, label: '사람 확인', kind: 'human' },
   { id: 'schedule', step: 6, label: '동선 짜기 A·B', kind: 'code' },
-  { id: 'evaluate', step: 7, label: '평가 1라운드 ×4', kind: 'llm' },
+  { id: 'evaluate', step: 7, label: '평가 ×4 (2–5라운드는 11단계)', kind: 'llm' },
+  { id: 'tally', step: 8, label: '집계 (2–5라운드는 12단계)', kind: 'code' },
+  { id: 'revise', step: 9, label: '수정', kind: 'code' },
+  { id: 'moderate', step: 10, label: '사회자', kind: 'code' },
 ] as const;
+
+/**
+ * 회의 한 번 실행에서 거치는 노드 수 상한 (LangGraph recursionLimit, 기본 25): 1–8단계 노드 + 라운드마다 4개(집계·수정·사회자·평가) × 최대 라운드 + 여유
+ * 사람 확인 없이 5라운드까지 가면 24걸음이라 기본값 25에 거의 닿음 (노드를 하나만 더해도 회의가 실패로 끝나므로 계산해 넘김)
+ */
+export const MEETING_STEP_LIMIT = MEETING_NODES.length + ROUNDS.nodesPerRound * MEETING_RULES.maxRounds.max + ROUNDS.stepsMargin;
 
 /** 실제 회의 그래프의 노드·연결과 단계별 규칙 값 (그래프를 만들기만 하고 실행하지 않음, 시험 화면이 규칙 값을 따로 적지 않게 함) */
 export async function meetingGraphShape() {
@@ -331,12 +492,13 @@ export async function meetingGraphShape() {
   return {
     nodes: Object.keys(graph.nodes).map((id) => ({ id, step: meta.get(id)?.step ?? null, label: meta.get(id)?.label ?? id, kind: meta.get(id)?.kind ?? 'edge' })),
     edges: graph.edges.map((e) => ({ from: e.source, to: e.target, conditional: !!e.conditional })),
-    rules: { react: REACT, schedule: SCHEDULE, route: ROUTE, evaluate: EVAL },
+    rules: { react: REACT, schedule: SCHEDULE, route: ROUTE, evaluate: EVAL, rounds: ROUNDS },
   };
 }
 
 /**
- * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건 → (고를 안건이 있으면) 사람 확인 → 동선 짜기 A·B → 평가 1라운드
+ * 회의 그래프: 준비 → 후보 찾기 → 고르기 ×4 (사람마다 서브그래프를 동시에 띄움, Send) → 후보 보드 → 반응·안건 → (고를 안건이 있으면) 사람 확인 → 동선 짜기 A·B
+ * → 평가 → 집계 → (통과 못 한 안이 있거나 다듬을 요청이 남으면) 수정 → 사회자 → 평가 … (최대 라운드까지, 끝나면 그때의 A·B를 사람에게)
  * upTo 'retrieve'면 2단계에서 멈춤 (LLM 0회 시험용). 사람 확인은 멈췄다 이어서 실행하므로 체크포인트 저장(checkpointer)이 있어야 함
  */
 export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' } = {}) {
@@ -359,6 +521,9 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
     .addNode('review', review)
     .addNode('schedule', (s) => schedule(deps, s))
     .addNode('evaluate', (s) => evaluate(deps, s))
+    .addNode('tally', tally)
+    .addNode('revise', (s) => revise(deps, s))
+    .addNode('moderate', moderate)
     .addConditionalEdges(
       'retrieve',
       (s) =>
@@ -383,6 +548,9 @@ export function buildMeetingGraph(deps: MeetingDeps, opts: { upTo?: 'retrieve' }
     .addConditionalEdges('react', (s) => (s.reviewRequest?.items.length ? 'review' : 'schedule'), ['review', 'schedule'])
     .addEdge('review', 'schedule')
     .addEdge('schedule', 'evaluate')
-    .addEdge('evaluate', END)
+    .addEdge('evaluate', 'tally')
+    .addConditionalEdges('tally', (s) => (s.deliberation?.next === 'end' ? END : 'revise'), ['revise', END])
+    .addConditionalEdges('revise', (s) => (s.deliberation?.next === 'end' ? END : 'moderate'), ['moderate', END])
+    .addEdge('moderate', 'evaluate')
     .compile({ checkpointer: deps.checkpointer });
 }

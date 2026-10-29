@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, like, or } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { categories, places } from '../db/schema.js';
 import type { MustKeepRule } from '../persona/types.js';
@@ -105,6 +105,8 @@ export type PlanProposal = {
   lodging: { placeId: string; name: string } | null;
   route: PlanDay[];
   notes: string[];
+  /** 9단계 수정으로 다시 짠 안만: 이 버전에서 바뀐 것 (코드가 씀, 예: '1일째 광안리해수욕장 뺌 → 해운대해수욕장') */
+  changes?: string[];
 };
 
 /** 동선에 넣을 수 있는 곳 (2단계 후보·보드·DB에서 보충한 식당) */
@@ -148,6 +150,8 @@ interface Ctx {
   center: Point | null;
   moveMode: MoveMode;
   router: RouteClient;
+  /** 5단계에서 사람이 남긴 곳 (원래 id): 이동 상한 고치기도 빼지 않음 */
+  kept: Set<string>;
 }
 
 interface PlanState {
@@ -156,8 +160,25 @@ interface PlanState {
   /** 이 안에서 쓴 식당 (날마다 다른 곳) · B안이 되도록 피할 A안의 식당 */
   usedMeals: Set<string>;
   softMeals: Set<string>;
+  /** 회의에서 이 안에서 뺀 곳 (9단계 수정·이동 상한 고치기): 끼니·채우기에 다시 쓰지 않음, 넣기 요청이 오면 풂 */
+  banned: Set<string>;
+  /** 9단계 수정에서 요청대로 넣은 곳 (넣기의 곳·바꾸기의 바꿀 곳): 다시 짤 때 이동 상한 고치기가 빼지 않음 (넣었다고 적었는데 사라지지 않게) */
+  keep: Set<string>;
+  /** 이동 상한 고치기를 하지 않는 날 (9단계에서 고치지 않은 날: 다시 짤 때마다 한 곳씩 더 빠지지 않게) */
+  frozen: Set<number>;
   notes: string[];
 }
+
+/**
+ * 6단계에서 짠 한 안의 재료 (id만 두어 회의 상태에 저장, 9단계 수정이 이어서 씀)
+ * sets: 날마다 넣은 곳(관광지·꼭 지킬 식당, 끼니 식당은 짤 때마다 고름) · banned: 회의에서 뺀 곳 · shared: B안이 A안과 같이 쓰는 곳(꼭 지킬 곳·A안 1순위)
+ */
+export interface PlanSets {
+  sets: string[][];
+  banned: string[];
+  shared: string[];
+}
+export type PlanStates = Record<'A' | 'B', PlanSets>;
 
 const DAY = 1440;
 const KST_MINUTES = 9 * 60;
@@ -227,6 +248,8 @@ async function moreRestaurants(db: Db, pool: RetrieveResult, members: readonly M
         eq(places.visible, true),
         eq(places.regionCode, dest.regionCode),
         eq(places.contentTypeId, RETRIEVE.foodType),
+        // 끼니로 가는 음식점 분류만 읽음 (카페·주점·제과는 끼니가 아님, 아래 isMeal과 같은 잣대 · 라운드마다 다시 읽으므로 행 수를 줄임)
+        or(...SCHEDULE.mealCodes.map((c) => like(places.lcls3, `${c}%`))),
         dest.districtCodes.length ? inArray(places.districtCode, dest.districtCodes) : undefined,
       ),
     );
@@ -593,7 +616,7 @@ function detourKm(ctx: Ctx, prev: Spot | null, r: Spot, next: Spot | null): numb
  * 하루 짜기: 순서(자동차 길찾기) → 끼니 자리(관광지 절반 뒤 점심, 마지막 관광지 뒤 저녁, 밤 행사·야경은 저녁 뒤) → 식당(꼭 지킬 식당 먼저, 그다음 동선에서 덜 벗어나고 점수가 큰 곳) → 구간 가는 길
  * 한 번 이동이 가장 엄격한 상한을 넘는 구간이 있으면 그 끝의 관광지(꼭 지킬 곳 아님, 다른 관광지들에서 더 먼 쪽)를 한 번 빼고 다시 짬
  */
-async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = false): Promise<PlanDay> {
+async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = st.frozen.has(i)): Promise<PlanDay> {
   const date = ctx.dates[i];
   const notes: string[] = [];
   const set = st.sets[i] ?? [];
@@ -631,7 +654,9 @@ async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = false): Pr
     const [w0, w1] = SCHEDULE.meals[slot].map(toMinutes);
     const { prev, next } = around(k);
     const today = new Set([...filled.values()].map((r) => r.id));
-    const ok = ctx.meals.filter((r) => !st.usedMeals.has(r.id) && !today.has(r.id) && !elsewhere.has(r.id) && closedOn(r.rest, date) !== 'closed' && (!r.open || overlapMinutes(r.open, w0, w1) > 0));
+    const ok = ctx.meals.filter(
+      (r) => !st.usedMeals.has(r.id) && !st.banned.has(r.id) && !today.has(r.id) && !elsewhere.has(r.id) && closedOn(r.rest, date) !== 'closed' && (!r.open || overlapMinutes(r.open, w0, w1) > 0),
+    );
     const rank = (list: readonly Spot[]) =>
       list
         .map((r) => ({ r, v: detourKm(ctx, prev, r, next) - SCHEDULE.mealPrioPerKm * r.prio }))
@@ -659,9 +684,11 @@ async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = false): Pr
       };
       const [a, b] = [path[k].spot, path[k - 1].spot];
       const far = apart(a) > apart(b) || (apart(a) === apart(b) && a.id < b.id) ? a : b;
-      const out = !far.meal && !far.must && far !== ctx.lodging && attrs.includes(far) ? far : null;
+      const out = !far.meal && !far.must && !st.keep.has(far.id) && !ctx.kept.has(far.id) && far !== ctx.lodging && attrs.includes(far) ? far : null;
       if (out) {
         st.sets[i] = set.filter((p) => p !== out);
+        // 뺀 곳은 이 안에서 다시 쓰지 않음 (9단계 채우기가 같은 곳을 다시 넣어 같은 긴 이동이 생기지 않게)
+        st.banned.add(out.id);
         st.notes.push(`${i + 1}일째 ${out.name} 뺌 — ${path[k - 1].spot.name} → ${path[k].spot.name} 이동 ${legs[k]!.minutes}분 (가장 엄격한 한 번 이동 상한 ${ctx.moveLimit}분)`);
         return buildDay(ctx, st, i, true);
       }
@@ -700,7 +727,7 @@ async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = false): Pr
   };
 }
 
-async function buildPlan(ctx: Ctx, st: PlanState, planId: string): Promise<PlanProposal> {
+async function buildPlan(ctx: Ctx, st: PlanState, planId: string, version = 1): Promise<PlanProposal> {
   const route: PlanDay[] = [];
   for (let i = 0; i < ctx.dates.length; i++) route.push(await buildDay(ctx, st, i));
   const unknown = route.flatMap((d) => d.stops.flatMap((s) => (s.moveFromPrev?.source === 'estimate' ? [s.moveFromPrev] : [])));
@@ -710,7 +737,7 @@ async function buildPlan(ctx: Ctx, st: PlanState, planId: string): Promise<PlanP
   for (const d of route.filter((x) => x.summary.heavy)) st.notes.push(`${d.day}일째 이동 ${d.summary.moveMinutes}분 — 하루 시간의 ${Math.round(SCHEDULE.heavyMoveShare * 100)}%를 넘음`);
   return {
     planId,
-    version: 1,
+    version,
     label: st.label,
     moveMode: ctx.moveMode,
     lodging: ctx.lodging ? { placeId: placeIdOf(ctx.lodging.id), name: ctx.lodging.name } : null,
@@ -719,16 +746,21 @@ async function buildPlan(ctx: Ctx, st: PlanState, planId: string): Promise<PlanP
   };
 }
 
+/** 6·9단계 입력 (회의 상태에서 그대로) */
+export interface ScheduleInput {
+  meetingId: string | null;
+  pool: RetrieveResult;
+  board: Board;
+  members: readonly MemberInput[];
+  decision: ReviewDecision | null;
+  moveMode: MoveMode;
+}
+
 /**
- * 6단계 동선 짜기 (코드, LLM 0회): 4단계 반응·5단계 사람 확인을 반영한 재료로 A·B 두 안을 짬
- * A안: 꼭 지킬 곳 → 점수·가까움으로 날마다 채움. B안: 꼭 지킬 곳과 A안의 1순위(꼭 지킬 곳이 아닌 곳 중 점수 1위)는 같이 쓰고 나머지는 A안과 겹치지 않게 (10/19 사용자 결정)
- * 외부 호출은 router(카카오 길찾기)뿐이며 식당 보충은 DB만 읽음
+ * 동선 재료와 규칙을 모음 (6단계와 9단계 수정이 같이 씀, 같은 입력이면 언제나 같은 재료): 후보·보드 점수, DB 보충 식당, 숙소, 하루 장소 수, 끼니, 야경, 이동 상한
+ * 외부 호출은 없음 (DB만 읽음, 카카오는 짤 때 router로)
  */
-export async function schedulePlans(
-  db: Db,
-  router: RouteClient,
-  input: { meetingId: string | null; pool: RetrieveResult; board: Board; members: readonly MemberInput[]; decision: ReviewDecision | null; moveMode: MoveMode },
-): Promise<{ plans: PlanProposal[]; extras: Candidate[] }> {
+async function contextOf(db: Db, router: RouteClient, input: ScheduleInput): Promise<{ ctx: Ctx; extras: Spot[] }> {
   const { pool, members } = input;
   // DB에서 원문을 더 읽는 후보: 분류 코드·휴무일 칸이 생기기 전(10/23 전)에 시작한 회의의 후보(사람 확인을 기다리다 이어지는 회의),
   // 영업시간을 구간으로 읽지 못한 행사(예: 드론쇼 '19:00, 21:00') — 저녁 뒤에 둘지 봄
@@ -782,47 +814,342 @@ export async function schedulePlans(
     center,
     moveMode: input.moveMode,
     router,
+    kept: new Set((input.decision?.kept ?? []).map((id) => id.replace(/^plc_/, ''))),
   };
-  const planIdOf = (label: 'A' | 'B') => `${input.meetingId ? input.meetingId.replace(/^mtg_/, 'pln_') : 'pln'}_${label.toLowerCase()}`;
-  const fresh = (label: 'A' | 'B', sets: Spot[][]): PlanState => ({ label, sets, usedMeals: new Set(), softMeals: new Set(), notes: [] });
-
-  const required = requiredPlaces(ctx, new Set());
-  const A = await buildPlan(ctx, fresh('A', pickSets(ctx, new Set(), required)), planIdOf('A'));
-  const aStops = A.route.flatMap((d) => d.stops);
-  const byId = new Map(ctx.everywhere.map((p) => [p.id, p]));
-  const spotOf = (s: PlanStop) => byId.get(s.placeId.replace(/^plc_/, ''));
-  const top = byPrio(aStops.filter((s) => s.kind === 'sight').map(spotOf).filter((p): p is Spot => !!p && !p.must))[0];
-  const shared = [...required, ...(top ? [top] : [])];
-  const sharedIds = new Set(shared.map((p) => p.id));
-  const avoid = new Set(aStops.map((s) => s.placeId.replace(/^plc_/, '')).filter((id) => !sharedIds.has(id)));
-  const stB = fresh('B', pickSets(ctx, avoid, shared));
-  stB.softMeals = new Set(aStops.filter((s) => s.kind === 'food').map((s) => s.placeId.replace(/^plc_/, '')).filter((id) => !sharedIds.has(id)));
-  const B = await buildPlan(ctx, stB, planIdOf('B'));
-  // 7단계가 보도록 DB에서 보충해 두 안에 들어간 식당도 후보와 같은 꼴로 넘김 (꼭 지킬 것·좋아요 표시와 영업시간, 10/28 점검: 표시를 못 봐 '못 지킴'으로 셈)
-  const inPool = new Set([...pool.candidates, ...pool.lodgings].map((c) => c.id));
-  const used = new Set([A, B].flatMap((p) => p.route.flatMap((d) => d.stops.map((x) => x.placeId.replace(/^plc_/, '')))));
-  const asCandidate = (p: Spot): Candidate => ({
-    id: p.id,
-    name: p.name,
-    type: p.type,
-    category: p.category,
-    popularity: null,
-    crowd: null,
-    hours: null,
-    open: p.open,
-    restUnknown: false,
-    code: p.code,
-    rest: p.rest,
-    summary: '',
-    menu: null,
-    lat: p.lat,
-    lng: p.lng,
-    scores: {},
-    total: 0,
-    reasons: {},
-    marks: p.marks,
-    forMembers: [],
-  });
-  return { plans: [A, B], extras: extras.filter((p) => used.has(p.id) && !inPool.has(p.id)).map(asCandidate) };
+  return { ctx, extras };
 }
 
+const planIdOf = (meetingId: string | null, label: 'A' | 'B') => `${meetingId ? meetingId.replace(/^mtg_/, 'pln_') : 'pln'}_${label.toLowerCase()}`;
+const rawId = (placeId: string) => placeId.replace(/^plc_/, '');
+const stopIds = (plan: PlanProposal, kind?: PlanStop['kind']) => plan.route.flatMap((d) => d.stops.filter((s) => !kind || s.kind === kind).map((s) => rawId(s.placeId)));
+const fresh = (label: 'A' | 'B', sets: Spot[][], banned: Set<string> = new Set(), keep: Set<string> = new Set(), frozen: Set<number> = new Set()): PlanState => ({
+  label,
+  sets,
+  usedMeals: new Set(),
+  softMeals: new Set(),
+  banned,
+  keep,
+  frozen,
+  notes: [],
+});
+const setsOf = (st: PlanState, shared: readonly string[]): PlanSets => ({ sets: st.sets.map((d) => d.map((p) => p.id)), banned: [...st.banned], shared: [...shared] });
+
+/** 두 안에 들어간 DB 보충 식당을 후보와 같은 꼴로 넘김 (7단계가 꼭 지킬 것·좋아요 표시와 영업시간을 봄, 10/28 점검: 표시를 못 봐 '못 지킴'으로 셈) */
+function extrasIn(plans: readonly PlanProposal[], extras: readonly Spot[], pool: RetrieveResult): Candidate[] {
+  const inPool = new Set([...pool.candidates, ...pool.lodgings].map((c) => c.id));
+  const used = new Set(plans.flatMap((p) => stopIds(p)));
+  return extras
+    .filter((p) => used.has(p.id) && !inPool.has(p.id))
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      type: p.type,
+      category: p.category,
+      popularity: null,
+      crowd: null,
+      hours: null,
+      open: p.open,
+      restUnknown: false,
+      code: p.code,
+      rest: p.rest,
+      summary: '',
+      menu: null,
+      lat: p.lat,
+      lng: p.lng,
+      scores: {},
+      total: 0,
+      reasons: {},
+      marks: p.marks,
+      forMembers: [],
+    }));
+}
+
+/**
+ * 6단계 동선 짜기 (코드, LLM 0회): 4단계 반응·5단계 사람 확인을 반영한 재료로 A·B 두 안을 짬
+ * A안: 꼭 지킬 곳 → 점수·가까움으로 날마다 채움. B안: 꼭 지킬 곳과 A안의 1순위(꼭 지킬 곳이 아닌 곳 중 점수 1위)는 같이 쓰고 나머지는 A안과 겹치지 않게 (10/19 사용자 결정)
+ * 외부 호출은 router(카카오 길찾기)뿐이며 식당 보충은 DB만 읽음. states는 9단계 수정이 이어서 쓰는 두 안의 재료(id)
+ */
+export async function schedulePlans(db: Db, router: RouteClient, input: ScheduleInput): Promise<{ plans: PlanProposal[]; extras: Candidate[]; states: PlanStates }> {
+  const { ctx, extras } = await contextOf(db, router, input);
+  const required = requiredPlaces(ctx, new Set());
+  const stA = fresh('A', pickSets(ctx, new Set(), required));
+  const A = await buildPlan(ctx, stA, planIdOf(input.meetingId, 'A'));
+  const aStops = A.route.flatMap((d) => d.stops);
+  const byId = new Map(ctx.everywhere.map((p) => [p.id, p]));
+  const top = byPrio(aStops.filter((s) => s.kind === 'sight').map((s) => byId.get(rawId(s.placeId))).filter((p): p is Spot => !!p && !p.must))[0];
+  const shared = [...required, ...(top ? [top] : [])];
+  const sharedIds = new Set(shared.map((p) => p.id));
+  const avoid = new Set(aStops.map((s) => rawId(s.placeId)).filter((id) => !sharedIds.has(id)));
+  const stB = fresh('B', pickSets(ctx, avoid, shared));
+  stB.softMeals = new Set(stopIds(A, 'food').filter((id) => !sharedIds.has(id)));
+  const B = await buildPlan(ctx, stB, planIdOf(input.meetingId, 'B'));
+  return { plans: [A, B], extras: extrasIn([A, B], extras, input.pool), states: { A: setsOf(stA, []), B: setsOf(stB, [...sharedIds]) } };
+}
+
+/** 9단계 수정 한 건 (7·11단계 요청을 코드가 확인한 값, 장소는 plc_ id). move의 placeId는 그 긴 이동을 줄이려 뺄 곳 (없으면 반영하지 못함) */
+export interface PlanEdit {
+  plan: 'A' | 'B';
+  type: 'include' | 'avoid' | 'replace' | 'move';
+  placeId: string | null;
+  toId: string | null;
+}
+/** 수정 한 건의 결과. note는 코드가 쓴 글 (바뀐 것 또는 반영하지 못한 까닭) */
+export interface EditResult {
+  plan: 'A' | 'B';
+  applied: boolean;
+  note: string;
+}
+
+/** 수정을 반영하지 못한 까닭 (코드 문장) */
+const SKIP = {
+  cap: '이번 라운드에 바꿀 수 있는 수를 다 씀',
+  again: '이번 라운드에 이미 바꾼 곳',
+  fixed: '바꿀 수 없는 곳 (숙소·사람이 남긴 곳·그 꼭 지킬 것을 채우는 하나뿐인 곳)',
+  missing: '지금 일정에 없는 곳',
+  present: '이미 일정에 있는 곳',
+  unusable: '일정에 넣을 수 없는 곳',
+  closed: '여행 날짜에 모두 쉬는 곳',
+  full: '그날 대신 뺄 수 있는 곳이 없음',
+  noMeal: '끼니 시간이 없는 일정',
+  minimum: '하루 최소 장소 수',
+  noMove: '줄일 수 있는 이동이 없음',
+} as const;
+
+/** 수정 중인 한 안: 날마다 넣은 곳, 뺀 곳, 지금 안의 끼니 식당(짤 때 고른 곳)과 이번 라운드에 바꾼 수·곳·날, 요청대로 넣은 곳 */
+interface Work {
+  sets: Spot[][];
+  banned: Set<string>;
+  meals: { id: string; day: number }[];
+  count: number;
+  touched: Set<string>;
+  days: Set<number>;
+  requested: Set<string>;
+  notes: string[];
+}
+
+/**
+ * 9단계 수정 (코드, LLM 0회): 받은 순서대로 요청을 반영하고 바뀐 안만 6단계 계산(순서·끼니·카카오 길찾기)으로 다시 짬 (같은 planId, version + 1)
+ * 반영 규칙 (10/17 시험판, 10/29 사용자 승인): 넣기는 그곳이 여는 날 중 그날 장소들과 가까운 날에, 그날이 다 찼으면 AI가 덜 고르고 점수가 낮은 곳과 바꿈 ·
+ * 빼기는 다시 넣지 않게 표시하고 그날이 모자라면 6단계와 같은 묶음 값으로 채움 (끼니 식당은 다른 식당으로) · 바꾸기는 뺀 날에 넣음 ·
+ * 긴 이동 줄이기는 그곳을 빼고 그날 가운데에 더 가까운 곳이 있을 때만 채움 · 빼기·긴 이동 줄이기는 채울 곳이 없으면 하루 최소 장소 수 아래로 빼지 않음
+ * 바꿀 수 없는 곳은 앞서 반영한 수정까지 본 지금 안으로 다시 확인함: 숙소 · 5단계에서 사람이 남긴 곳 · 그 사람의 꼭 지킬 것을 채우는 곳이 그 안에 그곳뿐
+ * 안마다 한 라운드에 changesPerPlan개까지, 한 라운드에 같은 곳은 한 번만 바꿈
+ */
+export async function revisePlans(
+  db: Db,
+  router: RouteClient,
+  input: ScheduleInput,
+  current: { plans: readonly PlanProposal[]; states: PlanStates },
+  edits: readonly PlanEdit[],
+  opts: { changesPerPlan: number },
+): Promise<{ plans: PlanProposal[]; states: PlanStates; extras: Candidate[]; results: EditResult[]; changed: ('A' | 'B')[] }> {
+  const { ctx, extras } = await contextOf(db, router, input);
+  const byId = new Map([...ctx.everywhere, ...(ctx.lodging ? [ctx.lodging] : [])].map((p) => [p.id, p]));
+  const kept = new Set(input.decision?.kept ?? []);
+  const labels = ['A', 'B'] as const;
+  const planOf = (l: 'A' | 'B') => current.plans.find((p) => p.label === l)!;
+  const work: Record<'A' | 'B', Work> = {
+    A: workOf('A'),
+    B: workOf('B'),
+  };
+  function workOf(l: 'A' | 'B'): Work {
+    const saved = current.states[l];
+    return {
+      sets: ctx.dates.map((_, d) => (saved.sets[d] ?? []).map((id) => byId.get(id)).filter((p): p is Spot => !!p)),
+      banned: new Set(saved.banned),
+      meals: planOf(l).route.flatMap((day) => day.stops.filter((s) => s.kind === 'food').map((s) => ({ id: rawId(s.placeId), day: day.day - 1 }))),
+      count: 0,
+      touched: new Set(),
+      days: new Set(),
+      requested: new Set(),
+      notes: [],
+    };
+  }
+  const mealsPerDay = Number(ctx.lunch) + Number(ctx.dinner);
+  const home = ctx.lodging ? [ctx.lodging] : [];
+  const openOn = (p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed';
+  const fans = (q: Spot) => ctx.members.filter((m) => marksOf(q, m).some((k) => k.kind === 'like')).length;
+  const mustKeys = (p: Spot) => Object.entries(p.marks).flatMap(([memberId, ks]) => ks.filter((k) => k.kind === 'must').map((k) => `${memberId}\n${k.label}`));
+  const dayIn = (w: Work, id: string) => w.sets.findIndex((x) => x.some((p) => p.id === id));
+  const mealIn = (w: Work, id: string) => (w.banned.has(id) ? undefined : w.meals.find((x) => x.id === id));
+  const inPlan = (w: Work, id: string) => dayIn(w, id) >= 0 || !!mealIn(w, id);
+  // 꼭 지킬 것을 채운다고 세는 곳은 날마다 넣은 곳뿐 (짤 때 고르는 끼니 식당은 다시 짜면 바뀔 수 있음, 10/29 점검)
+  const fixedNow = (w: Work, p: Spot) => {
+    if (p === ctx.lodging || kept.has(placeIdOf(p.id))) return true;
+    const others = w.sets.flat().filter((q) => q.id !== p.id);
+    return mustKeys(p).some((key) => !others.some((q) => mustKeys(q).includes(key)));
+  };
+  /** 그곳이 여는 날을 그날 장소들과 가까운 순으로 */
+  const nearDays = (w: Work, p: Spot) =>
+    ctx.dates
+      .map((_, d) => d)
+      .filter((d) => openOn(p, d))
+      .map((d) => ({ d, km: w.sets[d].length ? Math.min(...w.sets[d].map((q) => distanceKm(q, p))) : 0 }))
+      .sort((a, b) => a.km - b.km || a.d - b.d)
+      .map((x) => x.d);
+  const insert = (w: Work, p: Spot, prefer: number | null): { day: number; dropped: Spot | null } | keyof typeof SKIP => {
+    if (p.meal && mealsPerDay === 0) return 'noMeal';
+    const near = nearDays(w, p);
+    if (!near.length) return 'closed';
+    for (const d of prefer !== null && near.includes(prefer) ? [prefer, ...near.filter((x) => x !== prefer)] : near) {
+      const same = w.sets[d].filter((q) => q.meal === p.meal);
+      if (same.length < (p.meal ? mealsPerDay : ctx.perDay)) {
+        w.sets[d] = [...w.sets[d], p];
+        return { day: d, dropped: null };
+      }
+      // 이번 라운드에 넣은 곳은 다시 빼지 않음 (바꾸기로 넣은 곳이 뒤의 넣기에 밀려나지 않게)
+      // 밀려나는 곳: AI가 덜 고른 곳 → 점수(반응·좋아요·인기도)가 낮은 곳 → 좋아하는 사람이 적은 곳 (10/29 검증29: 좋아요가 분류 코드로만 잡혀 광안대교·안목해변 같은 명소가 먼저 밀려남)
+      const out = same
+        .filter((q) => !q.must && !w.touched.has(q.id) && !fixedNow(w, q))
+        .sort((a, b) => a.proposed - b.proposed || a.prio - b.prio || fans(a) - fans(b) || a.id.localeCompare(b.id))[0];
+      if (out) {
+        w.sets[d] = [...w.sets[d].filter((q) => q.id !== out.id), p];
+        return { day: d, dropped: out };
+      }
+    }
+    return 'full';
+  };
+  /** 빼기: 날마다 넣은 곳에서 지우고 이 안에서 다시 쓰지 않음. 짤 때 고른 끼니 식당이면 그 자리에 다른 식당이 들어감 */
+  const remove = (w: Work, p: Spot) => {
+    const d = dayIn(w, p.id);
+    const meal = mealIn(w, p.id);
+    if (d >= 0) w.sets[d] = w.sets[d].filter((q) => q.id !== p.id);
+    w.banned.add(p.id);
+    return d >= 0 ? d : (meal?.day ?? 0);
+  };
+  /**
+   * 채우기: 그날 여는, 이 안에 없고 뺀 적 없고 이번 라운드에 바꾼 적 없는 관광지 중 6단계 묶음 값(점수 − 가운데에서 거리 − 같은 소분류)이 가장 큰 곳
+   * 다른 안에 있는 곳(같이 쓰는 곳 빼고)은 다른 곳이 없을 때만 (B안이 채우기로 A안을 닮아 가지 않게, 6단계 pickSets와 같은 잣대)
+   * closerThan(긴 이동 줄이기)이 있으면 그곳보다 그날 가운데에 가까운 곳만, 다른 안의 곳은 쓰지 않음 (이동만 줄이면 되므로 채우지 않아도 됨)
+   */
+  const shared = new Set(current.states.B.shared);
+  const refill = (l: 'A' | 'B', d: number, closerThan: Spot | null = null) => {
+    const w = work[l];
+    const c = centerOf([...w.sets[d], ...home]);
+    const chosen = w.sets.flat();
+    const used = new Set(chosen.map((q) => q.id));
+    const other = new Set(work[l === 'A' ? 'B' : 'A'].sets.flat().map((q) => q.id).filter((id) => !shared.has(id)));
+    const value = (p: Spot) =>
+      p.prio - SCHEDULE.distPenaltyPerKm * (c ? distanceKm(c, p) : 0) - SCHEDULE.sameKindPenalty * chosen.filter((q) => kindOf(q) !== null && kindOf(q) === kindOf(p)).length;
+    const ok = ctx.attractions
+      .filter((p) => !used.has(p.id) && !w.banned.has(p.id) && !w.touched.has(p.id) && openOn(p, d) && (!closerThan || !c || distanceKm(c, p) < distanceKm(c, closerThan)))
+      .sort((a, b) => value(b) - value(a) || a.id.localeCompare(b.id));
+    return ok.find((p) => !other.has(p.id)) ?? (closerThan ? null : ok[0]) ?? null;
+  };
+  const attractionsOn = (w: Work, d: number) => w.sets[d].filter((q) => !q.meal).length;
+
+  const results: EditResult[] = [];
+  for (const e of edits) {
+    const w = work[e.plan];
+    const skip = (why: keyof typeof SKIP) => results.push({ plan: e.plan, applied: false, note: `${e.plan}안 반영 못 함: ${SKIP[why]}` });
+    const done = (note: string, days: number[], ...spots: (Spot | null)[]) => {
+      w.count++;
+      for (const x of spots) if (x) w.touched.add(x.id);
+      for (const d of days) w.days.add(d);
+      w.notes.push(note);
+      results.push({ plan: e.plan, applied: true, note: `${e.plan}안 ${note}` });
+    };
+    if (w.count >= opts.changesPerPlan) {
+      skip('cap');
+      continue;
+    }
+    const p = e.placeId ? (byId.get(rawId(e.placeId)) ?? null) : null;
+    const to = e.toId ? (byId.get(rawId(e.toId)) ?? null) : null;
+    if ([p, to].some((x) => x && w.touched.has(x.id))) {
+      skip('again');
+      continue;
+    }
+    // 실패하면 이 수정 전으로 되돌림 (빼고 넣는 두 걸음 중 넣기가 막힐 때)
+    const snapshot = { sets: w.sets.map((x) => x.slice()), banned: new Set(w.banned) };
+    const undo = (why: keyof typeof SKIP) => {
+      w.sets = snapshot.sets;
+      w.banned = snapshot.banned;
+      skip(why);
+    };
+    if (e.type === 'include') {
+      if (!p || p === ctx.lodging) skip('unusable');
+      else if (inPlan(w, p.id)) skip('present');
+      else {
+        const r = insert(w, p, null);
+        if (typeof r === 'string') skip(r);
+        else {
+          w.banned.delete(p.id);
+          w.requested.add(p.id);
+          done(`${r.day + 1}일째 ${p.name} 넣음${r.dropped ? ` (${r.dropped.name} 뺌)` : ''}`, [r.day], p, r.dropped);
+        }
+      }
+      continue;
+    }
+    if (p && p === ctx.lodging) {
+      skip('fixed');
+      continue;
+    }
+    if (!p || !inPlan(w, p.id)) {
+      skip(e.type === 'move' && !e.placeId ? 'noMove' : 'missing');
+      continue;
+    }
+    if (fixedNow(w, p)) {
+      skip('fixed');
+      continue;
+    }
+    // 빼기·바꾸기·긴 이동 줄이기는 그날 관광지가 하루 최소 장소 수 아래로 줄어들면 반영하지 않음 (처음부터 적었던 날은 더 줄지만 않으면 됨)
+    const shrinks = (d: number, before: number) => attractionsOn(w, d) < SCHEDULE.perDayRange[0] && attractionsOn(w, d) < before;
+    if (e.type === 'avoid') {
+      const d0 = dayIn(w, p.id);
+      const before = d0 >= 0 ? attractionsOn(w, d0) : 0;
+      const d = remove(w, p);
+      if (p.meal) {
+        done(`${d + 1}일째 ${p.name} 대신 다른 식당`, [d], p);
+        continue;
+      }
+      const inn = attractionsOn(w, d) < ctx.perDay ? refill(e.plan, d) : null;
+      if (inn) w.sets[d] = [...w.sets[d], inn];
+      if (shrinks(d, before)) undo('minimum');
+      else done(`${d + 1}일째 ${p.name} 뺌${inn ? ` → ${inn.name}` : ''}`, [d], p, inn);
+    } else if (e.type === 'replace') {
+      if (!to || to === ctx.lodging) skip('unusable');
+      else if (inPlan(w, to.id)) skip('present');
+      else {
+        const d0 = dayIn(w, p.id);
+        const before = d0 >= 0 ? attractionsOn(w, d0) : 0;
+        const d = remove(w, p);
+        const r = insert(w, to, d);
+        if (typeof r === 'string') undo(r);
+        else if (shrinks(d, before)) undo('minimum');
+        else {
+          w.banned.delete(to.id);
+          w.requested.add(to.id);
+          done(`${d + 1}일째 ${p.name} → ${to.name}${r.day !== d ? ` (${r.day + 1}일째)` : ''}${r.dropped ? ` (${r.dropped.name} 뺌)` : ''}`, [d, r.day], p, to, r.dropped);
+        }
+      }
+    } else {
+      // move: 긴 이동 끝의 관광지를 빼고, 그날 가운데에 더 가까운 곳이 있으면 그곳으로 채움
+      const d = dayIn(w, p.id);
+      if (p.meal || d < 0) {
+        skip('noMove');
+        continue;
+      }
+      const before = attractionsOn(w, d);
+      remove(w, p);
+      const inn = refill(e.plan, d, p);
+      if (inn) w.sets[d] = [...w.sets[d], inn];
+      if (shrinks(d, before)) undo('minimum');
+      else done(`${d + 1}일째 긴 이동을 줄이려 ${p.name} 뺌${inn ? ` → ${inn.name}` : ''}`, [d], p, inn);
+    }
+  }
+
+  // 바뀐 안만 다시 짬 (A 먼저: B안은 새 A안의 식당을 되도록 피함). 바뀌지 않은 구간의 길찾기는 저장된 것을 씀
+  const changed = labels.filter((l) => work[l].count > 0);
+  const plans = new Map(current.plans.map((p) => [p.label, p]));
+  const states: PlanStates = { ...current.states };
+  for (const l of changed) {
+    const frozen = new Set(ctx.dates.map((_, d) => d).filter((d) => !work[l].days.has(d)));
+    const st = fresh(l, work[l].sets, work[l].banned, new Set([...work[l].requested].filter((id) => !work[l].banned.has(id))), frozen);
+    if (l === 'B') st.softMeals = new Set(stopIds(plans.get('A')!, 'food').filter((id) => !current.states.B.shared.includes(id)));
+    const old = planOf(l);
+    plans.set(l, { ...(await buildPlan(ctx, st, old.planId, old.version + 1)), changes: work[l].notes });
+    states[l] = setsOf(st, current.states[l].shared);
+  }
+  const out = labels.map((l) => plans.get(l)!);
+  return { plans: out, states, extras: extrasIn(out, extras, input.pool), results, changed };
+}
