@@ -644,10 +644,14 @@ async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = st.frozen.
   const night = ctx.nightLovers > 0 && dusk !== null ? (byPrio(attrs.filter((p) => isNightSpot(p, dusk)))[0] ?? null) : null;
   const from = i > 0 ? ctx.lodging : null;
   const to = i < ctx.dates.length - 1 ? ctx.lodging : null;
-  // 사람이 순서를 정한 날은 그 순서 그대로 (저녁 뒤 자리도 사람이 정한 대로), 정하지 않은 날은 자동차 길찾기로 가장 짧은 순서
+  // 사람이 순서를 정한 날(14단계)은 그 순서 그대로, 정하지 않은 날은 자동차 길찾기로 가장 짧은 순서
+  // 밤 행사·야경은 사람이 순서를 정해도 저녁 뒤 자리에 둠 (시작 시각·해 진 뒤가 정해진 곳, 그 사이 순서만 사람이 정한 대로)
   const pinned = st.orders[i] ?? null;
-  const tail = pinned ? [] : [...attrs.filter((p) => p.evening && p !== night).sort((a, b) => a.id.localeCompare(b.id)), ...(night ? [night] : [])];
+  const late = attrs.filter((p) => (p.evening && p !== night) || p === night);
+  const tail = pinned ? pinnedOrder(late, pinned) : [...late.filter((p) => p !== night).sort((a, b) => a.id.localeCompare(b.id)), ...(night ? [night] : [])];
   const order = pinned ? pinnedOrder(attrs, pinned) : await orderDay(ctx.router, attrs, tail, from, to);
+  if (pinned && tail.some((p) => pinned.indexOf(p.id) >= 0 && attrs.some((q) => !tail.includes(q) && pinned.indexOf(q.id) > pinned.indexOf(p.id))))
+    notes.push(`${i + 1}일째 ${tail.map((p) => p.name).join('·')}은(는) 밤에 가는 곳이라 저녁 뒤 자리 그대로`);
   const daytime = order.filter((p) => !tail.includes(p));
   const cut = Math.floor(daytime.length * SCHEDULE.lunchAt);
   const seq: (Spot | Slot)[] = [...daytime.slice(0, cut), ...(ctx.lunch ? (['lunch'] as const) : []), ...daytime.slice(cut), ...(ctx.dinner ? (['dinner'] as const) : []), ...tail];
@@ -728,20 +732,27 @@ async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = st.frozen.
   for (const v of visits) if (v.meal) st.usedMeals.add(v.spot.id);
   st.notes.push(...notes);
   const tag = st.label.toLowerCase();
-  const stops: PlanStop[] = path.map((v, k) => ({
-    itemId: `itm_${tag}${i + 1}_${k + 1}`,
-    placeId: placeIdOf(v.spot.id),
-    name: v.spot.name,
-    lat: v.spot.lat,
-    lng: v.spot.lng,
-    kind: v.spot === ctx.lodging ? 'lodging' : v.meal ? 'food' : 'sight',
-    category: v.spot.category,
-    meal: v.meal,
-    night: v.spot === night,
-    mustFor: ctx.members.filter((m) => marksOf(v.spot, m).some((x) => x.kind === 'must')).map((m) => m.memberId),
-    likedBy: ctx.members.filter((m) => marksOf(v.spot, m).some((x) => x.kind === 'like')).map((m) => m.memberId),
-    moveFromPrev: legs[k],
-  }));
+  // 일정 항목 id = 안·날짜·장소 (자리 번호가 아님): 다른 사람이 먼저 고쳐 자리가 바뀐 뒤 옛 화면에서 보낸 고치기(14단계)가
+  // 엉뚱한 곳을 바꾸지 않고 '지금 일정에 없는 항목'이 되게 함. 같은 날 같은 곳이 두 번이면(가운데 날 숙소) 뒤에 _2
+  const seen = new Map<string, number>();
+  const stops: PlanStop[] = path.map((v, k) => {
+    const n = (seen.get(v.spot.id) ?? 0) + 1;
+    seen.set(v.spot.id, n);
+    return {
+      itemId: `itm_${tag}${i + 1}_${v.spot.id}${n > 1 ? `_${n}` : ''}`,
+      placeId: placeIdOf(v.spot.id),
+      name: v.spot.name,
+      lat: v.spot.lat,
+      lng: v.spot.lng,
+      kind: v.spot === ctx.lodging ? 'lodging' : v.meal ? 'food' : 'sight',
+      category: v.spot.category,
+      meal: v.meal,
+      night: v.spot === night,
+      mustFor: ctx.members.filter((m) => marksOf(v.spot, m).some((x) => x.kind === 'must')).map((m) => m.memberId),
+      likedBy: ctx.members.filter((m) => marksOf(v.spot, m).some((x) => x.kind === 'like')).map((m) => m.memberId),
+      moveFromPrev: legs[k],
+    };
+  });
   const known = legs.filter((l): l is MoveLeg => l !== null);
   const moveMinutes = known.reduce((acc, l) => acc + (l.minutes ?? 0), 0);
   return {

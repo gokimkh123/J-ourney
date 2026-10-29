@@ -1839,6 +1839,10 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     expect(out.results).toEqual([{ plan: 'A', applied: true, note: `1일째 ${first.name} 뺌` }]);
     expect(out.plan).toMatchObject({ planId: A.planId, version: A.version + 1, changes: [`1일째 ${first.name} 뺌`] });
     expect(out.edits.at(-1)).toMatchObject({ version: A.version + 1, by: hyunwoo.id });
+    // 옛 화면에서 같은 곳을 또 빼도 다른 곳이 빠지지 않음 (항목 id는 자리 번호가 아니라 안·날짜·장소)
+    out = (await edits({ edits: [{ type: 'remove', itemId: first.itemId }] })).body;
+    expect(out.results).toEqual([{ plan: 'A', applied: false, note: '반영 못 함: 지금 일정에 없는 항목' }]);
+    expect(out.plan.version).toBe(A.version + 1);
     // 넣을 보기: 일정에 없는 관광지 (방금 뺀 곳도 다시 넣을 수 있음), 끼니마다 바꿀 식당
     const options = (await call(app, 'GET', `/trips/${tripId}/plan/options`, undefined, token)).body;
     const back = options.sights.find((x: { placeId: string }) => x.placeId === first.placeId);

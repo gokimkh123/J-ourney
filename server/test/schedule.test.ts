@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { categories, places, regions, routeCache } from '../src/db/schema.js';
 import type { MemberInput, Candidate, RetrieveResult } from '../src/meeting/retrieve.js';
 import { ROUTE, type RouteClient, RouteUnavailable, cachedRouter, kakaoLink, kakaoRouter, newRouteMeter, routeKey } from '../src/meeting/route.js';
-import { type PlanEdit, SCHEDULE, type PlanProposal, type ScheduleInput, duskKst, revisePlans, schedulePlans } from '../src/meeting/schedule.js';
+import { type PlanEdit, SCHEDULE, type PlanProposal, type ScheduleInput, duskKst, editPlan, revisePlans, schedulePlans } from '../src/meeting/schedule.js';
 import { distanceKm } from '../src/meeting/travel.js';
 import type { Board, BoardCandidate, MoveMode, ReviewDecision } from '../src/meeting/types.js';
 import type { MustKeepRule, PersonaProfile } from '../src/persona/types.js';
@@ -182,7 +182,7 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
       [2, '2026-11-08'],
     ]);
     // 명세서 stops 칸 (itemId·name·lat·lng) + placeId·종류·가는 길
-    for (const s of A.route.flatMap((d) => d.stops)) expect(s).toMatchObject({ itemId: expect.stringMatching(/^itm_a\d_\d+$/), placeId: expect.stringMatching(/^plc_/), name: expect.any(String), lat: expect.any(Number), lng: expect.any(Number) });
+    for (const s of A.route.flatMap((d) => d.stops)) expect(s).toMatchObject({ itemId: expect.stringMatching(/^itm_a\d_[^_]+(_\d+)?$/), placeId: expect.stringMatching(/^plc_/), name: expect.any(String), lat: expect.any(Number), lng: expect.any(Number) });
     // 1박: 1일째는 숙소로 끝나고 2일째는 숙소에서 시작함
     expect(A.route[0].stops.at(-1)).toMatchObject({ kind: 'lodging', name: '호텔' });
     expect(A.route[1].stops[0]).toMatchObject({ kind: 'lodging', moveFromPrev: null });
@@ -255,6 +255,26 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     // 야경 좋아요가 없으면 마지막에 두지 않음
     const [A2] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07']), board, [member('mem_1'), member('mem_2')]);
     expect(A2.route[0].stops.some((s) => s.night)).toBe(false);
+  });
+
+  it('14단계 사람이 순서를 정해도 야경은 저녁 뒤 자리 그대로 (낮 장소끼리는 사람이 정한 순서, 메모로 알림) · 항목 id는 자리가 아니라 장소', async () => {
+    const db = await testDb();
+    const tower = near('밤 전망대', 1, { code: 'VE010200', open: { open: 600, close: 1320 } });
+    const cands = [tower, near('해변', 3), near('공원', 4), near('시장', 5)];
+    await db.insert(places).values([restaurant('r1', '점심식당', 35.158, 129.1, { opentimefood: '10:00~22:00' }), restaurant('r2', '저녁식당', 35.166, 129.11, { opentimefood: '10:00~22:00' })]);
+    const members = [member('mem_1', { placesPerDay: [4, 4] }, ['like_night']), member('mem_2', { placesPerDay: [4, 4] })];
+    const input: ScheduleInput = { meetingId: 'mtg_test1', pool: poolOf(cands, ['2026-11-07']), board: boardOf(cands, { [tower.id]: { proposedBy: ['agt_1'] } }), members, decision: null, moveMode: 'transit' };
+    const { plans, states } = await schedulePlans(db, fakeRouter().router, input);
+    const A = plans.find((x) => x.label === 'A')!;
+    expect(sights(A).at(-1)).toMatchObject({ name: '밤 전망대', night: true, itemId: `itm_a1_${tower.id}` });
+    const want = [...sights(A)].reverse(); // 야경을 맨 앞으로 보냄
+    const out = await editPlan(db, fakeRouter().router, input, { plan: A, state: states.A }, [{ type: 'reorder', day: 0, itemIds: want.map((x) => x.itemId) }]);
+    const stops = out.plan.route[0].stops;
+    expect(stops.at(-1)).toMatchObject({ name: '밤 전망대', night: true });
+    expect(stops.at(-2)).toMatchObject({ kind: 'food', meal: 'dinner' });
+    expect(sights(out.plan).slice(0, -1).map((x) => x.name)).toEqual(want.slice(1).map((x) => x.name)); // 낮 장소는 사람이 정한 순서
+    expect(out.plan.notes).toContain('1일째 밤 전망대은(는) 밤에 가는 곳이라 저녁 뒤 자리 그대로');
+    expect(out.plan).toMatchObject({ planId: A.planId, version: A.version + 1, changes: ['1일째 관광지 순서 바꿈'] });
   });
 
   it('시작 시각이 모두 저녁 뒤인 곳(밤 행사·야시장)은 저녁 뒤에 두고, 하루가 저녁 전에 끝나면 넣지 않음', async () => {
