@@ -42,7 +42,7 @@ export default function CandidateRow({ name, proposerColor, order, reactions, ex
       <View style={styles.top}>
         <View style={[styles.marker, { backgroundColor: proposerColor }]}>
           {order !== undefined && (
-            <AppText variant="label" tone="onColor">
+            <AppText variant="label" color={colors.onMember}>
               {order}
             </AppText>
           )}

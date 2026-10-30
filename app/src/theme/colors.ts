@@ -17,10 +17,14 @@ export type ThemeColors = {
   textMuted: string;
   textBody: string;
   textOnColor: string;
+  /** danger 바탕 위 글자(다크 모드에서는 짙은 글자) */
+  onDanger: string;
+  /** 구성원 색 위 글자(후보 번호). 흰 글자는 대비가 모자라 짙은 글자를 쓴다. */
+  onMember: string;
   /** 켜지지 않은 탭 아이콘처럼 textMuted보다 더 옅게 둘 선·아이콘 색 */
   iconFaint: string;
 
-  // 주요 버튼 바탕(검정/흰색). 색은 구성원 색만 쓴다.
+  // 메인 색(콘플라워). accent는 칠하는 데만 쓰고, 메인 색 글자는 accentSoftText를 쓴다(크림 바탕 위 accent 글자는 4.3:1).
   accent: string;
   onAccent: string;
   accentSoft: string;
@@ -49,35 +53,38 @@ export type ThemeColors = {
   scrim: string;
 };
 
+// 개편 기록(디자인 시스템 proposal.md): 크림 바탕 + 메인 색 콘플라워. 글자 짝은 모두 4.5:1 이상.
 export const lightColors: ThemeColors = {
-  background: '#FFFFFF',
+  background: '#FBF8F3',
   surface: '#FFFFFF',
-  surfaceRaised: '#F2F4F6',
-  surfaceSunken: '#F7F8FA',
-  border: '#E5E8EB',
+  surfaceRaised: '#F3EEE6',
+  surfaceSunken: '#F8F4EE',
+  border: '#E6DFD3',
 
-  text: '#191F28',
-  textMuted: '#667080',
-  textBody: '#333D4B',
+  text: '#211D18',
+  textMuted: '#6F665A',
+  textBody: '#453E35',
   textOnColor: '#FFFFFF',
-  iconFaint: '#B0B8C1',
+  onDanger: '#FFFFFF',
+  onMember: '#191F28',
+  iconFaint: '#948A7C',
 
-  accent: '#191F28',
+  accent: '#5762FF',
   onAccent: '#FFFFFF',
-  accentSoft: '#EEF0F3',
-  accentSoftText: '#191F28',
+  accentSoft: '#EAECFD',
+  accentSoftText: '#3B45CE',
 
-  success: '#22C55E',
-  warning: '#F5A524',
-  danger: '#F04452',
-  warningSurface: '#FFF6E0',
+  success: '#0F7A45',
+  warning: '#945400',
+  danger: '#CC2A3B',
+  warningSurface: '#FFF3D9',
   warningBorder: '#F5D58A',
-  warningText: '#7A5200',
-  dangerSurface: '#FFECEE',
-  dangerBorder: '#F7B5BC',
+  warningText: '#734C00',
+  dangerSurface: '#FDECEC',
+  dangerBorder: '#F2B8BD',
 
   bubble: '#FFFFFF',
-  onBubble: '#191F28',
+  onBubble: '#211D18',
 
   mapSea: '#BFE4F2',
   mapLand: '#FFF3D6',
@@ -88,34 +95,36 @@ export const lightColors: ThemeColors = {
 };
 
 export const darkColors: ThemeColors = {
-  background: '#17181C',
-  surface: '#1F2026',
-  surfaceRaised: '#26272D',
-  surfaceSunken: '#1B1C21',
-  border: '#33343B',
+  background: '#13141B',
+  surface: '#1C1E28',
+  surfaceRaised: '#282B37',
+  surfaceSunken: '#181A22',
+  border: '#3A3E4D',
 
-  text: '#F2F4F6',
-  textMuted: '#8B95A1',
-  textBody: '#C9CDD2',
+  text: '#F1F0EC',
+  textMuted: '#9A98A6',
+  textBody: '#CDCAC3',
   textOnColor: '#FFFFFF',
-  iconFaint: '#6B7684',
+  onDanger: '#13141B',
+  onMember: '#191F28',
+  iconFaint: '#7D7B8C',
 
-  accent: '#F2F4F6',
-  onAccent: '#17181C',
-  accentSoft: '#33343B',
-  accentSoftText: '#F2F4F6',
+  accent: '#949BFF',
+  onAccent: '#13141B',
+  accentSoft: '#252846',
+  accentSoftText: '#949BFF',
 
-  success: '#34D27B',
-  warning: '#FFC24D',
-  danger: '#FF6B78',
-  warningSurface: '#3A2F12',
+  success: '#4CD68A',
+  warning: '#FFC75A',
+  danger: '#FF7A85',
+  warningSurface: '#3A2F14',
   warningBorder: '#6B5518',
-  warningText: '#FFE29A',
-  dangerSurface: '#3A1820',
-  dangerBorder: '#6B2A36',
+  warningText: '#FFE3A3',
+  dangerSurface: '#3D1D25',
+  dangerBorder: '#6E2E3B',
 
-  bubble: '#2A2B33',
-  onBubble: '#F2F4F6',
+  bubble: '#282B37',
+  onBubble: '#F1F0EC',
 
   mapSea: '#13223A',
   mapLand: '#2B2840',
@@ -147,3 +156,12 @@ export function makeToneColors(c: ThemeColors): ToneColors {
 
 /** 호환용 별칭(밝은 모드). */
 export const toneColors: ToneColors = makeToneColors(lightColors);
+
+// 상태는 색만으로 알리지 않는다. 다크 모드에서 상태색과 구성원 색의 밝기가 비슷해서 글자 앞에 기호를 붙인다.
+const TONE_GLYPH: Partial<Record<Tone, string>> = { success: '✓', warning: '!', danger: '✕' };
+
+/** "완료" → "✓ 완료". neutral·accent는 그대로. */
+export function withToneGlyph(tone: Tone, label: string): string {
+  const glyph = TONE_GLYPH[tone];
+  return glyph === undefined ? label : `${glyph} ${label}`;
+}

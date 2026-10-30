@@ -10,6 +10,7 @@ export type TextTone =
   | "warning"
   | "danger"
   | "onAccent"
+  | "onDanger"
   | "onColor";
 
 function toneColor(tone: TextTone, c: ThemeColors): string {
@@ -17,7 +18,8 @@ function toneColor(tone: TextTone, c: ThemeColors): string {
     case "muted":
       return c.textMuted;
     case "accent":
-      return c.accent;
+      // accent는 크림 바탕 위 글자로 대비가 모자라서, 메인 색 글자는 accentSoftText로 쓴다.
+      return c.accentSoftText;
     case "success":
       return c.success;
     case "warning":
@@ -26,6 +28,8 @@ function toneColor(tone: TextTone, c: ThemeColors): string {
       return c.danger;
     case "onAccent":
       return c.onAccent;
+    case "onDanger":
+      return c.onDanger;
     case "onColor":
       return c.textOnColor;
     default:

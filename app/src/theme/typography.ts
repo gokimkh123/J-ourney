@@ -16,12 +16,12 @@ function style(s: TextStyle): TextStyle {
 
 // 이름 붙은 글자 스타일. 화면에서 fontSize를 직접 쓰지 않는다.
 export const typography = {
-  // 화면 대표 숫자·결론 한 줄 (예: "합의 완료")
-  display: style({ fontFamily: fontFamily.display, fontWeight: displayWeight, fontSize: 26, lineHeight: 32 }),
+  // 화면 대표 숫자·결론 한 줄 (예: "합의 완료"). 제목 쪽(display·title·statNumber·heading)은 자간을 살짝 좁힌다.
+  display: style({ fontFamily: fontFamily.display, fontWeight: displayWeight, fontSize: 28, lineHeight: 36, letterSpacing: -0.5 }),
   // 화면 제목, 캐릭터 이름
-  title: style({ fontFamily: fontFamily.display, fontWeight: displayWeight, fontSize: 20, lineHeight: 26 }),
-  // 카드·구역 제목
-  heading: style({ fontFamily: fontFamily.body, fontWeight: '700', fontSize: 15, lineHeight: 21 }),
+  title: style({ fontFamily: fontFamily.display, fontWeight: displayWeight, fontSize: 22, lineHeight: 30, letterSpacing: -0.3 }),
+  // 카드·구역 제목. bodyStrong(15)보다 2 커서 제목으로 읽힌다.
+  heading: style({ fontFamily: fontFamily.body, fontWeight: '700', fontSize: 17, lineHeight: 24, letterSpacing: -0.2 }),
   body: style({ fontFamily: fontFamily.body, fontWeight: '400', fontSize: 15, lineHeight: 22 }),
   bodyStrong: style({ fontFamily: fontFamily.body, fontWeight: '700', fontSize: 15, lineHeight: 22 }),
   small: style({ fontFamily: fontFamily.body, fontWeight: '400', fontSize: 13, lineHeight: 19 }),
@@ -34,7 +34,7 @@ export const typography = {
   button: style({ fontFamily: fontFamily.body, fontWeight: '700', fontSize: 15, lineHeight: 20 }),
   // 시간·금액처럼 자리가 맞아야 하는 숫자
   numeric: style({ fontFamily: fontFamily.body, fontWeight: '700', fontSize: 13, lineHeight: 18, fontVariant: ['tabular-nums'] }),
-  statNumber: style({ fontFamily: fontFamily.display, fontWeight: displayWeight, fontSize: 20, lineHeight: 26, fontVariant: ['tabular-nums'] }),
+  statNumber: style({ fontFamily: fontFamily.display, fontWeight: displayWeight, fontSize: 22, lineHeight: 28, letterSpacing: -0.3, fontVariant: ['tabular-nums'] }),
 } as const;
 
 export type TypographyVariant = keyof typeof typography;

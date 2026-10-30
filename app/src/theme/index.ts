@@ -1,5 +1,5 @@
 // 디자인 토큰 입구. 컴포넌트는 여기서만 import한다.
-export { colors, lightColors, darkColors, memberColors, toneColors, makeToneColors } from './colors.ts';
+export { colors, lightColors, darkColors, memberColors, toneColors, makeToneColors, withToneGlyph } from './colors.ts';
 export type { ColorName, Tone, ThemeColors, ToneColors } from './colors.ts';
 export { ThemeProvider, useTheme, useStyles, resolveScheme } from './ThemeProvider.tsx';
 export type { ThemeMode, ThemeScheme, Theme } from './ThemeProvider.tsx';

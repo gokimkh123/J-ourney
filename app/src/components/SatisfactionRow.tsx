@@ -10,7 +10,7 @@ export type SatisfactionRowProps = {
   color: string;
   /** 0~10 */
   score: number;
-  /** 이 점수 미만이면 숫자를 경고색으로(회의 규칙 aiMinSatisfaction) */
+  /** 이 점수 미만이면 숫자를 경고색 + "!"로(회의 규칙 aiMinSatisfaction) */
   threshold?: number;
 };
 
@@ -27,7 +27,7 @@ export default function SatisfactionRow({ name, color, score, threshold }: Satis
         <ProgressBar value={score / 10} color={color} />
       </View>
       <AppText variant="numeric" tone={below ? "warning" : "default"} align="right" style={styles.score}>
-        {score}
+        {below ? `!${score}` : score}
       </AppText>
     </View>
   );

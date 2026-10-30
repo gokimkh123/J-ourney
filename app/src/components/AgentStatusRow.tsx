@@ -1,6 +1,6 @@
 import { StyleSheet, View } from "react-native";
 
-import { radius, spacing, useStyles, useTheme, type Theme, type Tone } from "../theme/index.ts";
+import { radius, spacing, useStyles, useTheme, withToneGlyph, type Theme, type Tone } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
 import Avatar, { type AvatarChip } from "./Avatar.tsx";
 
@@ -45,7 +45,7 @@ export default function AgentStatusRow({
         </AppText>
       </View>
       <AppText variant="label" tone={statusTone === "neutral" ? "muted" : statusTone} numberOfLines={1}>
-        {statusLabel}
+        {withToneGlyph(statusTone, statusLabel)}
       </AppText>
     </View>
   );
