@@ -8,7 +8,10 @@ import { Appearance, BackHandler, Pressable, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 
 import TabBar, { type TabBarIcon, type TabBarItem } from "../components/TabBar.tsx";
+import { CharacterSvg } from "../components/character/Bean.tsx";
+import type { CharacterProps } from "../components/character/props.ts";
 import TopBar from "../components/TopBar.tsx";
+import Wordmark from "../components/Wordmark.tsx";
 import { config } from "../lib/config/index.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { meetingImmersive } from "../lib/meeting/stageStore.ts";
@@ -20,7 +23,7 @@ import { themeMode } from "../lib/settings/index.ts";
 import { useThemeMode } from "../lib/settings/useThemeMode.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { keepPerTrip } from "../lib/trip/tripState.ts";
-import { ThemeProvider, useTheme } from "../theme/index.ts";
+import { ThemeProvider, memberColors, outline, pastel, useTheme } from "../theme/index.ts";
 
 /** 탭바에 나오는 화면과 아이콘. 순서가 탭 순서다. 설정은 탭이 아니라 위쪽 줄의 버튼으로 연다. */
 const TAB_ICONS: Record<string, TabBarIcon> = {
@@ -76,7 +79,8 @@ function AppTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
     });
   }
 
-  if (immersive) return null;
+  // 성향 검사는 문항에 집중하도록 탭바 없이 화면 전체를 쓴다.
+  if (immersive || focusedName === "questionnaire") return null;
   return <TabBar items={items} />;
 }
 
@@ -125,6 +129,17 @@ function AppTopBar() {
   );
 }
 
+/** 화면 이름을 크게 적는 위쪽 줄(내 캐릭터). 오른쪽에 설정 버튼 */
+function PageTopBar({ title }: { title: string }) {
+  const router = useRouter();
+  return <TopBar title={title} onSettings={() => router.push("/settings")} />;
+}
+
+/** 홈의 위쪽 줄: 파티 안 홈은 무대 위에 떠 있는 줄을 따로 그려서 비운다. */
+function HomeTopBar() {
+  return useSession() === null ? <AppTopBar /> : null;
+}
+
 /** 파티 안 홈에서 폰의 뒤로 가기를 누르면 앱이 닫히지 않고 초기 화면(내 파티)으로 나간다. */
 function usePartyBack() {
   const pathname = usePathname();
@@ -167,15 +182,15 @@ function ThemedTabs() {
           sceneStyle: { backgroundColor: colors.background },
         }}
       >
-        <Tabs.Screen name="index" options={{ title: "홈", header: () => <AppTopBar /> }} />
+        <Tabs.Screen name="index" options={{ title: "홈", header: () => <HomeTopBar /> }} />
         <Tabs.Screen name="meeting" options={tripTab("회의")} />
         <Tabs.Screen name="plan" options={tripTab("일정")} />
-        <Tabs.Screen name="persona" options={{ title: "내 캐릭터", header: () => <AppTopBar /> }} />
+        <Tabs.Screen name="persona" options={{ title: "내 캐릭터", header: () => <PageTopBar title="내 캐릭터" /> }} />
         <Tabs.Screen name="settings" options={{ href: null, title: "설정", headerLeft: () => <BackButton /> }} />
         <Tabs.Screen name="conditions" options={{ href: null, title: "여행 조건", headerLeft: () => <BackButton /> }} />
         <Tabs.Screen name="agreement" options={{ href: null, title: "AI 합의안", headerLeft: () => <BackButton /> }} />
         <Tabs.Screen name="place/[id]" options={{ href: null, title: "장소", headerLeft: () => <BackButton /> }} />
-        <Tabs.Screen name="questionnaire" options={{ href: null }} />
+        <Tabs.Screen name="questionnaire" options={{ href: null, headerShown: false }} />
         <Tabs.Screen name="invite/[code]" options={{ href: null }} />
       </Tabs>
     </>
@@ -213,8 +228,9 @@ export default function RootLayout() {
 
   useEffect(() => {
     let alive = true;
-    // 저장된 화면 모드와 세션을 먼저 읽어 둔다. 하나가 실패해도 앱은 뜬다.
-    void Promise.allSettled([themeMode.load(), loadSession()]).then(() => {
+    // 저장된 화면 모드와 세션을 먼저 읽어 둔다. 하나가 실패해도 앱은 뜬다. 준비 화면은 다 읽어도 SPLASH_MIN_MS까지는 보여 준다.
+    const shown = new Promise((resolve) => setTimeout(resolve, SPLASH_MIN_MS));
+    void Promise.allSettled([themeMode.load(), loadSession(), shown]).then(() => {
       if (alive) setReady(true);
     });
     return () => {
@@ -229,7 +245,25 @@ export default function RootLayout() {
   );
 }
 
+/** 저장된 설정을 읽는 동안 보이는 준비 화면: 메인 색 바탕에 앱 이름과 민수 한 명. */
 function Splash() {
   const { colors } = useTheme();
-  return <View style={{ flex: 1, backgroundColor: colors.background }} />;
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.hero, alignItems: "center", justifyContent: "center" }}>
+      <StatusBar style="light" />
+      <Wordmark width={250} color={colors.onHero} />
+      <View style={{ marginTop: 176, width: 64, height: 78 }} accessible accessibilityRole="image" accessibilityLabel="모자 쓴 민수 캐릭터">
+        <View style={{ position: "absolute", left: 0, top: 66, width: 64, height: 12, borderRadius: 32, backgroundColor: colors.heroFloor }} />
+        <View style={{ position: "absolute", left: 4, top: 0 }}>
+          <CharacterSvg width={56} height={73} body={pastel(SPLASH_COLOR)} line={outline(SPLASH_COLOR)} props={SPLASH_PROPS} />
+        </View>
+      </View>
+    </View>
+  );
 }
+
+/** 준비 화면을 보여 주는 가장 짧은 시간 */
+const SPLASH_MIN_MS = 1500;
+// 준비 화면의 민수: 첫 구성원 색, 모자와 책.
+const SPLASH_COLOR = memberColors[0]!;
+const SPLASH_PROPS: CharacterProps = { head: "cap", hand: "book" };

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { BackHandler, ScrollView, StyleSheet, View } from "react-native";
+import { BackHandler, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Svg, { Path } from "react-native-svg";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import type { Href } from "expo-router";
 
-import { AppText, Banner, Button, Chip, ProgressBar, ScaleDial, StateView, TextField } from "../components/index.ts";
+import { AppText, Banner, Button, ProgressBar, ScaleDial, StateView, TextField } from "../components/index.ts";
 import { endpoints } from "../lib/api/index.ts";
 import {
   buildSubmitBody,
@@ -30,12 +32,14 @@ import type {
   ScaleQuestion,
   TextQuestion,
 } from "../lib/persona/types.ts";
-import { spacing, useStyles, type Theme } from "../theme/index.ts";
+import { disabledOpacity, hitSize, pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import { describeError, formatCount } from "../lib/ui/format.ts";
 
 const PERSONA_ROUTE = "/persona" as Href;
 // 점수를 누른 뒤 다음 문항으로 넘어가기까지 기다리는 시간(고른 칸이 잠깐 보이게)
 const AUTO_ADVANCE_MS = 300;
+// 여러 개 고르기 칩을 한 줄에 몇 개 놓는지
+const CHIP_COLUMNS = 3;
 
 type UpdateAnswers = Dispatch<SetStateAction<AnswerState>>;
 
@@ -65,7 +69,7 @@ function ScaleInput({ question, answers, update, onPick }: {
   );
 }
 
-/** 여러 개 고르기. 고를 수 있는 수가 차면 나머지 칩은 흐려진다. */
+/** 여러 개 고르기. 칩을 세 줄로 놓고, 고른 칩은 ✓로 표시한다. 고를 수 있는 수가 차면 나머지 칩은 흐려진다. */
 function MultiInput({ question, answers, update }: {
   question: MultiQuestion;
   answers: AnswerState;
@@ -75,29 +79,54 @@ function MultiInput({ question, answers, update }: {
   const answer = answers[question.id];
   const selectedIds = answer?.type === "multi" ? answer.optionIds : [];
   const full = selectedIds.length >= question.maxSelect;
+  const rows: MultiQuestion["options"][] = [];
+  for (let i = 0; i < question.options.length; i += CHIP_COLUMNS) rows.push(question.options.slice(i, i + CHIP_COLUMNS));
   return (
-    <View style={styles.inputBlock}>
-      <AppText variant="small" tone="muted">
-        {question.minSelect === 0
-          ? `${formatCount(selectedIds.length, question.maxSelect)} 선택 · 없으면 넘어가도 돼요`
-          : `${formatCount(selectedIds.length, question.maxSelect)} 선택`}
-      </AppText>
-      <View style={styles.chipRow}>
-        {question.options.map((option) => {
-          const selected = selectedIds.includes(option.id);
-          return (
-            <Chip
-              key={option.id}
-              label={option.text}
-              emoji={option.emoji}
-              selected={selected}
-              disabled={full && !selected}
-              onPress={() => update((state) => toggleOption(state, question, option.id))}
-            />
-          );
-        })}
-      </View>
+    <View style={styles.chipGrid} accessibilityRole="none" accessibilityLabel={`${question.text}, 최대 ${question.maxSelect}개`}>
+      {rows.map((row, r) => (
+        <View key={r} style={styles.chipRow}>
+          {row.map((option) => {
+            const selected = selectedIds.includes(option.id);
+            return (
+              <QuizChip
+                key={option.id}
+                label={option.text}
+                selected={selected}
+                disabled={full && !selected}
+                onPress={() => update((state) => toggleOption(state, question, option.id))}
+              />
+            );
+          })}
+          {Array.from({ length: CHIP_COLUMNS - row.length }, (_, i) => (
+            <View key={`gap${i}`} style={styles.chipCell} />
+          ))}
+        </View>
+      ))}
     </View>
+  );
+}
+
+function QuizChip({ label, selected, disabled, onPress }: { label: string; selected: boolean; disabled: boolean; onPress: () => void }) {
+  const styles = useStyles(createStyles);
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: selected, disabled }}
+      accessibilityLabel={label}
+      style={({ pressed }) => [
+        styles.chipCell,
+        styles.chip,
+        selected && styles.chipOn,
+        pressed && { opacity: pressedOpacity },
+        disabled && { opacity: disabledOpacity },
+      ]}
+    >
+      <AppText variant="bodyStrong" align="center" numberOfLines={2} style={selected ? styles.chipOnText : undefined}>
+        {selected ? `✓ ${label}` : label}
+      </AppText>
+    </Pressable>
   );
 }
 
@@ -133,6 +162,8 @@ export default function Questionnaire() {
 
 function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
   const styles = useStyles(createStyles);
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   // 파티 밖(초기 화면)에서는 내 성향(1~12번)만 묻고 폰에 저장한다.
   // 파티 안에서는 저장된 성향이 있으면 13번부터만 묻는다. retake=1이면 1~12번도 다시 묻는다.
@@ -271,32 +302,65 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
   const canNext = question !== undefined && isAnswered(question, answers);
   const canSubmit = isComplete(questions, answers) && !submitting;
 
+  const picked = question === undefined ? undefined : answers[question.id];
+  const pickedCount = picked?.type === "multi" ? picked.optionIds.length : 0;
+
+  // 닫기: 열기 전 화면으로 돌아간다. 답은 이 화면이 살아 있는 동안 남는다.
+  const onClose = () => {
+    cancelAdvance();
+    if (router.canGoBack()) router.back();
+    else router.navigate(inParty ? "/" : PERSONA_ROUTE);
+  };
+
   return (
-    <View style={styles.screen}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <View style={styles.progress}>
-          <AppText variant="label" tone="accent">
-            {formatCount(index + 1, questions.length)}
-          </AppText>
-          {reuseSaved && (
-            <AppText variant="small" tone="muted">
-              저장된 내 성향을 써요. 이번 여행 질문만 답해 주세요.
-            </AppText>
-          )}
-          <ProgressBar value={(index + 1) / questions.length} size="sm" accessibilityLabel={`문항 ${index + 1}/${questions.length}`} />
+    <View style={[styles.screen, { paddingTop: insets.top }]}>
+      <View style={styles.head}>
+        <Pressable
+          onPress={onClose}
+          disabled={submitting}
+          accessibilityRole="button"
+          accessibilityLabel="성향 검사 닫기"
+          style={({ pressed }) => [styles.close, pressed && { opacity: pressedOpacity }]}
+        >
+          <Svg width={24} height={24} viewBox="0 0 24 24">
+            <Path d="M6 6l12 12M18 6L6 18" stroke={colors.text} strokeWidth={1.8} strokeLinecap="round" fill="none" />
+          </Svg>
+        </Pressable>
+        <View style={styles.bar}>
+          <ProgressBar value={(index + 1) / questions.length} accessibilityLabel={`${questions.length}문항 중 ${index + 1}번째`} />
         </View>
+        <AppText variant="label" color={colors.textBody} style={styles.count}>
+          {formatCount(index + 1, questions.length)}
+        </AppText>
+      </View>
+
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {question !== undefined && (
           <>
-            <AppText variant="title" accessibilityRole="header">
-              {question.text}
-            </AppText>
+            <View style={styles.qHead}>
+              <AppText variant="title" accessibilityRole="header" style={styles.qText}>
+                {question.text}
+              </AppText>
+              {question.type === "multi" && (
+                <AppText variant="label" tone="accent" style={styles.qCount}>
+                  {formatCount(pickedCount, question.maxSelect)}
+                </AppText>
+              )}
+            </View>
+            {reuseSaved && index === 0 && (
+              <AppText variant="small" tone="muted">
+                저장된 내 성향을 써요. 이번 여행 질문만 답해 주세요.
+              </AppText>
+            )}
             {question.type === "scale" && (
-              <ScaleInput
-                question={question}
-                answers={answers}
-                update={setAnswers}
-                onPick={() => advanceAfterPick(index, questions.length)}
-              />
+              <View style={styles.dialArea}>
+                <ScaleInput
+                  question={question}
+                  answers={answers}
+                  update={setAnswers}
+                  onPick={() => advanceAfterPick(index, questions.length)}
+                />
+              </View>
             )}
             {question.type === "multi" && (
               <MultiInput question={question} answers={answers} update={setAnswers} />
@@ -312,7 +376,7 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
         )}
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: spacing.lg + insets.bottom }]}>
         {submitting && inParty && <Banner tone="accent" text="AI가 캐릭터 카드를 쓰고 있어요. 몇 초 걸려요" />}
         {!submitting && submitError !== null && (
           <Banner tone="danger" text={submitError} actionLabel="다시 시도" onAction={() => void onSubmit()} />
@@ -352,16 +416,38 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.colors.background },
-    content: { padding: spacing.md, paddingTop: spacing.sm, gap: spacing.md },
-    progress: { gap: spacing.xs + spacing.xxs },
+    head: { height: 56, flexDirection: "row", alignItems: "center", gap: spacing.xs, paddingLeft: spacing.xs, paddingRight: spacing.md },
+    close: { width: hitSize, height: hitSize, alignItems: "center", justifyContent: "center" },
+    bar: { flex: 1 },
+    count: { minWidth: 40, textAlign: "right" },
+    content: { flexGrow: 1, paddingHorizontal: spacing.md, paddingTop: spacing.xl, paddingBottom: spacing.md, gap: spacing.md },
+    qHead: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: spacing.sm + spacing.xs, paddingHorizontal: spacing.sm },
+    qText: { flex: 1, lineHeight: 32 },
+    qCount: { paddingBottom: 6 },
+    dialArea: { flex: 1, justifyContent: "center" },
     inputBlock: { gap: spacing.sm },
-    chipRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+    chipGrid: { gap: 10, paddingTop: spacing.sm + spacing.xs },
+    chipRow: { flexDirection: "row", gap: spacing.sm },
+    chipCell: { flex: 1 },
+    chip: {
+      minHeight: hitSize,
+      borderRadius: radius.full,
+      borderWidth: 1,
+      borderColor: t.colors.border,
+      backgroundColor: t.colors.surface,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.xs,
+    },
+    chipOn: { backgroundColor: t.colors.accentSoft, borderWidth: 2, borderColor: t.colors.accent },
+    chipOnText: { color: t.colors.accentSoftText },
     footer: {
-      padding: spacing.md,
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.sm,
+      paddingBottom: spacing.lg,
       gap: spacing.sm,
       backgroundColor: t.colors.background,
-      borderTopWidth: 1,
-      borderTopColor: t.colors.border,
     },
     navRow: { flexDirection: "row", gap: spacing.sm },
     navPrev: { flex: 1 },

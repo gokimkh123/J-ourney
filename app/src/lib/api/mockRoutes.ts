@@ -1,5 +1,5 @@
 import { buildRulePersona } from '../persona/scoring.ts';
-import type { AnswerState, Member, Persona, Trip } from '../persona/types.ts';
+import type { AnswerState, Chip, Member, Persona, Trip } from '../persona/types.ts';
 import { memberColors } from '../theme.ts';
 import type { MockRoute } from './mock.ts';
 import { MOCK_QUESTIONS } from './mockQuestions.ts';
@@ -17,10 +17,11 @@ const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 // 실서버의 AI 한도를 흉내 낸다: 구성원당 이 횟수까지만 source가 'llm'이다.
 const LLM_LIMIT = 2;
 
+// 시연 친구. 칩은 회의 예시(부산)의 AI 칩과 맞춘다.
 const SEEDS = [
-  { nickname: '지은', title: '반짝반짝 탐험가' },
-  { nickname: '현우', title: '꼼꼼한 맛집 플래너' },
-  { nickname: '서연', title: '느긋한 힐러' },
+  { nickname: '지은', title: '반짝반짝 탐험가', chips: [{ label: '활기형', emoji: '🎉' }, { label: '탐험형', emoji: '🧭' }] },
+  { nickname: '현우', title: '꼼꼼한 맛집 플래너', chips: [{ label: '계획형', emoji: '📋' }, { label: '절약형', emoji: '🐷' }] },
+  { nickname: '서연', title: '느긋한 힐러', chips: [{ label: '느긋형', emoji: '🐢' }, { label: '한적형', emoji: '🌿' }, { label: '늦잠형', emoji: '😴' }] },
 ];
 
 function error(status: number, code: string, message: string): MockResult {
@@ -143,7 +144,7 @@ export function createMockRoutes(): MockRoute[] {
     return tripId === undefined ? undefined : trips.get(tripId);
   }
 
-  function addMember(record: TripRecord, nickname: string, title: string | null = null): Member {
+  function addMember(record: TripRecord, nickname: string, title: string | null = null, chips?: Chip[]): Member {
     memberCount += 1;
     const member: Member = {
       id: `mem_${String(memberCount).padStart(2, '0')}`,
@@ -152,6 +153,7 @@ export function createMockRoutes(): MockRoute[] {
       isHost: record.members.length === 0,
       personaReady: title !== null,
       title,
+      ...(chips !== undefined && { chips }),
     };
     record.members.push(member);
     return member;
@@ -196,7 +198,7 @@ export function createMockRoutes(): MockRoute[] {
         tripIdByCode.set(inviteCode, record.trip.id);
         const host = addMember(record, nickname);
         if (o.demoMode === true) {
-          for (const seed of SEEDS) addMember(record, seed.nickname, seed.title);
+          for (const seed of SEEDS) addMember(record, seed.nickname, seed.title, seed.chips);
         }
         return issue(record, host);
       },
@@ -269,6 +271,7 @@ export function createMockRoutes(): MockRoute[] {
         personas.set(member.id, persona);
         member.personaReady = true;
         member.title = persona.title;
+        member.chips = persona.chips;
         return { status: 201, body: { persona } };
       },
     },

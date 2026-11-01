@@ -4,26 +4,34 @@ import Svg, { Circle, Path } from "react-native-svg";
 
 import { pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
+import Wordmark from "./Wordmark.tsx";
 
 export type TopBarProps = {
   /** 파티 안이면 파티 이름(없으면 이름 칸 없이 "내 파티"만). 파티 밖(초기 화면)이면 생략 */
   party?: { name: string | null };
   /** 왼쪽 "‹ 내 파티"를 눌렀을 때. party가 있을 때만 쓴다. */
   onExitParty?: () => void;
+  /** 주면 왼쪽에 화면 이름을 크게 적는다(party보다 앞선다). */
+  title?: string;
   onSettings: () => void;
 };
 
 /**
- * 탭 화면 맨 위의 얇은 줄. 제목은 없고, 파티 안에서는 왼쪽에 "‹ 내 파티"와 파티 이름, 오른쪽에는 설정 버튼이 있다.
+ * 탭 화면 맨 위의 얇은 줄. 파티 밖에서는 왼쪽에 앱 이름 글자 그림, 파티 안에서는 "‹ 내 파티"와 파티 이름, 오른쪽에는 설정 버튼이 있다.
+ * title을 주면 왼쪽에 화면 이름을 크게 적는다(내 캐릭터).
  */
-export default function TopBar({ party, onExitParty, onSettings }: TopBarProps) {
+export default function TopBar({ party, onExitParty, title, onSettings }: TopBarProps) {
   const { colors } = useTheme();
   const styles = useStyles(createStyles);
   const insets = useSafeAreaInsets();
   return (
     <View style={[styles.bar, { paddingTop: insets.top }]}>
       <View style={styles.row}>
-        {party !== undefined ? (
+        {title !== undefined ? (
+          <AppText variant="title" accessibilityRole="header" numberOfLines={1} style={styles.title}>
+            {title}
+          </AppText>
+        ) : party !== undefined ? (
           <Pressable
             onPress={onExitParty}
             accessibilityRole="button"
@@ -44,7 +52,9 @@ export default function TopBar({ party, onExitParty, onSettings }: TopBarProps) 
             ) : null}
           </Pressable>
         ) : (
-          <View />
+          <View style={styles.brand}>
+            <Wordmark width={112} color={colors.accent} />
+          </View>
         )}
         <Pressable
           onPress={onSettings}
@@ -85,5 +95,7 @@ const createStyles = (t: Theme) =>
       borderRadius: radius.full,
       backgroundColor: t.colors.surfaceRaised,
     },
+    brand: { paddingLeft: spacing.sm },
+    title: { flexShrink: 1, paddingLeft: spacing.sm },
     gear: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   });

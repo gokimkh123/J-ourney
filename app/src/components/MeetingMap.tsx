@@ -405,6 +405,12 @@ export default function MeetingMap({
 
   // 조용한 지도: 가까운 장소 스티커는 서로 닿지 않게 벌리고, 길은 벌린 자리를 순서대로 잇는다.
   const calmPins = calm && viewport ? spreadPoints(pins.map((pin) => at(pin)), STICKER_GAP) : [];
+  // 길의 한 점: 같은 순서·같은 곳의 스티커가 있으면(일정 지도) 벌린 자리, 아니면 같은 곳의 스티커, 그것도 없으면 원래 자리.
+  const calmAt = (p: LatLng, i: number) => {
+    const same = (q: LatLng | undefined) => q !== undefined && q.lat === p.lat && q.lng === p.lng;
+    const k = same(pins[i]) ? i : pins.findIndex(same);
+    return calmPins[k] ?? at(p);
+  };
 
   // viewHeight가 따로 있으면 그림 위치·배율은 그 기준으로 두고, 아래쪽은 같은 배율로 이어서 더 보여 준다(시트가 접히면 드러나는 부분).
   const viewBoxHeight = viewport ? (camera ? artH : viewHeight !== undefined ? height / viewport.scale : viewport.h) : 0;
@@ -430,7 +436,7 @@ export default function MeetingMap({
           {viewport && routes.length > 0 && (
             <Svg width={svgW} height={svgH} style={StyleSheet.absoluteFill} pointerEvents="none">
               {routes.map((r, i) => {
-                const d = smoothPath(calmPins.length > 1 ? calmPins : r.points.map(at));
+                const d = smoothPath(r.points.map(calm ? calmAt : at));
                 if (d === "") return null;
                 return (
                   <G key={`route${i}`}>

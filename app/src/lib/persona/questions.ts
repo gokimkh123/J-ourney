@@ -214,6 +214,7 @@ export function parseMember(json: unknown): Member {
     isHost: bool(o, 'isHost', '구성원'),
     personaReady: bool(o, 'personaReady', '구성원'),
     title,
+    ...(Array.isArray(o.chips) && { chips: o.chips.map(parseChip) }),
   };
 }
 

@@ -104,6 +104,8 @@ export type Member = {
   isHost: boolean;
   personaReady: boolean;
   title: string | null;
+  /** 성향 칩(캐릭터 소품용). 명세 v2.3에는 없어 서버가 보내 줄 때만 있다. */
+  chips?: Chip[];
 };
 
 export type SessionResponse = {

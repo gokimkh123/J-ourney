@@ -30,6 +30,13 @@ export type ThemeColors = {
   accentSoft: string;
   accentSoftText: string;
 
+  // 준비 화면처럼 메인 색을 바탕으로 깔 때. 다크에서 accent는 너무 밝아 바탕용을 따로 둔다.
+  hero: string;
+  /** 메인 색 바탕 위 캐릭터 발밑 그림자 */
+  heroFloor: string;
+  /** 메인 색 바탕 위 글자·글자 그림 */
+  onHero: string;
+
   // 상태
   success: string;
   warning: string;
@@ -49,6 +56,8 @@ export type ThemeColors = {
   mapLand: string;
   mapLandEdge: string;
   mapGrid: string;
+  /** 캐릭터가 서는 무대(mapLand 바탕)의 바닥 타원 */
+  stageFloor: string;
 
   scrim: string;
 };
@@ -74,6 +83,10 @@ export const lightColors: ThemeColors = {
   accentSoft: '#EAECFD',
   accentSoftText: '#3B45CE',
 
+  hero: '#5762FF',
+  heroFloor: '#3B45CE',
+  onHero: '#FFFFFF',
+
   success: '#0F7A45',
   warning: '#945400',
   danger: '#CC2A3B',
@@ -90,6 +103,7 @@ export const lightColors: ThemeColors = {
   mapLand: '#FFF3D6',
   mapLandEdge: '#E7CF9E',
   mapGrid: '#F0DDB3',
+  stageFloor: '#F5E2B8',
 
   scrim: 'rgba(0, 0, 0, 0.4)',
 };
@@ -114,6 +128,10 @@ export const darkColors: ThemeColors = {
   accentSoft: '#252846',
   accentSoftText: '#949BFF',
 
+  hero: '#3B45CE',
+  heroFloor: '#2A3190',
+  onHero: '#FFFFFF',
+
   success: '#4CD68A',
   warning: '#FFC75A',
   danger: '#FF7A85',
@@ -130,6 +148,7 @@ export const darkColors: ThemeColors = {
   mapLand: '#2B2840',
   mapLandEdge: '#17141F',
   mapGrid: '#38334F',
+  stageFloor: '#363250',
 
   scrim: 'rgba(0, 0, 0, 0.6)',
 };

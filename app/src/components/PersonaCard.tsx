@@ -42,7 +42,7 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
         </View>
 
         <View style={styles.hero}>
-          <Avatar color={color} chips={persona.chips} name={persona.nickname} size="xl" variant="full" />
+          <Avatar color={color} chips={persona.chips} name={persona.nickname} variant="full" height={156} />
           <View style={styles.names}>
             <AppText variant="title" align="center">
               {persona.nickname}
@@ -231,8 +231,10 @@ const createStyles = (t: Theme) => StyleSheet.create({
     borderRadius: radius.sm,
     backgroundColor: t.colors.warning,
   },
+  // 알약은 스스로 왼쪽에 붙으므로(alignSelf) 줄로 감싸 가운데에 둔다.
   source: {
-    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
   },
   traits: {
     gap: spacing.sm + spacing.xs,

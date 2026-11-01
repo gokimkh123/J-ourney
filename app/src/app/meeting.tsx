@@ -21,6 +21,7 @@ import {
   SegmentedTabs,
   SpeechRow,
   boundsAround,
+  type PlaceKind,
 } from "../components/index.ts";
 import {
   agentRows,
@@ -35,6 +36,7 @@ import {
 import { usePinStage } from "../components/map/usePinStage.ts";
 import { keepAgentsVisible, type Position } from "../lib/meeting/agentPositions.ts";
 import { latestRoute } from "../lib/meeting/reducer.ts";
+import type { RouteDay } from "../lib/meeting/types.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { onlyMeeting, startedMeetingStore } from "../lib/meeting/startedMeeting.ts";
 import { meetingImmersive } from "../lib/meeting/stageStore.ts";
@@ -44,6 +46,7 @@ import { answeredLabel, itemNumber, reviewPeople, reviewPins, pickedCountLabel }
 import { useLiveMeeting } from "../lib/meeting/useLiveMeeting.ts";
 import { useMeetingPlayback, type MeetingPlayback } from "../lib/meeting/usePlayback.ts";
 import { useReview } from "../lib/meeting/useReview.ts";
+import { stopKindOf } from "../lib/plan/chosenPlan.ts";
 import { useServerChoice } from "../lib/plan/useServerChoice.ts";
 import { usePartyInfos } from "../lib/session/usePartyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
@@ -248,7 +251,10 @@ export default function MeetingScreen() {
   const done = play.status === "finished" || play.status === "error";
   const reviewing = live && state.phase === "reviewing" && state.review !== null;
   const reviewItems = state.review?.items ?? [];
-  const visiblePins = mapPins(state).filter((pin) => pinStage.isVisible(pin.id));
+  const kinds = stopKinds([...Object.values(state.plans).flatMap((p) => p.route), ...route]);
+  const visiblePins = mapPins(state)
+    .filter((pin) => pinStage.isVisible(pin.id))
+    .map((pin) => ({ ...pin, kind: kinds.get(pin.id) ?? kinds.get(pin.name) ?? "pin" }));
   const pins = reviewing ? reviewPins(visiblePins, reviewItems) : visiblePins;
 
   // 시트 제목 줄 오른쪽 버튼: 재생 중에는 건너뛰기·일시정지, 끝나면 다시 보기·합의안 보기.
@@ -288,6 +294,7 @@ export default function MeetingScreen() {
             <MeetingMap
               art="busan"
               artView="full"
+              calm
               bounds={boundsAround(mapPoints(state))}
               agents={pinStage.agents}
               pins={pins}
@@ -454,6 +461,17 @@ export default function MeetingScreen() {
       </View>
     </View>
   );
+}
+
+/** 지도 스티커 모양. 후보에는 분류가 없어서, 일정안 경로에 같은 장소(장소 번호나 이름)가 있으면 그 분류로 정한다. */
+function stopKinds(days: RouteDay[]): Map<string, PlaceKind> {
+  const kinds = new Map<string, PlaceKind>();
+  for (const stop of days.flatMap((d) => d.stops)) {
+    const kind = stopKindOf(stop);
+    if (stop.placeId !== undefined) kinds.set(stop.placeId, kind);
+    kinds.set(stop.name, kind);
+  }
+  return kinds;
 }
 
 const createStyles = (t: Theme) =>
