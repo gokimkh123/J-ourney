@@ -2,6 +2,8 @@
 const STATUS = {
   VALIDATION_ERROR: 400,
   UNAUTHORIZED: 401,
+  /** 카카오 로그인이 필요함 (LOGIN_REQUIRED인 서버의 바깥 요청, 11/2) */
+  LOGIN_REQUIRED: 401,
   FORBIDDEN: 403,
   ACCESS_KEY_REQUIRED: 403,
   NOT_FOUND: 404,
@@ -21,6 +23,8 @@ const STATUS = {
   INTERNAL_ERROR: 500,
   /** AI가 필요한 확인을 지금 할 수 없음 (하루 AI 상한·오류·AI 0번 모드에 녹화 없음·접근 키 없는 바깥 요청) — 잠시 뒤 다시 */
   AI_UNAVAILABLE: 503,
+  /** 카카오 로그인을 지금 받을 수 없음 (서버에 카카오 앱 ID가 없음·카카오 확인 실패) — 잠시 뒤 다시 */
+  LOGIN_UNAVAILABLE: 503,
 } as const;
 
 export type ErrorCode = keyof typeof STATUS;

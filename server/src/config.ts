@@ -96,4 +96,10 @@ export const config = {
   kakaoWalkDailyLimit: count('KAKAO_WALK_DAILY_LIMIT', 1000),
   kakaoCarDailyLimit: count('KAKAO_CAR_DAILY_LIMIT', 3000),
   kakaoTimeoutMs: num('KAKAO_TIMEOUT_MS', 8000),
+  /** 카카오 로그인 (11/2): 우리 앱의 카카오 앱 ID. 앱이 보낸 카카오 토큰이 이 앱에서 받은 것인지 확인함 (다른 앱의 토큰으로 들어오지 못하게). 없으면 로그인을 받지 않음 */
+  kakaoAppId: process.env.KAKAO_APP_ID?.trim() || null,
+  /** 카카오 사용자 API 주소 (로그인 토큰 확인) */
+  kakaoApiBase: process.env.KAKAO_API_BASE ?? 'https://kapi.kakao.com',
+  /** true이면 바깥(터널) 요청은 카카오 로그인을 해야 여행 만들기·참여 (앱이 로그인을 붙인 뒤 켬, 기본 꺼짐. 서버 안 요청은 예전처럼) */
+  loginRequired: process.env.LOGIN_REQUIRED === 'true',
 };

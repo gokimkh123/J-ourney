@@ -28,6 +28,28 @@ export const trips = pgTable('trips', {
 });
 
 /** 구성원 — seat는 참여 순서(1–4)이며 색상은 seat로 정함. 토큰은 원문 대신 SHA-256 값만 저장함 */
+/** 카카오 로그인 계정 (11/2): 카카오 회원번호만 저장함 (이름·이메일·프로필은 받지 않음) */
+export const users = pgTable('users', {
+  id: text('id').primaryKey(),
+  kakaoId: text('kakao_id').notNull().unique(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastLoginAt: timestamp('last_login_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** 로그인 토큰 (기기마다 하나, sha256만 저장). 만료가 지나면 쓰지 못함 */
+export const userSessions = pgTable(
+  'user_sessions',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('user_sessions_user_idx').on(t.userId)],
+);
+
 export const members = pgTable(
   'members',
   {
@@ -35,6 +57,8 @@ export const members = pgTable(
     tripId: text('trip_id')
       .notNull()
       .references(() => trips.id, { onDelete: 'cascade' }),
+    /** 로그인한 계정 (11/2, 내 여행 되찾기). 로그인 없이 들어온 자리는 null */
+    userId: text('user_id').references(() => users.id, { onDelete: 'set null' }),
     nickname: text('nickname').notNull(),
     seat: smallint('seat').notNull(),
     isHost: boolean('is_host').notNull().default(false),
@@ -45,6 +69,9 @@ export const members = pgTable(
   },
   (t) => [
     unique('members_trip_seat_unique').on(t.tripId, t.seat),
+    // 한 계정은 한 여행에 한 자리만 (동시에 두 번 참여해도)
+    unique('members_trip_user_unique').on(t.tripId, t.userId),
+    index('members_user_idx').on(t.userId),
     check('members_seat_range', sql`${t.seat} between 1 and ${sql.raw(String(MAX_MEMBERS))}`),
   ],
 );
