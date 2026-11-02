@@ -54,13 +54,14 @@
   </tr>
 </table>
 
-- 성향 설문(17문항) 응답으로 구성원별 페르소나 에이전트(캐릭터 카드)를 만듦. 가고 싶은 곳은 꼭 넣을 곳으로, 이번 여행 속도는 하루 장소 수로 씀
+- 성향 설문(17문항) 응답으로 구성원별 페르소나 에이전트(캐릭터 카드)를 만듦. 가고 싶은 곳은 꼭 넣을 곳으로(하루에 다닐 수 있는 수를 넘으면 사람마다 고르게 남기고 알림), 이번 여행 속도는 하루 장소 수로 씀
 - 공공 관광 데이터(한국관광공사 TourAPI·관광 빅데이터)로 찾은 후보 장소를 에이전트들이 동시에 고르고, 공용 후보 보드에서 👍·⚠·✕로 의견을 나눔
 - 방장이 적은 항공편 도착·출발 시각과 이미 예약한 숙소·장소를 일정에 반영함
 - 의견이 갈리는 장소는 사람이 남길지 뺄지 정함
 - 코드가 동선·식당·가는 길(카카오 길찾기)을 계산해 일정안 2개(A안·B안)를 짜고, 에이전트가 평가하면 코드가 고쳐 다시 평가함
 - 사람이 투표로 하나를 고르며(과반, 2:2면 방장), 추천 항목마다 선정 근거와 지도 링크를 제공함
 - 커뮤니티에서 지역마다 AI가 많이 고른 장소와 여행자 리뷰를 보여 줌
+- 카카오 로그인으로 내 여행을 다시 찾음 (앱을 지우거나 폰을 바꿔도 같은 카카오 계정이면 참여한 여행으로 돌아감)
 - 화면 속 수치는 설명용 예시임
 
 ## 2. 미리보기
@@ -170,7 +171,7 @@ flowchart LR
 | 서버 | ![Node.js](https://img.shields.io/badge/Node.js%2024-5FA04E?logo=nodedotjs&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white) ![Hono](https://img.shields.io/badge/Hono-E36002?logo=hono&logoColor=white) ![Zod](https://img.shields.io/badge/Zod-3E67B1?logo=zod&logoColor=white) ![WebSocket](https://img.shields.io/badge/WebSocket-4A5568) |
 | DB | ![PostgreSQL](https://img.shields.io/badge/PostgreSQL%2018-4169E1?logo=postgresql&logoColor=white) ![Drizzle ORM](https://img.shields.io/badge/Drizzle_ORM-C5F74F?logo=drizzle&logoColor=black) |
 | 앱 | ![Expo](https://img.shields.io/badge/Expo-000020?logo=expo&logoColor=white) ![React Native](https://img.shields.io/badge/React_Native-087EA4?logo=react&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white) |
-| 데이터 | 한국관광공사 TourAPI (관광지·음식점·숙소, 연관 관광지 순위, 집중률 예측) · 카카오 길찾기 (대중교통·자동차·도보) |
+| 데이터 | 한국관광공사 TourAPI (관광지·음식점·숙소, 연관 관광지 순위, 집중률 예측) · 카카오 길찾기 (대중교통·자동차·도보) · 카카오 로그인 |
 | CI/CD | ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white) ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) ![GHCR](https://img.shields.io/badge/GHCR-181717?logo=github&logoColor=white) |
 
 ## 6. 시작하기

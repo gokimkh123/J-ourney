@@ -2,7 +2,7 @@
 
 - 담당: 김건한
 - 범위: REST API, WebSocket 이벤트 중계, AI 회의 엔진(페르소나 생성·자료조사·회의·확정 투표 집계)
-- 설계 원칙: 판단은 LLM, 계산·검증은 코드, 최종 결정은 사람 4명 (요구사항·연동 명세서 v2.4)
+- 설계 원칙: 판단은 LLM, 계산·검증은 코드, 최종 결정은 사람 2–4명 (요구사항·연동 명세서 v2.5)
 - 배포: Docker 이미지 (GitHub Actions가 main 병합 때 빌드하여 GHCR에 저장). 개발·시연 서버는 학교 VM(Ubuntu, Docker)에서 docker compose로 실행하고 Cloudflare 터널로 공유함. 서버는 한 번에 한 컴퓨터에서만 켬 (DB마다 하루 API·LLM 상한을 따로 세기 때문)
 - 실행: `.env.example`을 참고해 `server/.env`를 만든 뒤 `server` 폴더에서 `docker compose up -d --build`를 실행함 (서버·PostgreSQL·터널). 공유 주소는 `docker compose logs tunnel | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'`로 확인하며, 터널을 다시 시작할 때마다 바뀌므로 저장소에 적지 않음
 - 장소 자료: 한국관광공사 TourAPI의 장소·연관 관광지·코드표(법정동 지역·장소 분류)를 PostgreSQL에 저장해 회의 후보 찾기에 사용함. 자료를 모으는 도구와 모은 자료는 저장소에 포함하지 않음. 장소 정보 출처 표시: ⓒ한국관광공사
