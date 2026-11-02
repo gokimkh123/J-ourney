@@ -7,6 +7,11 @@ export type ConditionsInput = {
   /** 없으면 기본값(7점·5회). 화면의 스테퍼가 바꾼다. */
   aiMinSatisfaction?: number;
   maxRounds?: number;
+  /** 방장 칸(v2.4, 모두 선택): 첫날 도착·마지막 날 출발 시각(HH:MM), 이미 예약한 숙소·장소 */
+  arrivalTime?: string | null;
+  departureTime?: string | null;
+  bookedLodging?: string | null;
+  bookedPlaces?: string[];
 };
 
 export type ConditionsField = keyof ConditionsInput;
@@ -18,6 +23,11 @@ export type ConditionsBody = {
   budgetPerPerson: number;
   transport: string;
   rules: { aiMinSatisfaction: number; maxRounds: number };
+  // 방장 칸(v2.4): 값이 있을 때만 싣는다(서버는 없으면 null·빈 목록으로 본다).
+  arrivalTime?: string;
+  departureTime?: string;
+  bookedLodging?: string;
+  bookedPlaces?: string[];
 };
 
 export type ConditionsResult =
@@ -29,6 +39,9 @@ const MAX_TRANSPORT = 40;
 const MIN_BUDGET = 10000;
 const MAX_BUDGET = 10000000;
 const MAX_SPAN_DAYS = 6;
+/** 방장 칸 한도(서버 v2.4 routes/trips.ts BOOKED와 같음) */
+export const BOOKED_LIMITS = { places: 3, nameMax: 40 } as const;
+const HHMM = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 /** 회의 규칙 기본값과 고를 수 있는 범위(서버 한도가 정해지면 맞춘다). */
 export const DEFAULT_MIN_SATISFACTION = 7;
@@ -112,6 +125,33 @@ export function validateConditions(input: ConditionsInput, today?: string): Cond
     errors.maxRounds = `최대 라운드는 ${MAX_ROUNDS_RANGE.min}~${MAX_ROUNDS_RANGE.max}회 사이로 정해 주세요.`;
   }
 
+  const arrivalTime = input.arrivalTime ?? null;
+  const departureTime = input.departureTime ?? null;
+  if (arrivalTime !== null && !HHMM.test(arrivalTime)) errors.arrivalTime = '도착 시각을 다시 골라 주세요.';
+  if (departureTime !== null && !HHMM.test(departureTime)) errors.departureTime = '출발 시각을 다시 골라 주세요.';
+  // 당일치기는 도착이 출발보다 앞이어야 한다(서버 규칙).
+  if (
+    errors.arrivalTime === undefined &&
+    errors.departureTime === undefined &&
+    arrivalTime !== null &&
+    departureTime !== null &&
+    input.startDate === input.endDate &&
+    arrivalTime >= departureTime
+  ) {
+    errors.departureTime = '당일치기는 도착 시각이 출발 시각보다 앞이어야 해요.';
+  }
+  // 빈 칸은 없는 것으로 본다(숙소 '있어요'를 골랐는데 비어 있으면 없음).
+  const bookedLodging = (input.bookedLodging ?? '').trim();
+  if (Array.from(bookedLodging).length > BOOKED_LIMITS.nameMax) {
+    errors.bookedLodging = `예약한 숙소 이름은 ${BOOKED_LIMITS.nameMax}자까지 적을 수 있어요.`;
+  }
+  const bookedPlaces = (input.bookedPlaces ?? []).map((name) => name.trim()).filter((name) => name !== '');
+  if (bookedPlaces.length > BOOKED_LIMITS.places) {
+    errors.bookedPlaces = `예약한 장소는 ${BOOKED_LIMITS.places}곳까지 적을 수 있어요.`;
+  } else if (bookedPlaces.some((name) => Array.from(name).length > BOOKED_LIMITS.nameMax)) {
+    errors.bookedPlaces = `장소 이름은 ${BOOKED_LIMITS.nameMax}자까지 적을 수 있어요.`;
+  }
+
   if (Object.keys(errors).length > 0 || budget === null) return { ok: false, errors };
   return {
     ok: true,
@@ -122,6 +162,10 @@ export function validateConditions(input: ConditionsInput, today?: string): Cond
       budgetPerPerson: budget,
       transport,
       rules: { aiMinSatisfaction, maxRounds },
+      ...(arrivalTime !== null && { arrivalTime }),
+      ...(departureTime !== null && { departureTime }),
+      ...(bookedLodging !== '' && { bookedLodging }),
+      ...(bookedPlaces.length > 0 && { bookedPlaces }),
     },
   };
 }

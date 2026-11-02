@@ -23,7 +23,7 @@ export type PlanBoardFlow = BoardSyncState & {
   /** 방장 '지금 정하기' */
   closeChoice(): Promise<RunResult>;
   /** 고치기. 반영 못 한 건은 results의 applied가 false(note에 까닭) */
-  edit(edits: PlanEdit[]): Promise<{ result: RunResult; results: EditResult[] }>;
+  edit(edits: PlanEdit[], baseVersion?: number): Promise<{ result: RunResult; results: EditResult[] }>;
   /** 방장 '확정 투표 시작' */
   requestConfirm(): Promise<RunResult>;
   vote(decision: PlanVoteDecision, memberId?: string): Promise<RunResult>;
@@ -70,8 +70,8 @@ export function usePlanBoard(enabled: boolean, tripId: string | null, eventSeq: 
   );
   const closeChoice = useCallback(() => run(() => endpoints.closeChoice(tripId ?? '')), [run, tripId]);
   const edit = useCallback(
-    async (edits: PlanEdit[]) => {
-      const result = await run(() => endpoints.editPlan(tripId ?? '', edits));
+    async (edits: PlanEdit[], baseVersion?: number) => {
+      const result = await run(() => endpoints.editPlan(tripId ?? '', edits, baseVersion));
       return { result, results: result.ok ? parseEditResults(result.json) : [] };
     },
     [run, tripId],

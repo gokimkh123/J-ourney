@@ -6,7 +6,30 @@ import { MOCK_QUESTIONS } from './mockQuestions.ts';
 
 type MockResult = ReturnType<MockRoute['handler']>;
 
-type TripRecord = { trip: Trip; members: Member[] };
+type TripRecord = { trip: Trip; members: Member[]; demo: boolean };
+
+/**
+ * 회의·일정 API를 실서버처럼 답하는 가짜 서버(lib/meeting/fakeServer.ts)가 이 모양을 갖춘다.
+ * 없으면(테스트처럼) 회의·일정 API는 만들지 않는다.
+ */
+export type MockMeetingBackend = {
+  setTrip(
+    tripId: string,
+    members: { id: string; nickname: string; color: string; isHost: boolean; title?: string | null; chips?: Chip[] }[],
+    demo: boolean,
+  ): void;
+  tripStatus(tripId: string): Trip['status'] | null;
+  start(tripId: string, callerId: string): MockResult;
+  meeting(meetingId: string, callerId: string): MockResult;
+  review(meetingId: string, callerId: string, body: unknown): MockResult;
+  closeReview(meetingId: string, callerId: string): MockResult;
+  events(tripId: string, afterSeq: number): MockResult;
+  plan(tripId: string, callerId: string): MockResult;
+  choose(tripId: string, callerId: string, body: unknown): MockResult;
+  closeChoice(tripId: string, callerId: string): MockResult;
+  options(tripId: string, callerId: string): MockResult;
+  edits(tripId: string, callerId: string, body: unknown): MockResult;
+};
 type Session = { tripId: string; member: Member; no: number };
 
 const API_PREFIX = '/api/v1';
@@ -104,10 +127,31 @@ function validateAnswers(raw: unknown): AnswerState | string {
       const unknown = ids.find((id) => !question.options.some((option) => option.id === id));
       if (unknown !== undefined) return `${n}번 문항에 없는 선택지입니다: ${unknown}`;
       if (new Set(ids).size !== ids.length) return `${n}번 문항에 같은 선택지가 중복되었습니다.`;
-      if (ids.length < question.minSelect || ids.length > question.maxSelect) {
+      // 기타 글(v2.4)은 최소 개수에 하나로 센다(서버 규칙).
+      const other = question.other !== undefined && typeof item?.text === 'string' ? item.text.trim() : '';
+      if (question.other !== undefined && Array.from(other).length > question.other.maxLength) {
+        return `${n}번 문항의 기타는 ${question.other.maxLength}자 이하로 적어 주세요.`;
+      }
+      if (ids.length + (other !== '' ? 1 : 0) < question.minSelect || ids.length > question.maxSelect) {
         return `${n}번 문항은 ${question.minSelect}~${question.maxSelect}개를 골라 주세요.`;
       }
-      state[question.id] = { type: 'multi', optionIds: ids };
+      state[question.id] = other !== '' ? { type: 'multi', optionIds: ids, other } : { type: 'multi', optionIds: ids };
+    } else if (question.type === 'list') {
+      if (item === undefined) continue;
+      const { texts } = item;
+      if (!Array.isArray(texts) || !texts.every((t) => typeof t === 'string')) return `${n}번 문항은 글 목록(texts)으로 답해 주세요.`;
+      const kept = [...new Set((texts as string[]).map((t) => t.trim()).filter((t) => t !== ''))];
+      if (kept.length > question.maxItems) return `${n}번 문항은 ${question.maxItems}개까지 적을 수 있습니다.`;
+      if (kept.some((t) => Array.from(t).length > question.maxLength)) return `${n}번 문항은 한 줄 ${question.maxLength}자 이하로 적어 주세요.`;
+      state[question.id] = { type: 'list', texts: kept };
+    } else if (question.type === 'single') {
+      // 예전 응답(고르지 않음)도 받는다(서버 v2.4와 같음).
+      const optionIds = item === undefined ? [] : item.optionIds;
+      if (!Array.isArray(optionIds) || optionIds.length > 1) return `${n}번 문항은 하나만 골라 주세요.`;
+      if (optionIds.length === 0) continue;
+      const id = optionIds[0];
+      if (typeof id !== 'string' || !question.options.some((option) => option.id === id)) return `${n}번 문항에 없는 선택지입니다: ${String(id)}`;
+      state[question.id] = { type: 'single', optionId: id };
     } else {
       if (item === undefined) continue;
       if (typeof item.text !== 'string') return `${n}번 문항은 문자열로 답해 주세요.`;
@@ -121,7 +165,7 @@ function validateAnswers(raw: unknown): AnswerState | string {
   return state;
 }
 
-export function createMockRoutes(): MockRoute[] {
+export function createMockRoutes(meetings?: MockMeetingBackend): MockRoute[] {
   const trips = new Map<string, TripRecord>();
   const tripIdByCode = new Map<string, string>();
   const sessions = new Map<string, Session>();
@@ -169,6 +213,114 @@ export function createMockRoutes(): MockRoute[] {
     return { status: 201, body: { trip: record.trip, member, token } };
   }
 
+  function tripOf(record: TripRecord): Trip {
+    const status = meetings?.tripStatus(record.trip.id) ?? null;
+    return status === null ? record.trip : { ...record.trip, status };
+  }
+
+  // 회의 서버에 지금 구성원(성향 칩 포함)을 알려 준다.
+  function syncTrip(record: TripRecord): void {
+    meetings?.setTrip(
+      record.trip.id,
+      record.members.map((m) => ({
+        id: m.id,
+        nickname: m.nickname,
+        color: m.color,
+        isHost: m.isHost,
+        title: m.title,
+        chips: m.chips ?? personas.get(m.id)?.chips ?? [],
+      })),
+      record.demo,
+    );
+  }
+
+  // 로그인한 구성원이 그 여행 사람인지 보고 넘긴다.
+  function withTrip(headers: Record<string, string>, tripId: string, run: (session: Session, record: TripRecord) => MockResult): MockResult {
+    const session = authenticate(headers);
+    if (session === null) return unauthorized();
+    const record = trips.get(tripId);
+    if (!record) return error(404, 'NOT_FOUND', '여행을 찾을 수 없습니다.');
+    if (session.tripId !== record.trip.id) return error(403, 'FORBIDDEN', '이 여행에 접근할 권한이 없습니다.');
+    syncTrip(record);
+    return run(session, record);
+  }
+
+  // 회의 API는 회의 id만 오므로 로그인한 사람의 여행으로 회의 서버가 확인한다.
+  function withMember(headers: Record<string, string>, run: (session: Session) => MockResult): MockResult {
+    const session = authenticate(headers);
+    if (session === null) return unauthorized();
+    const record = trips.get(session.tripId);
+    if (record) syncTrip(record);
+    return run(session);
+  }
+
+  function meetingRoutes(m: MockMeetingBackend): MockRoute[] {
+    return [
+      {
+        method: 'PUT',
+        path: `${API_PREFIX}/trips/:tripId/conditions`,
+        handler: ({ params, headers, body }) =>
+          withTrip(headers, params.tripId, () => {
+            const d = asObject(asObject(body).destination);
+            const label = typeof d.label === 'string' ? d.label : '부산';
+            const regionCode = typeof d.regionCode === 'string' ? d.regionCode : '26';
+            return { status: 200, body: { destination: { regionCode, label } } };
+          }),
+      },
+      {
+        method: 'POST',
+        path: `${API_PREFIX}/trips/:tripId/meetings`,
+        handler: ({ params, headers }) => withTrip(headers, params.tripId, (session) => m.start(params.tripId, session.member.id)),
+      },
+      {
+        method: 'GET',
+        path: `${API_PREFIX}/meetings/:meetingId`,
+        handler: ({ params, headers }) => withMember(headers, (session) => m.meeting(params.meetingId, session.member.id)),
+      },
+      {
+        method: 'POST',
+        path: `${API_PREFIX}/meetings/:meetingId/review`,
+        handler: ({ params, headers, body }) => withMember(headers, (session) => m.review(params.meetingId, session.member.id, body)),
+      },
+      {
+        method: 'POST',
+        path: `${API_PREFIX}/meetings/:meetingId/review/close`,
+        handler: ({ params, headers }) => withMember(headers, (session) => m.closeReview(params.meetingId, session.member.id)),
+      },
+      {
+        method: 'GET',
+        path: `${API_PREFIX}/trips/:tripId/events`,
+        handler: ({ params, headers, query }) =>
+          withTrip(headers, params.tripId, () => m.events(params.tripId, Number(query.afterSeq ?? '0') || 0)),
+      },
+      {
+        method: 'GET',
+        path: `${API_PREFIX}/trips/:tripId/plan`,
+        handler: ({ params, headers }) => withTrip(headers, params.tripId, (session) => m.plan(params.tripId, session.member.id)),
+      },
+      {
+        method: 'POST',
+        path: `${API_PREFIX}/trips/:tripId/plan/choice`,
+        handler: ({ params, headers, body }) => withTrip(headers, params.tripId, (session) => m.choose(params.tripId, session.member.id, body)),
+      },
+      {
+        method: 'POST',
+        path: `${API_PREFIX}/trips/:tripId/plan/choice/close`,
+        handler: ({ params, headers }) => withTrip(headers, params.tripId, (session) => m.closeChoice(params.tripId, session.member.id)),
+      },
+      {
+        method: 'GET',
+        path: `${API_PREFIX}/trips/:tripId/plan/options`,
+        handler: ({ params, headers }) => withTrip(headers, params.tripId, (session) => m.options(params.tripId, session.member.id)),
+      },
+      {
+        method: 'POST',
+        path: `${API_PREFIX}/trips/:tripId/plan/edits`,
+        handler: ({ params, headers, body }) => withTrip(headers, params.tripId, (session) => m.edits(params.tripId, session.member.id, body)),
+      },
+    ];
+  }
+
   function authenticate(headers: Record<string, string>): Session | null {
     const match = /^Bearer (.+)$/.exec(headers.authorization ?? '');
     return match ? (sessions.get(match[1]) ?? null) : null;
@@ -193,6 +345,7 @@ export function createMockRoutes(): MockRoute[] {
         const record: TripRecord = {
           trip: { id: `trp_${tripCount}`, title, inviteCode, status: 'preparing' },
           members: [],
+          demo: o.demoMode === true,
         };
         trips.set(record.trip.id, record);
         tripIdByCode.set(inviteCode, record.trip.id);
@@ -225,7 +378,7 @@ export function createMockRoutes(): MockRoute[] {
       handler: ({ params }) => {
         const record = findByCode(params.inviteCode);
         if (!record) return error(404, 'NOT_FOUND', '초대 코드를 찾을 수 없습니다.');
-        return { status: 200, body: { trip: record.trip, members: record.members } };
+        return { status: 200, body: { trip: tripOf(record), members: record.members } };
       },
     },
     {
@@ -241,9 +394,37 @@ export function createMockRoutes(): MockRoute[] {
         }
         return {
           status: 200,
-          body: { trip: record.trip, members: record.members, conditions: null },
+          body: { trip: tripOf(record), members: record.members, conditions: null },
         };
       },
+    },
+    // 파티 나가기·없애기(v2.4). 서버처럼 방장은 나갈 수 없고, 나가기는 회의 시작 전에만·없애기는 회의 도는 중에는 막는다.
+    {
+      method: 'DELETE',
+      path: `${API_PREFIX}/trips/:tripId/members/me`,
+      handler: ({ params, headers }) =>
+        withTrip(headers, params.tripId, (session, record) => {
+          const member = record.members.find((m) => m.id === session.member.id);
+          if (!member) return error(404, 'NOT_FOUND', '구성원을 찾을 수 없습니다.');
+          if (member.isHost) return error(403, 'FORBIDDEN', '방장은 나갈 수 없습니다. 파티를 없애 주세요.');
+          if (record.trip.status !== 'preparing') return error(409, 'CONFLICT', '회의가 시작된 뒤에는 나갈 수 없습니다.');
+          record.members = record.members.filter((m) => m.id !== member.id);
+          for (const [token, s] of sessions) if (s.member.id === member.id) sessions.delete(token);
+          return { status: 204, body: undefined };
+        }),
+    },
+    {
+      method: 'DELETE',
+      path: `${API_PREFIX}/trips/:tripId`,
+      handler: ({ params, headers }) =>
+        withTrip(headers, params.tripId, (session, record) => {
+          if (!record.members.some((m) => m.id === session.member.id && m.isHost)) return error(403, 'FORBIDDEN', '방장만 파티를 없앨 수 있습니다.');
+          if (record.trip.status === 'meeting') return error(409, 'CONFLICT', '회의가 도는 중에는 없앨 수 없습니다.');
+          trips.delete(record.trip.id);
+          tripIdByCode.delete(record.trip.inviteCode);
+          for (const [token, s] of sessions) if (s.tripId === record.trip.id) sessions.delete(token);
+          return { status: 204, body: undefined };
+        }),
     },
     {
       method: 'GET',
@@ -286,5 +467,6 @@ export function createMockRoutes(): MockRoute[] {
         return { status: 200, body: { persona } };
       },
     },
+    ...(meetings === undefined ? [] : meetingRoutes(meetings)),
   ];
 }

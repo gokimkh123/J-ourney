@@ -25,6 +25,10 @@ export type Endpoints = {
   getInvite(code: string): Promise<InviteInfo>;
   joinInvite(code: string, nickname: string): Promise<SessionResponse>;
   getTrip(id: string): Promise<InviteInfo>;
+  /** 파티 나가기(v2.4, 방장 아님·회의 시작 전). 방장 403, 회의 시작 뒤 409 */
+  leaveTrip(tripId: string): Promise<void>;
+  /** 파티 없애기(v2.4, 방장·되돌릴 수 없음). 회의 도는 중 409 */
+  deleteTrip(tripId: string): Promise<void>;
   getQuestions(): Promise<Question[]>;
   submitPersona(answers: SubmitAnswer[]): Promise<Persona>;
   getPersona(): Promise<Persona>;
@@ -50,7 +54,8 @@ export type Endpoints = {
   /** 고칠 때 고를 보기(넣을 관광지·끼니마다 바꿀 식당) */
   getPlanOptions(tripId: string): Promise<unknown>;
   /** 고치기. 응답은 일정 표 + results(건마다 반영 여부) */
-  editPlan(tripId: string, edits: PlanEdit[]): Promise<unknown>;
+  /** baseVersion(v2.4): 보고 있던 일정 version. 서버 version과 다르면 아무것도 안 고치고 409 PLAN_LOCKED */
+  editPlan(tripId: string, edits: PlanEdit[], baseVersion?: number): Promise<unknown>;
   /** 방장: 확정 투표 시작 */
   requestConfirm(tripId: string): Promise<unknown>;
   /** 확정 투표 */
@@ -77,6 +82,12 @@ export function createEndpoints(client: ApiClient): Endpoints {
     },
     async getTrip(id) {
       return parseInviteInfo(await client.get(`/trips/${id}`));
+    },
+    async leaveTrip(tripId) {
+      await client.request('DELETE', `/trips/${encodeURIComponent(tripId)}/members/me`);
+    },
+    async deleteTrip(tripId) {
+      await client.request('DELETE', `/trips/${encodeURIComponent(tripId)}`);
     },
     async getQuestions() {
       return parseQuestions(await client.get('/persona/questions', { auth: false }));
@@ -120,9 +131,9 @@ export function createEndpoints(client: ApiClient): Endpoints {
     async getPlanOptions(tripId) {
       return client.get(`/trips/${encodeURIComponent(tripId)}/plan/options`);
     },
-    async editPlan(tripId, edits) {
+    async editPlan(tripId, edits, baseVersion) {
       // 고칠 때마다 서버가 길찾기로 다시 짜서 오래 걸릴 수 있다.
-      return client.post(`/trips/${encodeURIComponent(tripId)}/plan/edits`, { edits }, { timeoutMs: 30000 });
+      return client.post(`/trips/${encodeURIComponent(tripId)}/plan/edits`, baseVersion === undefined ? { edits } : { edits, baseVersion }, { timeoutMs: 30000 });
     },
     async requestConfirm(tripId) {
       return client.post(`/trips/${encodeURIComponent(tripId)}/plan/confirm`);

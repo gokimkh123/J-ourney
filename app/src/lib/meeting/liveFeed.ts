@@ -15,6 +15,10 @@ export type FeedStatus =
   | 'reconnecting'
   | 'suspended'
   | 'replaced'
+  /** v2.4: 이 구성원이 파티를 나가 서버가 닫음(4001). 다시 붙지 않는다 */
+  | 'left'
+  /** v2.4: 방장이 파티를 없애 서버가 닫음(4004). 다시 붙지 않는다 */
+  | 'deleted'
   | 'failed'
   | 'disposed';
 
@@ -41,6 +45,9 @@ export type LiveFeed = {
 
 // 같은 구성원이 연결을 더 열어 서버가 쫓아낸 코드. 다시 붙으면 서로 쫓아낸다.
 const REPLACED_CODE = 4000;
+// v2.4: 파티를 나감(4001)·파티가 없어짐(4004). 다시 붙어도 소용없어 멈춘다.
+const LEFT_CODE = 4001;
+const DELETED_CODE = 4004;
 const MAX_GAPS = 3;
 
 /** ping 을 버리고 seq 순으로 정렬해 마지막 meeting.started 부터 자른다. 없으면 빈 배열. */
@@ -197,6 +204,8 @@ export function createLiveFeed(options: {
         conn = null;
         silence = clear(silence);
         if (code === REPLACED_CODE) stop('replaced');
+        else if (code === LEFT_CODE) stop('left');
+        else if (code === DELETED_CODE) stop('deleted');
         else fail();
       },
     });

@@ -78,6 +78,15 @@ function parseOption(value: unknown, label: string): PickedOption {
   };
 }
 
+// multi 문항의 '기타' 입력(v2.4). 없으면 undefined.
+function parseOther(value: unknown, label: string): { maxLength: number; placeholder: string } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const o = obj(value, `${label}의 other`);
+  const maxLength = int(o, 'maxLength', `${label}의 other`);
+  if (maxLength <= 0) return fail(`${label}의 other.maxLength 값이 양의 정수가 아닙니다.`);
+  return { maxLength, placeholder: optStr(o, 'placeholder', `${label}의 other`) };
+}
+
 function parseQuestion(value: unknown, index: number): Question {
   const label = `${index + 1}번째 문항`;
   const o = obj(value, label);
@@ -110,7 +119,31 @@ function parseQuestion(value: unknown, index: number): Question {
     const raw = arr(o, 'options', label);
     if (raw.length === 0) return fail(`${label}의 options가 비어 있습니다.`);
     const options = raw.map((item) => parseOption(item, `${label}의 선택지`));
-    return { id, order, type: 'multi', text, minSelect, maxSelect, options };
+    const other = parseOther(o.other, label);
+    return { id, order, type: 'multi', text, minSelect, maxSelect, options, ...(other && { other }) };
+  }
+  if (type === 'list') {
+    const maxItems = int(o, 'maxItems', label);
+    const maxLength = int(o, 'maxLength', label);
+    if (maxItems <= 0 || maxLength <= 0) return fail(`${label}의 maxItems·maxLength 값이 양의 정수가 아닙니다.`);
+    return {
+      id,
+      order,
+      type: 'list',
+      text,
+      required: bool(o, 'required', label),
+      maxItems,
+      maxLength,
+      placeholder: optStr(o, 'placeholder', label),
+    };
+  }
+  if (type === 'single') {
+    const raw = arr(o, 'options', label);
+    if (raw.length === 0) return fail(`${label}의 options가 비어 있습니다.`);
+    const options = raw.map((item) => parseOption(item, `${label}의 선택지`));
+    // required가 없으면 꼭 고르는 문항으로 본다(서버 v2.4는 늘 보냄).
+    const required = o.required === undefined ? true : bool(o, 'required', label);
+    return { id, order, type: 'single', text, required, options };
   }
   if (type === 'text') {
     const maxLength = num(o, 'maxLength', label);

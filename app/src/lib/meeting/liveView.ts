@@ -10,7 +10,7 @@ const ENDED: readonly MeetingPhase[] = ['proposed', 'agreed', 'failed', 'confirm
  * 연결이 끊겨도 이미 받은 내용은 화면에 남기므로, 끊긴 것은 progress가 아니라 banner로 알린다.
  */
 export function liveProgress(feed: FeedStatus, phase: MeetingPhase): LiveProgress {
-  if (feed === 'failed' || feed === 'replaced') return 'error';
+  if (feed === 'failed' || feed === 'replaced' || feed === 'left' || feed === 'deleted') return 'error';
   if (ENDED.includes(phase)) return 'finished';
   if (phase === 'idle') return 'idle';
   return 'playing';
@@ -27,6 +27,10 @@ export function liveBanner(feed: FeedStatus): string | null {
       return '서버와 연결하지 못했어요. 화면을 나갔다 다시 들어와 주세요';
     case 'replaced':
       return '다른 화면에서 같은 회의를 열어서 이 화면은 멈췄어요';
+    case 'left':
+      return '이 파티에서 나가서 회의 연결이 끊겼어요';
+    case 'deleted':
+      return '방장이 파티를 없앴어요';
     default:
       return null;
   }

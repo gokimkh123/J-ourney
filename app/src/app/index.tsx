@@ -25,7 +25,9 @@ import { profileChips } from "../lib/persona/profile.ts";
 import { useProfile } from "../lib/persona/profileStore.ts";
 import type { InviteInfo, SessionResponse } from "../lib/persona/types.ts";
 import { partyActions, session } from "../lib/session/index.ts";
-import { forgetPartyInfo, putPartyInfo } from "../lib/session/partyInfo.ts";
+import { leaveDeps } from "../lib/session/leaveDeps.ts";
+import { dropDeletedParty, leaveParty } from "../lib/session/leaveParty.ts";
+import { putPartyInfo } from "../lib/session/partyInfo.ts";
 import { fromSessionResponse } from "../lib/session/session.ts";
 import { useParties } from "../lib/session/useParties.ts";
 import { usePartyInfos, useRefreshParty } from "../lib/session/usePartyInfo.ts";
@@ -329,9 +331,15 @@ function TripHome() {
       setPollError(null);
     } catch (e) {
       if (session.getSession()?.inviteCode !== code) return;
+      // 초대 코드가 없어졌으면 방장이 파티를 없앤 것(v2.4). 이 폰에서도 빼고 처음 화면으로.
+      if (e instanceof ApiError && e.status === 404) {
+        void dropDeletedParty(leaveDeps, me.tripId);
+        Alert.alert("방장이 파티를 없앴어요");
+        return;
+      }
       setPollError(describeError(e));
     }
-  }, [code]);
+  }, [code, me.tripId]);
   usePolling(refresh, POLL_MS, true, code);
 
   const view = homeStep({
@@ -339,6 +347,7 @@ function TripHome() {
     myMemberId: me.memberId,
     hasConditions: conditions !== null,
     hasResult: result !== null,
+    tripStatus: info?.trip.status,
   });
 
   const actions = homeActions(info?.members ?? null, me.memberId, view.step);
@@ -391,8 +400,8 @@ function TripHome() {
           text: "나가기",
           style: "destructive",
           onPress: () => {
-            forgetPartyInfo(me.tripId);
-            void partyActions.leave(me.tripId);
+            const isHost = info?.members.find((m) => m.id === me.memberId)?.isHost === true;
+            void leaveParty(leaveDeps, me.tripId, isHost);
           },
         },
       ],

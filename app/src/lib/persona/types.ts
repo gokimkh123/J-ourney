@@ -17,6 +17,30 @@ export type MultiQuestion = {
   minSelect: number;
   maxSelect: number;
   options: { id: string; text: string; emoji: string }[];
+  /** '기타' 직접 입력(v2.4). 있으면 보기에 없는 것을 글로 적을 수 있고, 적으면 최소 개수를 하나 채운 것으로 친다(최대 개수는 보기만 센다). */
+  other?: { maxLength: number; placeholder: string };
+};
+
+/** 여러 줄 글 입력(v2.4, 가고 싶은 곳). 한 줄씩 추가해 maxItems개까지 적는다. */
+export type ListQuestion = {
+  id: string;
+  order: number;
+  type: 'list';
+  text: string;
+  required: boolean;
+  maxItems: number;
+  maxLength: number;
+  placeholder: string;
+};
+
+/** 하나 고르기(v2.4, 이번 여행 속도). 보낼 때는 optionIds에 하나만 담는다. */
+export type SingleQuestion = {
+  id: string;
+  order: number;
+  type: 'single';
+  text: string;
+  required: boolean;
+  options: { id: string; text: string; emoji: string }[];
 };
 
 export type TextQuestion = {
@@ -29,11 +53,13 @@ export type TextQuestion = {
   placeholder: string;
 };
 
-export type Question = ScaleQuestion | MultiQuestion | TextQuestion;
+export type Question = ScaleQuestion | MultiQuestion | ListQuestion | SingleQuestion | TextQuestion;
 
 export type Answer =
   | { type: 'scale'; value: number }
-  | { type: 'multi'; optionIds: string[] }
+  | { type: 'multi'; optionIds: string[]; other?: string }
+  | { type: 'list'; texts: string[] }
+  | { type: 'single'; optionId: string }
   | { type: 'text'; text: string };
 
 export type AnswerState = Record<string, Answer>;
@@ -41,6 +67,8 @@ export type AnswerState = Record<string, Answer>;
 export type SubmitAnswer =
   | { questionId: string; value: number }
   | { questionId: string; optionIds: string[] }
+  | { questionId: string; optionIds: string[]; text: string }
+  | { questionId: string; texts: string[] }
   | { questionId: string; text: string };
 
 export type Chip = {

@@ -66,6 +66,9 @@ export type BoardCandidate = {
   lng: number;
   proposedBy: string[];
   reactions: BoardReaction[];
+  /** v2.4: 장소 종류(sight·food·lodging)와 분류. 예전 서버는 안 보낸다 */
+  kind?: 'sight' | 'food' | 'lodging';
+  category?: string;
 };
 
 /** placeId가 null인 안건은 장소가 아닌 메모(후보에 넣지 못한 꼭 지킬 것과 까닭) */

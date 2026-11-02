@@ -7,8 +7,9 @@ import { AppText, Banner, Button, Card, SegmentedTabs } from "../components/inde
 import { api } from "../lib/api/index.ts";
 import { checkHealth } from "../lib/api/health.ts";
 import { config } from "../lib/config/index.ts";
-import { partyActions } from "../lib/session/index.ts";
-import { forgetPartyInfo } from "../lib/session/partyInfo.ts";
+import { leaveDeps } from "../lib/session/leaveDeps.ts";
+import { leaveParty } from "../lib/session/leaveParty.ts";
+import { partyInfo } from "../lib/session/partyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { themeMode } from "../lib/settings/index.ts";
 import { useThemeMode } from "../lib/settings/useThemeMode.ts";
@@ -51,8 +52,8 @@ export default function SettingsScreen() {
 
   const doLeave = async () => {
     if (me !== null) {
-      forgetPartyInfo(me.tripId);
-      await partyActions.leave(me.tripId).catch(() => undefined);
+      const isHost = partyInfo.get()[me.tripId]?.members.find((m) => m.id === me.memberId)?.isHost === true;
+      await leaveParty(leaveDeps, me.tripId, isHost).catch(() => undefined);
     }
     router.replace("/");
   };
