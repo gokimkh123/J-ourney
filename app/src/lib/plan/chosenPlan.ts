@@ -52,7 +52,7 @@ export function stopTimes(stops: RouteStop[]): string[] {
   return times;
 }
 
-function categoryOf(stop: RouteStop): string {
+export function categoryOf(stop: RouteStop): string {
   if (stop.kind === 'lodging') return '숙소';
   if (stop.kind === 'food') return stop.meal === 'lunch' ? '점심' : stop.meal === 'dinner' ? '저녁' : '식사';
   return stop.night === true ? '야경' : '관광';
@@ -73,7 +73,7 @@ function moveLabelOf(stop: RouteStop): string | undefined {
 }
 
 /** 이 사람 몫으로 들어간 곳(꼭 지킬 곳 → 좋아요 순). */
-function peopleOf(stop: RouteStop, members: MemberRef[]): { name: string; color: string }[] {
+export function peopleOf(stop: RouteStop, members: MemberRef[]): { name: string; color: string }[] {
   const ids = [...(stop.mustFor ?? []), ...(stop.likedBy ?? [])];
   const people: { name: string; color: string }[] = [];
   for (const id of new Set(ids)) {
