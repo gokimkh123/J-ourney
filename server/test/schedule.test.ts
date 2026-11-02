@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { categories, places, regions, routeCache } from '../src/db/schema.js';
 import type { MemberInput, Candidate, RetrieveResult } from '../src/meeting/retrieve.js';
 import { ROUTE, type RouteClient, RouteUnavailable, cachedRouter, kakaoLink, kakaoRouter, newRouteMeter, routeKey } from '../src/meeting/route.js';
-import { type PlanEdit, SCHEDULE, type PlanProposal, type ScheduleInput, duskKst, editPlan, revisePlans, schedulePlans } from '../src/meeting/schedule.js';
+import { type PlanEdit, SCHEDULE, type PlanProposal, type ScheduleInput, duskKst, editOptions, editPlan, revisePlans, schedulePlans } from '../src/meeting/schedule.js';
 import { distanceKm } from '../src/meeting/travel.js';
 import type { Board, BoardCandidate, MoveMode, ReviewDecision } from '../src/meeting/types.js';
 import type { MustKeepRule, PersonaProfile } from '../src/persona/types.js';
@@ -336,6 +336,15 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
       expect(p.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
       expect(sights(p, 1).map((x) => x.name)).toContain('온천');
     }
+    // 다닐 시간이 있는 날(2일째 월요일)에 쉬는 꼭 지킬 곳은 0분인 첫날로 옮기지 않고 메모 (11/2 검증02: 국립해양박물관이 22:30 도착 첫날에 들어감)
+    const monday = near('월요일휴관', 9, { rest: '매주 월요일', marks: { mem_1: [{ kind: 'must', label: '휴관곳' }] } });
+    const withMonday = [monday, ...cands];
+    const lateMon: ScheduleInput = { ...late, pool: poolOf(withMonday, ['2026-11-15', '2026-11-16'], [hotel]), board: boardOf(withMonday), members: [member('mem_1', { placesPerDay: [4, 4] }, [], [include('온천'), include('휴관곳')]), members[1]] };
+    for (const p of (await schedulePlans(db, fakeRouter().router, lateMon)).plans) {
+      expect(p.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
+      expect(p.route.flatMap((d) => d.stops).some((x) => x.name === '월요일휴관')).toBe(false);
+      expect(p.notes.some((n) => n.startsWith('월요일휴관 — 꼭 지킬 곳이지만'))).toBe(true);
+    }
     // 20:00 출발 → 18:00까지: 21:00 드론쇼·해 진 뒤(18시 넘어) 야경은 넣지 않음
     const tower = near('밤 전망대', 1, { code: 'VE010200', open: { open: 600, close: 1320 } });
     const show = near('드론쇼', 6, { type: 15, code: 'EV010200', open: { open: 1260, close: 1290 } });
@@ -421,6 +430,9 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     const [L, LB] = (await schedulePlans(db, router, { ...base, arrivalTime: '22:30' })).plans;
     expect(L.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
     expect(LB.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
+    // 15:00 도착·19:30 출발 당일치기 → 16:00–17:30(90분): 반올림하면 0곳이지만 다닐 시간이 있으면 1곳 (11/2 검증02)
+    const [S] = (await schedulePlans(db, router, { ...base, pool: poolOf(cands, ['2026-11-07']), arrivalTime: '15:00', departureTime: '19:30' })).plans;
+    expect(sights(S, 0)).toHaveLength(1);
     expect(sights(L, 1).length).toBe(4);
   });
 
@@ -447,10 +459,19 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     expect(E.route[0].stops.map((s) => s.name)).not.toContain('야시장');
     // 20:00 출발 → 18:00까지: 저녁은 있지만 시작이 그 뒤인 드론쇼(시간 글의 가장 이른 19:00)·야시장(18:00)은 넣지 않음 (11/2 점검)
     const members = [member('mem_1', { placesPerDay: [5, 6] }), member('mem_2', { placesPerDay: [5, 6] })];
-    const [D] = (await schedulePlans(db, fakeRouter().router, { meetingId: 'mtg_test1', pool: poolOf(cands, ['2026-11-07']), board, members, decision: null, moveMode: 'transit', departureTime: '20:00' })).plans;
+    const leave: ScheduleInput = { meetingId: 'mtg_test1', pool: poolOf(cands, ['2026-11-07']), board, members, decision: null, moveMode: 'transit', departureTime: '20:00' };
+    const { plans, states } = await schedulePlans(db, fakeRouter().router, leave);
+    const [D] = plans;
     expect(D.route[0].stops.some((s) => s.meal === 'dinner')).toBe(true);
     expect(D.route[0].stops.map((s) => s.name)).not.toContain('드론쇼');
     expect(D.route[0].stops.map((s) => s.name)).not.toContain('야시장');
+    // 사람이 14단계에서 넣어도 같은 규칙: 반영 못 함, 고치기 보기에서도 그날은 갈 수 없는 날 (11/2 검증02: 18시 전에 끝나는 당일치기에 낙조분수를 넣음)
+    const out = await editPlan(db, fakeRouter().router, leave, { plan: D, state: states.A }, [{ type: 'add', placeId: `plc_${show.id}`, day: 0 }]);
+    expect(out.results).toEqual([{ plan: 'A', applied: false, note: '반영 못 함: 그날 일정이 끝난 뒤에 시작하는 곳 (밤 행사·야경)' }]);
+    expect(out.plan.version).toBe(D.version);
+    const options = await editOptions(db, leave, D, { sights: 20, meals: 3 });
+    expect(options.sights.find((x) => x.name === '드론쇼')?.closedDays).toEqual([0]);
+    expect(options.sights.find((x) => x.name === '해변' || x.name === '공원' || x.name === '박물관')?.closedDays ?? []).toEqual([]);
   });
 
   it('끼니: 점심은 관광지 절반 뒤·저녁은 마지막 관광지 뒤, 그날 쉬거나 끼니 시간에 닫힌 식당·카페는 끼니로 쓰지 않음 (DB의 식당으로 보충)', async () => {
@@ -540,9 +561,10 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     for (const plan of [A, B]) for (const x of plan.route.flatMap((d) => d.stops).filter((s) => s.kind === 'food')) expect(x.mustFor).toEqual([]);
   });
 
-  it('하루 관광지가 많아도(꼭 지킬 곳 10곳) 모든 순서를 만들지 않고 빨리 짬 (10/28 점검: 10곳의 모든 순서는 363만 가지라 서버가 멈춤)', async () => {
+  it('하루 관광지가 많아도(예약한 곳 10곳) 모든 순서를 만들지 않고 빨리 짬 (10/28 점검: 10곳의 모든 순서는 363만 가지라 서버가 멈춤)', async () => {
     const db = await testDb();
-    const musts = Array.from({ length: 10 }, (_, i) => near(`꼭${i}`, i, { marks: { mem_1: [{ kind: 'must', label: `규칙${i}` }] } }));
+    // 11/2부터 꼭 지킬 곳은 하루 자리까지만 넣으므로, 한 날에 10곳이 되는 것은 자리가 없어도 넣는 예약한 곳(또는 사람이 14단계에서 넣은 곳)
+    const musts = Array.from({ length: 10 }, (_, i) => near(`꼭${i}`, i, { booked: true, marks: { mem_1: [{ kind: 'must', label: `규칙${i}` }] } }));
     const cands = [...musts, ...Array.from({ length: 4 }, (_, i) => near(`관광지${i}`, 10 + i))];
     const members = [member('mem_1', {}, [], musts.map((_, i) => include(`규칙${i}`))), member('mem_2')];
     const started = Date.now();
@@ -551,6 +573,29 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     const inPlan = new Set(sights(A).map((x) => x.placeId));
     for (const p of musts) expect(inPlan.has(`plc_${p.id}`)).toBe(true);
     expect(SCHEDULE.orderAllMax).toBeLessThan(musts.length);
+  });
+
+  it('꼭 지킬 곳이 하루 자리(관광지 수 + 1)를 넘으면 예약한 곳 → 사람마다 돌아가며 1곳씩 넣고 나머지는 메모 (11/2 검증02: 가고 싶은 곳이 몰려 당일치기 하루 7–9곳·이동 477분)', async () => {
+    const db = await testDb();
+    const mine = (id: string, k: number, at: number) => Array.from({ length: k }, (_, i) => near(`${id}곳${i}`, at + i, { popularity: 90 - i, marks: { [id]: [{ kind: 'must', label: `${id}규칙${i}` }] } }));
+    const a = mine('mem_1', 5, 0);
+    const b = mine('mem_2', 2, 6);
+    const booked = near('예약곳', 9, { booked: true, marks: { mem_1: [{ kind: 'must', label: '예약한 곳: 예약곳' }], mem_2: [{ kind: 'must', label: '예약한 곳: 예약곳' }] } });
+    const cands = [...a, ...b, booked, near('관광지', 10)];
+    const members = [
+      member('mem_1', { placesPerDay: [3, 3] }, [], [...a.map((_, i) => include(`mem_1규칙${i}`)), include('예약한 곳: 예약곳')]),
+      member('mem_2', { placesPerDay: [3, 3] }, [], b.map((_, i) => include(`mem_2규칙${i}`))),
+    ];
+    for (const p of await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07']), boardOf(cands), members)) {
+      // 하루 관광지 3곳 + 1 = 4자리: 예약곳 → mem_1 1순위 → mem_2 1순위 → mem_1 2순위
+      expect(sights(p).map((x) => x.name).sort()).toEqual(['mem_1곳0', 'mem_1곳1', 'mem_2곳0', '예약곳']);
+      expect(p.notes).toContain('mem_2곳1 — 꼭 지킬 곳이지만 하루에 다닐 수 있는 곳 수를 넘어 넣지 못함 (직접 넣을 수 있음)');
+      expect(p.notes.filter((n) => n.includes('하루에 다닐 수 있는 곳 수를 넘어'))).toHaveLength(4);
+    }
+    // 자리가 넉넉하면(1박 2일) 모두 넣고 메모 없음
+    const [two] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07', '2026-11-08']), boardOf(cands), members);
+    expect(two.route.flatMap((d) => d.stops).filter((x) => x.kind === 'sight' && x.name !== '관광지')).toHaveLength(8);
+    expect(two.notes.some((n) => n.includes('하루에 다닐 수 있는 곳 수를 넘어'))).toBe(false);
   });
 
   it('식당이 모자라면 일정은 그대로 짜고 메모로 알림', async () => {
