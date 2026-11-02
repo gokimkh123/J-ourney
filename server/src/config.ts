@@ -100,6 +100,17 @@ export const config = {
   kakaoAppId: process.env.KAKAO_APP_ID?.trim() || null,
   /** 카카오 사용자 API 주소 (로그인 토큰 확인) */
   kakaoApiBase: process.env.KAKAO_API_BASE ?? 'https://kapi.kakao.com',
+  /** 브라우저 카카오 로그인 (11/2): 카카오 로그인 창·토큰 발급 주소 */
+  kakaoAuthBase: process.env.KAKAO_AUTH_BASE ?? 'https://kauth.kakao.com',
+  /** 카카오 콘솔(REST API 키)에 등록한 리다이렉트 URI와 글자까지 같은 값 (터널 주소 + /api/v1/auth/kakao/callback, 터널 주소가 바뀌면 둘 다 고침). 없으면 브라우저 로그인을 받지 않음 */
+  kakaoRedirectUri: process.env.KAKAO_REDIRECT_URI?.trim() || null,
+  /** 콘솔에서 클라이언트 시크릿을 켰을 때만 넣음 (토큰 발급 요청에 같이 보냄) */
+  kakaoClientSecret: process.env.KAKAO_CLIENT_SECRET?.trim() || null,
+  /** 로그인 뒤 돌려보낼 수 있는 앱 주소 스킴 (쉼표로 나눔). 앱 APK는 journey(app.json scheme), 개발 중 Expo Go로 시험할 때만 exp를 더함 */
+  kakaoLoginReturnSchemes: (process.env.KAKAO_LOGIN_RETURN_SCHEMES || 'journey')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
   /** true이면 바깥(터널) 요청은 카카오 로그인을 해야 여행 만들기·참여 (앱이 로그인을 붙인 뒤 켬, 기본 꺼짐. 서버 안 요청은 예전처럼) */
   loginRequired: process.env.LOGIN_REQUIRED === 'true',
 };
