@@ -345,9 +345,14 @@ export default function MeetingMap({
           ],
     [art, pins, agents, routes],
   );
+  // 말하는 캐릭터는 말풍선까지 늘 화면 안에 둔다(다 못 담을 때 가운데만 잡으면 가장자리 캐릭터가 빠진다).
+  const speaker = useMemo(() => {
+    const a = art === "busan" && bubble != null ? agents.find((x) => x.id === bubble.agentId) : undefined;
+    return a === undefined ? null : projectGeo(a);
+  }, [art, agents, bubble]);
   let cam: ArtPoint = { x: 0, y: 0 };
   if (camera && width > 0) {
-    cam = cameraXY(camTarget.current, artPoints, width, viewHeight ?? height, agentPoints);
+    cam = cameraXY(camTarget.current, artPoints, width, viewHeight ?? height, agentPoints, speaker);
     camTarget.current = cam;
   }
   const camX = cam.x;
@@ -360,6 +365,8 @@ export default function MeetingMap({
 
   const camValue = useRef(new RNAnimated.ValueXY({ x: 0, y: 0 })).current;
   const camShown = useRef(false);
+  const camRun = useRef<RNAnimated.CompositeAnimation | null>(null);
+  const camStartedAt = useRef(0);
   const reduceMotion = useReducedMotion();
   useEffect(() => {
     if (!camera || width <= 0) return;
@@ -369,15 +376,22 @@ export default function MeetingMap({
       camValue.setValue(to);
       return;
     }
-    const run = RNAnimated.timing(camValue, {
-      toValue: to,
-      duration: CAMERA_MS,
-      easing: RNEasing.inOut(RNEasing.cubic),
-      useNativeDriver: true,
-    });
-    run.start();
-    return () => run.stop();
+    // 앞 이동을 끝까지 마친 뒤 그때의 가장 새 목표로 간다. 회의 초반처럼 목표가 연달아 바뀔 때
+    // 이동 도중에 꺾으면 지도가 급하게 흔들려 보인다(기다리는 사이 새 목표가 오면 이 예약은 지우고 새로 잡는다).
+    const wait = Math.max(0, camStartedAt.current + CAMERA_MS - Date.now());
+    const timer = setTimeout(() => {
+      camStartedAt.current = Date.now();
+      camRun.current = RNAnimated.timing(camValue, {
+        toValue: to,
+        duration: CAMERA_MS,
+        easing: RNEasing.inOut(RNEasing.cubic),
+        useNativeDriver: true,
+      });
+      camRun.current.start();
+    }, wait);
+    return () => clearTimeout(timer);
   }, [camera, camX, camY, artScale, width, camValue, reduceMotion]);
+  useEffect(() => () => camRun.current?.stop(), []);
 
   const at = (p: LatLng) => {
     if (viewport) {

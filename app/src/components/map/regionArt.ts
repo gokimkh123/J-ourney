@@ -125,6 +125,7 @@ const CAMERA_DEADBAND_PX = 40;
 /**
  * 회의 지도('full')에서 카메라(그림이 보이는 왼쪽 위 모서리, 그림 좌표)를 정한다.
  * 점이 조금 움직일 때마다 지도가 따라 흔들리지 않게, 필요한 만큼 어긋났을 때만 새 위치를 돌려주고 아니면 prev를 그대로 준다.
+ * speaker(말하는 캐릭터)가 있으면 말풍선 자리까지 늘 화면 안에 두고, 그 캐릭터가 지금 화면 밖이면 어긋남이 작아도 옮긴다.
  * 새 위치로 가는 부드러운 이동은 화면(MeetingMap)이 맡는다.
  */
 export function cameraXY(
@@ -133,11 +134,38 @@ export function cameraXY(
   containerW: number,
   containerH: number,
   focus: ArtPoint[] = [],
+  speaker: ArtPoint | null = null,
 ): ArtPoint {
   const view = computeArtViewport(points, containerW, containerH, 'full', focus);
-  const ideal = { x: view.x, y: view.y };
+  const ideal = speaker === null ? { x: view.x, y: view.y } : keepInView({ x: view.x, y: view.y }, speaker, view);
   if (prev === null) return ideal;
+  if (speaker !== null && !inView(prev, speaker, view)) return ideal;
   return Math.hypot(ideal.x - prev.x, ideal.y - prev.y) * view.scale < CAMERA_DEADBAND_PX ? prev : ideal;
+}
+
+/** 이 점이 카메라 화면 안에 여백(위는 말풍선 자리)까지 들어오는 범위 [lo, hi] */
+function roomFor(p: ArtPoint, view: ArtViewport): { x0: number; x1: number; y0: number; y1: number } {
+  const side = SIDE_ROOM_PX / view.scale;
+  return {
+    x0: p.x + side - view.w,
+    x1: p.x - side,
+    y0: p.y + BOTTOM_ROOM_PX / view.scale - view.h,
+    y1: p.y - TOP_ROOM_PX / view.scale,
+  };
+}
+
+function inView(cam: ArtPoint, p: ArtPoint, view: ArtViewport): boolean {
+  const r = roomFor(p, view);
+  return cam.x >= r.x0 && cam.x <= r.x1 && cam.y >= r.y0 && cam.y <= r.y1;
+}
+
+/** 카메라를 가장 적게 옮겨 이 점(말하는 캐릭터)이 여백까지 화면 안에 들게 한다. 그림 밖으로는 나가지 않는다. */
+function keepInView(cam: ArtPoint, p: ArtPoint, view: ArtViewport): ArtPoint {
+  const r = roomFor(p, view);
+  return {
+    x: clamp(clamp(cam.x, r.x0, r.x1), 0, ART_W - view.w),
+    y: clamp(clamp(cam.y, r.y0, r.y1), 0, ART_H - view.h),
+  };
 }
 
 /** 점들을 Catmull-Rom 곡선으로 잇는 SVG path. 점이 2개 미만이면 빈 문자열. */
