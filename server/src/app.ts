@@ -72,6 +72,8 @@ export interface AppOptions {
   kakaoAppId?: string | null;
   /** true이면 바깥(터널) 요청은 로그인해야 여행 만들기·참여 (LOGIN_REQUIRED) */
   loginRequired?: boolean;
+  /** 브라우저 로그인 뒤 돌려보낼 수 있는 앱 주소 스킴 (KAKAO_LOGIN_RETURN_SCHEMES) */
+  kakaoLoginReturnSchemes?: readonly string[];
 }
 
 /** 시험 화면 접근 키 입력 화면 (터널로 시험 화면을 쓸 때만) */
@@ -115,8 +117,19 @@ export function createApp({
   accessKeys = config.accessKeys,
   accessReplay = config.accessReplay,
   kakaoAppId = config.kakaoAppId,
-  kakaoAuth = kakaoAppId ? kakaoAuthClient({ apiBase: config.kakaoApiBase, timeoutMs: config.kakaoTimeoutMs }) : null,
+  kakaoAuth = kakaoAppId
+    ? kakaoAuthClient({
+        apiBase: config.kakaoApiBase,
+        timeoutMs: config.kakaoTimeoutMs,
+        // 브라우저 로그인 (11/2): REST API 키와 콘솔에 등록한 리다이렉트 URI가 있을 때만
+        browser:
+          config.kakaoRestKey && config.kakaoRedirectUri
+            ? { authBase: config.kakaoAuthBase, restKey: config.kakaoRestKey, redirectUri: config.kakaoRedirectUri, clientSecret: config.kakaoClientSecret }
+            : null,
+      })
+    : null,
   loginRequired = config.loginRequired,
+  kakaoLoginReturnSchemes = config.kakaoLoginReturnSchemes,
 }: AppOptions) {
   // 터널로 시험 경로를 여는데(DEV_UI_TUNNEL) 접근 키가 하나도 없으면 열지 않음 (키를 빠뜨려 바깥에 실제 API가 열리지 않게, 서버 시작 로그에 경고)
   const tunnelDev = devUiTunnel && accessKeys.length > 0;
@@ -150,7 +163,7 @@ export function createApp({
     const forgetMeetings = async (ids: readonly string[]) => {
       for (const id of ids) await checkpointer.deleteThread(id);
     };
-    api.route('/', authRoutes(db, { kakao: kakaoAuth, kakaoAppId, hub }));
+    api.route('/', authRoutes(db, { kakao: kakaoAuth, kakaoAppId, hub, returnSchemes: kakaoLoginReturnSchemes }));
     api.route('/', tripRoutes(db, { llm: tripLlm, recorder, live, llmDailyLimit, accessKeys, hub, forgetMeetings, loginRequired }));
     api.route('/', personaRoutes({ db, llm: mode === 'only' ? null : llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret, accessKeys, live }));
     // 회의 그래프와 실행기는 서버가 켜질 때 한 번만 만들고 공식 경로·시험 경로가 함께 씀

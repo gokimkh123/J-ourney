@@ -20,7 +20,7 @@ const fakeKakao = (): KakaoAuth & { calls: number } => {
 };
 const tunnel = { 'cf-connecting-ip': '203.0.113.7' };
 
-describe('카카오 로그인 (11/2, 명세서 v2.5)', () => {
+describe('카카오 로그인 (11/2, 명세서 v2.5)', { timeout: 20_000 }, () => {
   it('카카오 토큰을 확인해 계정(회원번호)과 로그인 토큰을 줌 · 같은 회원번호는 같은 계정 · 다른 앱의 토큰·잘못된 토큰은 401 · 카카오에 묻지 못하면 503 · 앱 ID가 없는 서버는 503', async () => {
     const kakao = fakeKakao();
     const { app, db } = await createTestApp({ kakaoAuth: kakao, kakaoAppId: APP_ID });
@@ -95,5 +95,68 @@ describe('카카오 로그인 (11/2, 명세서 v2.5)', () => {
     expect((await call(app, 'POST', `/invites/${local.body.trip.inviteCode}/join`, { nickname: '지은' }, user, tunnel)).status).toBe(201);
     const open = await createTestApp({ kakaoAuth: fakeKakao(), kakaoAppId: APP_ID, loginRequired: false });
     expect((await call(open.app, 'POST', '/trips', { title: '부산', nickname: '민수' }, undefined, tunnel)).status).toBe(201);
+  });
+
+  it('브라우저 로그인 (11/2, 명세서 v2.6): 시작 주소 → 카카오 로그인 창(state) → 콜백에서 인가 코드를 카카오 토큰으로 바꿔 확인 → 로그인 토큰을 앱 주소로 · state는 한 번만 · 허용하지 않은 앱 주소는 400 · 취소·잘못된 코드·다른 앱·카카오 장애는 앱 주소에 error', async () => {
+    // 가짜 카카오: 인가 코드 'ok:{회원번호}' 또는 'ok:{회원번호}:{앱 ID}'만 토큰으로 바꿔 줌
+    const kakao: KakaoAuth = {
+      ...fakeKakao(),
+      authorizeUrl: (state) => `https://kauth.test/oauth/authorize?state=${state}`,
+      async exchange(code) {
+        if (code === 'down') throw new Error('시험: 카카오 응답 없음');
+        const m = /^ok:(\d+)(?::(\d+))?$/.exec(code);
+        return m ? `kakao:${m[1]}:${m[2] ?? APP_ID}` : null;
+      },
+    };
+    const { app } = await createTestApp({ kakaoAuth: kakao, kakaoAppId: APP_ID, kakaoLoginReturnSchemes: ['journey', 'exp'] });
+    const start = (returnTo: string) => app.request(`/api/v1/auth/kakao/start?returnTo=${encodeURIComponent(returnTo)}`);
+    const stateOf = async (returnTo: string) => {
+      const res = await start(returnTo);
+      expect(res.status).toBe(302);
+      return new URL(res.headers.get('location') ?? '').searchParams.get('state') ?? '';
+    };
+    const callback = (q: string) => app.request(`/api/v1/auth/kakao/callback?${q}`);
+    /** 돌아가기 화면의 앱 주소 */
+    const backOf = async (res: Response) => {
+      const m = /id="go" href="([^"]+)"/.exec(await res.text());
+      return m ? new URL(m[1].replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))) : null;
+    };
+
+    const state = await stateOf('journey://auth');
+    expect(state.length).toBeGreaterThan(20);
+    const done = await callback(`code=ok:777&state=${state}`);
+    expect(done.status).toBe(200);
+    expect(done.headers.get('cache-control')).toBe('no-store');
+    const back = await backOf(done);
+    expect(back?.protocol).toBe('journey:');
+    const token = back?.searchParams.get('token') ?? '';
+    expect(token).toMatch(/^usr_/);
+    expect(back?.searchParams.get('userId')).toMatch(/^usr_/);
+    // 받은 로그인 토큰은 앱 SDK 로그인과 똑같이 씀 (같은 회원번호 = 같은 계정)
+    expect((await call(app, 'GET', '/users/me/trips', undefined, token)).status).toBe(200);
+    const sdk = await call(app, 'POST', '/auth/kakao', { accessToken: `kakao:777:${APP_ID}` });
+    expect(sdk.body.user.id).toBe(back?.searchParams.get('userId'));
+    // 같은 state는 한 번만
+    expect((await callback(`code=ok:777&state=${state}`)).status).toBe(400);
+    expect((await callback('code=ok:777&state=nope')).status).toBe(400);
+    // 취소·잘못된 코드·다른 앱의 토큰·카카오 장애 → 앱 주소에 error (Expo Go 주소도 허용 목록에 있으면 됨)
+    const errorOf = async (q: string, returnTo = 'journey://auth') =>
+      (await backOf(await callback(`${q}&state=${await stateOf(returnTo)}`)))?.searchParams.get('error');
+    expect(await errorOf('error=access_denied')).toBe('LOGIN_CANCELLED');
+    expect(await errorOf('code=garbage')).toBe('UNAUTHORIZED');
+    expect(await errorOf('code=ok:5:999')).toBe('UNAUTHORIZED');
+    expect(await errorOf('code=down', 'exp://192.168.0.2:8081/--/auth')).toBe('LOGIN_UNAVAILABLE');
+    // 허용하지 않은 앱 주소는 카카오로 보내지 않음, 주소 안의 글은 화면에서 바꿔 씀
+    expect((await start('https://evil.example/x')).status).toBe(400);
+    expect((await start('javascript:alert(1)')).status).toBe(400);
+    expect((await start(`journey://${'a'.repeat(600)}`)).status).toBe(400);
+    expect((await start('journey://auth"><script>x()</script>')).status).toBe(400);
+    const odd = await callback(`code=ok:1&state=${await stateOf('journey://auth?x="><script>x()</script>')}`);
+    expect(await odd.text()).not.toContain('<script>x()');
+    // 브라우저 로그인 설정이 없는 서버(리다이렉트 URI 없음)는 카카오로 보내지 않고 앱에 LOGIN_UNAVAILABLE
+    const off = await createTestApp({ kakaoAuth: fakeKakao(), kakaoAppId: APP_ID, kakaoLoginReturnSchemes: ['journey'] });
+    const offRes = await off.app.request(`/api/v1/auth/kakao/start?returnTo=${encodeURIComponent('journey://auth')}`);
+    expect(offRes.status).toBe(200);
+    expect((await backOf(offRes))?.searchParams.get('error')).toBe('LOGIN_UNAVAILABLE');
   });
 });
