@@ -1,6 +1,7 @@
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import Svg, { Path } from "react-native-svg";
 
 import {
   AppText,
@@ -10,8 +11,12 @@ import {
   Button,
   Chip,
   DateRangeCalendar,
+  FormSheet,
+  InlineField,
   SegmentedTabs,
   Stepper,
+  TextListInput,
+  TimeWheel,
 } from "../components/index.ts";
 import { endpoints } from "../lib/api/index.ts";
 import { config } from "../lib/config/index.ts";
@@ -19,6 +24,7 @@ import type { InviteInfo } from "../lib/persona/types.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { DEFAULT_BUDGET } from "../lib/trip/budget.ts";
 import {
+  BOOKED_LIMITS,
   DEFAULT_MAX_ROUNDS,
   DEFAULT_MIN_SATISFACTION,
   MAX_ROUNDS_RANGE,
@@ -31,13 +37,59 @@ import { chosenPlanStore } from "../lib/plan/chosenPlan.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { addDays, dateLabel, nextSaturday, todayISO } from "../lib/trip/dateRange.ts";
 import { describeError, formatWon, nightsLabel } from "../lib/ui/format.ts";
-import { pressedOpacity, radius, spacing, useStyles, type Theme } from "../theme/index.ts";
+import { hitSize, pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
+// 11/2: 도보는 뺐다(여행 이동으로는 맞지 않음).
 const TRANSPORTS = [
   { key: "자동차", label: "자동차" },
   { key: "대중교통", label: "대중교통" },
-  { key: "도보", label: "도보" },
 ];
+
+const LODGING = [
+  { key: "no", label: "없어요" },
+  { key: "yes", label: "있어요" },
+] as const;
+
+type TimeKey = "arrival" | "departure";
+const TIME_TITLE: Record<TimeKey, string> = { arrival: "첫날 도착 시각", departure: "마지막 날 출발 시각" };
+// 시각 고르기 창을 처음 열 때 가운데에 둘 값
+const TIME_START: Record<TimeKey, string> = { arrival: "10:00", departure: "18:00" };
+
+/** 비행기·기차 시각 칸. 비어 있으면 "없음", 누르면 시각 고르기 창. 값이 있으면 ✕로 지운다. */
+function TimeBox({ label, value, onPress, onClear }: { label: string; value: string | null; onPress: () => void; onClear: () => void }) {
+  const styles = useStyles(createStyles);
+  const { colors } = useTheme();
+  // 칸 전체(시각 고르기)와 ✕(지우기)는 나란히 둔다. 버튼 안에 버튼을 넣지 않는다.
+  return (
+    <View style={styles.timeBox}>
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`${label} ${value ?? "없음"}, 바꾸려면 누르세요`}
+        style={({ pressed }) => [styles.timeText, pressed && { opacity: pressedOpacity }]}
+      >
+        <AppText variant="caption" tone="muted">
+          {label}
+        </AppText>
+        <AppText variant={value === null ? "body" : "heading"} tone={value === null ? "muted" : "default"}>
+          {value ?? "없음"}
+        </AppText>
+      </Pressable>
+      {value !== null && (
+        <Pressable
+          onPress={onClear}
+          accessibilityRole="button"
+          accessibilityLabel={`${label} 지우기`}
+          style={({ pressed }) => [styles.timeClear, pressed && { opacity: pressedOpacity }]}
+        >
+          <Svg width={16} height={16} viewBox="0 0 16 16">
+            <Path d="M4 4l8 8M12 4l-8 8" stroke={colors.textMuted} strokeWidth={1.8} strokeLinecap="round" fill="none" />
+          </Svg>
+        </Pressable>
+      )}
+    </View>
+  );
+}
 
 /** B1 회의 조건: 여행지·날짜·예산·이동수단과 AI 회의 규칙을 정하고 회의를 시작한다. */
 export default function ConditionsScreen() {
@@ -57,6 +109,15 @@ export default function ConditionsScreen() {
   const [transport, setTransport] = useState(saved?.transport ?? "대중교통");
   const [minSatisfaction, setMinSatisfaction] = useState(saved?.rules.aiMinSatisfaction ?? DEFAULT_MIN_SATISFACTION);
   const [maxRounds, setMaxRounds] = useState(saved?.rules.maxRounds ?? DEFAULT_MAX_ROUNDS);
+  // 이미 정해진 것(v2.4 방장 칸, 모두 선택)
+  const [times, setTimes] = useState<Record<TimeKey, string | null>>({
+    arrival: saved?.arrivalTime ?? null,
+    departure: saved?.departureTime ?? null,
+  });
+  const [lodgingOn, setLodgingOn] = useState(saved?.bookedLodging !== undefined);
+  const [lodging, setLodging] = useState(saved?.bookedLodging ?? "");
+  const [bookedPlaces, setBookedPlaces] = useState<string[]>(saved?.bookedPlaces ?? []);
+  const [timeSheet, setTimeSheet] = useState<{ key: TimeKey; value: string } | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -106,6 +167,10 @@ export default function ConditionsScreen() {
         transport,
         aiMinSatisfaction: minSatisfaction,
         maxRounds,
+        arrivalTime: times.arrival,
+        departureTime: times.departure,
+        bookedLodging: lodgingOn ? lodging : null,
+        bookedPlaces,
       },
       today,
     );
@@ -201,6 +266,70 @@ export default function ConditionsScreen() {
           <SegmentedTabs options={TRANSPORTS} value={transport} onChange={setTransport} accessibilityLabel="이동 수단" />
         </View>
 
+        <View style={styles.groupHead}>
+          <AppText variant="heading" accessibilityRole="header">
+            이미 정해진 것
+          </AppText>
+          <AppText variant="small" tone="muted">
+            있으면 AI가 맞춰 짜요
+          </AppText>
+        </View>
+
+        <View style={styles.section}>
+          <AppText variant="small" tone="muted">
+            비행기·기차 시간
+          </AppText>
+          <View style={styles.times}>
+            {(["arrival", "departure"] as const).map((key) => (
+              <TimeBox
+                key={key}
+                label={key === "arrival" ? "첫날 도착" : "마지막 날 출발"}
+                value={times[key]}
+                onPress={() => setTimeSheet({ key, value: times[key] ?? TIME_START[key] })}
+                onClear={() => setTimes((current) => ({ ...current, [key]: null }))}
+              />
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <AppText variant="small" tone="muted">
+            예약한 숙소
+          </AppText>
+          <SegmentedTabs
+            options={[...LODGING]}
+            value={lodgingOn ? "yes" : "no"}
+            onChange={(key) => setLodgingOn(key === "yes")}
+            accessibilityLabel="예약한 숙소"
+          />
+          {lodgingOn && (
+            <InlineField
+              value={lodging}
+              onChangeText={setLodging}
+              placeholder="예: 해운대 오션뷰 호텔"
+              maxLength={BOOKED_LIMITS.nameMax}
+              onClear={lodging === "" ? undefined : () => setLodging("")}
+              accessibilityLabel="예약한 숙소 이름"
+            />
+          )}
+        </View>
+
+        <View style={styles.section}>
+          <AppText variant="small" tone="muted">
+            예약한 장소
+          </AppText>
+          <TextListInput
+            values={bookedPlaces}
+            onChange={setBookedPlaces}
+            max={BOOKED_LIMITS.places}
+            maxLength={BOOKED_LIMITS.nameMax}
+            placeholder="예: 부산 아쿠아리움"
+            addLabel="예약한 장소 추가"
+            itemLabel="예약한 장소"
+            startWithField={false}
+          />
+        </View>
+
         <View style={styles.rules}>
           <AppText variant="small" tone="muted">
             AI 회의 규칙
@@ -238,6 +367,24 @@ export default function ConditionsScreen() {
         <Button label="회의 시작" size="lg" block disabled={!ready} loading={starting} onPress={() => void onStart()} />
       </View>
 
+      <FormSheet visible={timeSheet !== null} title={timeSheet === null ? "" : TIME_TITLE[timeSheet.key]} onClose={() => setTimeSheet(null)}>
+        {timeSheet !== null && (
+          <>
+            <TimeWheel value={timeSheet.value} onChange={(value) => setTimeSheet((current) => (current === null ? null : { ...current, value }))} />
+            <View style={styles.sheetButtons}>
+              <Button label="취소" variant="secondary" onPress={() => setTimeSheet(null)} style={styles.sheetCancel} />
+              <Button
+                label={`${timeSheet.value}으로 정하기`}
+                onPress={() => {
+                  setTimes((current) => ({ ...current, [timeSheet.key]: timeSheet.value }));
+                  setTimeSheet(null);
+                }}
+                style={styles.sheetOk}
+              />
+            </View>
+          </>
+        )}
+      </FormSheet>
       <DateRangeCalendar
         visible={calendarOpen}
         initial={range}
@@ -275,6 +422,22 @@ const createStyles = (t: Theme) =>
       paddingHorizontal: spacing.sm,
     },
     scaleRow: { flexDirection: "row", justifyContent: "space-between" },
+    groupHead: { flexDirection: "row", alignItems: "baseline", gap: spacing.sm, flexWrap: "wrap" },
+    times: { flexDirection: "row", gap: spacing.sm },
+    timeBox: {
+      flex: 1,
+      minHeight: 60,
+      flexDirection: "row",
+      alignItems: "center",
+      borderRadius: radius.md,
+      backgroundColor: t.colors.surfaceSunken,
+      paddingLeft: spacing.sm + spacing.xs,
+    },
+    timeText: { flex: 1, alignSelf: "stretch", justifyContent: "center", gap: 2, paddingVertical: spacing.sm },
+    timeClear: { width: hitSize, height: hitSize, alignItems: "center", justifyContent: "center" },
+    sheetButtons: { flexDirection: "row", gap: spacing.sm },
+    sheetCancel: { flex: 1 },
+    sheetOk: { flex: 2 },
     footer: {
       padding: spacing.md,
       gap: spacing.sm,

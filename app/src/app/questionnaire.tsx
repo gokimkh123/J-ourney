@@ -6,14 +6,19 @@ import Svg, { Path } from "react-native-svg";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import type { Href } from "expo-router";
 
-import { AppText, Banner, Button, ProgressBar, ScaleDial, StateView, TextField } from "../components/index.ts";
+import { AppText, Banner, Button, InlineField, ProgressBar, ScaleDial, StateView, TextField, TextListInput } from "../components/index.ts";
 import { endpoints } from "../lib/api/index.ts";
 import {
   buildSubmitBody,
+  hasContent,
   isAnswered,
   isComplete,
+  listDraft,
+  setOther,
   setScale,
+  setSingle,
   setText,
+  setTexts,
   toggleOption,
 } from "../lib/persona/answers.ts";
 import {
@@ -27,9 +32,11 @@ import { profile, useProfile } from "../lib/persona/profileStore.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import type {
   AnswerState,
+  ListQuestion,
   MultiQuestion,
   Question,
   ScaleQuestion,
+  SingleQuestion,
   TextQuestion,
 } from "../lib/persona/types.ts";
 import { disabledOpacity, hitSize, pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
@@ -69,39 +76,109 @@ function ScaleInput({ question, answers, update, onPick }: {
   );
 }
 
-/** 여러 개 고르기. 칩을 세 줄로 놓고, 고른 칩은 ✓로 표시한다. 고를 수 있는 수가 차면 나머지 칩은 흐려진다. */
-function MultiInput({ question, answers, update }: {
+/**
+ * 여러 개 고르기. 칩을 세 줄로 놓고, 고른 칩은 ✓로 표시한다. 고를 수 있는 수가 차면 나머지 칩은 흐려진다.
+ * 기타 입력이 있는 문항(v2.4)은 끝에 "기타" 칩을 두고, 누르면 아래에 입력칸이 열린다. 기타는 개수에 안 세서 늘 누를 수 있다.
+ */
+function MultiInput({ question, answers, update, otherOpen, onToggleOther }: {
   question: MultiQuestion;
   answers: AnswerState;
   update: UpdateAnswers;
+  otherOpen: boolean;
+  onToggleOther: () => void;
 }) {
   const styles = useStyles(createStyles);
   const answer = answers[question.id];
   const selectedIds = answer?.type === "multi" ? answer.optionIds : [];
   const full = selectedIds.length >= question.maxSelect;
-  const rows: MultiQuestion["options"][] = [];
-  for (let i = 0; i < question.options.length; i += CHIP_COLUMNS) rows.push(question.options.slice(i, i + CHIP_COLUMNS));
+  const cells = question.options.map((option) => {
+    const selected = selectedIds.includes(option.id);
+    return {
+      key: option.id,
+      label: option.text,
+      selected,
+      disabled: full && !selected,
+      onPress: () => update((state) => toggleOption(state, question, option.id)),
+    };
+  });
+  if (question.other !== undefined) cells.push({ key: "__other", label: "기타", selected: otherOpen, disabled: false, onPress: onToggleOther });
+  const rows: (typeof cells)[] = [];
+  for (let i = 0; i < cells.length; i += CHIP_COLUMNS) rows.push(cells.slice(i, i + CHIP_COLUMNS));
   return (
     <View style={styles.chipGrid} accessibilityRole="none" accessibilityLabel={`${question.text}, 최대 ${question.maxSelect}개`}>
       {rows.map((row, r) => (
         <View key={r} style={styles.chipRow}>
-          {row.map((option) => {
-            const selected = selectedIds.includes(option.id);
-            return (
-              <QuizChip
-                key={option.id}
-                label={option.text}
-                selected={selected}
-                disabled={full && !selected}
-                onPress={() => update((state) => toggleOption(state, question, option.id))}
-              />
-            );
-          })}
+          {row.map((cell) => (
+            <QuizChip key={cell.key} label={cell.label} selected={cell.selected} disabled={cell.disabled} onPress={cell.onPress} />
+          ))}
           {Array.from({ length: CHIP_COLUMNS - row.length }, (_, i) => (
             <View key={`gap${i}`} style={styles.chipCell} />
           ))}
         </View>
       ))}
+      {question.other !== undefined && otherOpen && (
+        <InlineField
+          value={answer?.type === "multi" ? answer.other ?? "" : ""}
+          onChangeText={(text) => update((state) => setOther(state, question, text))}
+          placeholder={question.other.placeholder}
+          maxLength={question.other.maxLength}
+          onClear={onToggleOther}
+          accessibilityLabel="기타"
+          autoFocus
+        />
+      )}
+    </View>
+  );
+}
+
+/** 여러 줄 글(v2.4 가고 싶은 곳): 칸 하나 + "장소 추가". */
+function ListInput({ question, answers, update }: { question: ListQuestion; answers: AnswerState; update: UpdateAnswers }) {
+  return (
+    <TextListInput
+      values={listDraft(answers, question.id)}
+      onChange={(texts) => update((state) => setTexts(state, question, texts))}
+      max={question.maxItems}
+      maxLength={question.maxLength}
+      placeholder={question.placeholder}
+      addLabel="장소 추가"
+      itemLabel="가고 싶은 곳"
+    />
+  );
+}
+
+/** 하나 고르기(v2.4 이번 여행 속도): 큰 버튼 셋. 누르면 잠깐 뒤 다음 문항으로 간다. */
+function SingleInput({ question, answers, update, onPick }: {
+  question: SingleQuestion;
+  answers: AnswerState;
+  update: UpdateAnswers;
+  onPick: () => void;
+}) {
+  const styles = useStyles(createStyles);
+  const answer = answers[question.id];
+  const chosen = answer?.type === "single" ? answer.optionId : null;
+  return (
+    <View style={styles.singleRow} accessibilityRole="radiogroup" accessibilityLabel={question.text}>
+      {question.options.map((option) => {
+        const selected = option.id === chosen;
+        return (
+          <Pressable
+            key={option.id}
+            onPress={() => {
+              update((state) => setSingle(state, question, option.id));
+              onPick();
+            }}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: selected }}
+            accessibilityLabel={option.text}
+            style={({ pressed }) => [styles.singleCard, selected && styles.chipOn, pressed && { opacity: pressedOpacity }]}
+          >
+            {option.emoji !== "" && <AppText style={styles.singleEmoji}>{option.emoji}</AppText>}
+            <AppText variant="heading" align="center" style={selected ? styles.chipOnText : undefined}>
+              {selected ? `✓ ${option.text}` : option.text}
+            </AppText>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -135,7 +212,6 @@ function TextAnswerInput({ question, draft, onChangeText }: {
   draft: string;
   onChangeText: (text: string) => void;
 }) {
-  const hint = `남은 글자 ${Math.max(0, question.maxLength - draft.length)}${question.required ? "" : " · 비워 둬도 돼요"}`;
   return (
     <TextField
       label="내 답"
@@ -144,7 +220,6 @@ function TextAnswerInput({ question, draft, onChangeText }: {
       maxLength={question.maxLength}
       value={draft}
       onChangeText={onChangeText}
-      hint={hint}
     />
   );
 }
@@ -187,6 +262,8 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<AnswerState>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // 기타 입력칸이 열린 문항. 닫으면 적은 글도 지운다.
+  const [otherOpen, setOtherOpen] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const inFlight = useRef(false);
@@ -300,6 +377,8 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
   const question = questions[index];
   const isLast = index === questions.length - 1;
   const canNext = question !== undefined && isAnswered(question, answers);
+  // 넘어가도 되는 문항(가고 싶은 곳·싫은 것)이 비어 있으면 "다음" 대신 "건너뛰기"
+  const skipping = question !== undefined && !isLast && canNext && !hasContent(question, answers);
   const canSubmit = isComplete(questions, answers) && !submitting;
 
   const picked = question === undefined ? undefined : answers[question.id];
@@ -363,7 +442,26 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
               </View>
             )}
             {question.type === "multi" && (
-              <MultiInput question={question} answers={answers} update={setAnswers} />
+              <MultiInput
+                question={question}
+                answers={answers}
+                update={setAnswers}
+                otherOpen={otherOpen[question.id] === true}
+                onToggleOther={() => {
+                  const open = otherOpen[question.id] === true;
+                  if (open) setAnswers((state) => setOther(state, question, ""));
+                  setOtherOpen((current) => ({ ...current, [question.id]: !open }));
+                }}
+              />
+            )}
+            {question.type === "list" && <ListInput question={question} answers={answers} update={setAnswers} />}
+            {question.type === "single" && (
+              <SingleInput
+                question={question}
+                answers={answers}
+                update={setAnswers}
+                onPick={() => advanceAfterPick(index, questions.length)}
+              />
             )}
             {question.type === "text" && (
               <TextAnswerInput
@@ -401,7 +499,8 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
             />
           ) : (
             <Button
-              label="다음"
+              label={skipping ? "건너뛰기" : "다음"}
+              variant={skipping ? "soft" : "primary"}
               disabled={!canNext}
               onPress={() => goTo((i) => Math.min(questions.length - 1, i + 1))}
               style={styles.navNext}
@@ -442,6 +541,19 @@ const createStyles = (t: Theme) =>
     },
     chipOn: { backgroundColor: t.colors.accentSoft, borderWidth: 2, borderColor: t.colors.accent },
     chipOnText: { color: t.colors.accentSoftText },
+    singleRow: { flexDirection: "row", gap: spacing.sm, paddingTop: spacing.sm },
+    singleCard: {
+      flex: 1,
+      height: 120,
+      borderRadius: radius.xl,
+      borderWidth: 1,
+      borderColor: t.colors.border,
+      backgroundColor: t.colors.surface,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing.sm,
+    },
+    singleEmoji: { fontSize: 34, lineHeight: 42 },
     footer: {
       paddingHorizontal: spacing.md,
       paddingTop: spacing.sm,
