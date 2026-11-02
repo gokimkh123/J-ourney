@@ -31,6 +31,11 @@ export type PlanDraft = {
   /** 식당 itemId → 바꿀 식당 */
   meals: Record<string, MealSwap>;
   added: AddedSight[];
+  /**
+   * v2.4 끌어서 정한 그날 전체 순서(dropRow). 날 순번 → 숙소를 뺀 줄 key(원래 관광지·끼니 식당·옮겨 온 곳·넣은 곳, 뺀 곳 포함).
+   * 있으면 order보다 앞서고, 확정할 때 그날 reorder를 맨 뒤에 placeIds로 보낸다(넣고 옮긴 곳까지 순서를 정할 수 있게).
+   */
+  sequence?: Record<number, string[]>;
 };
 
 export type DraftMark = 'removed' | 'moved' | 'reordered' | 'swapped' | 'added' | null;
@@ -51,11 +56,13 @@ export type DraftRow = {
   canRemove: boolean;
   canSwap: boolean;
   canRestore: boolean;
+  /** 손잡이로 끌 수 있는지(v2.4: 관광지·끼니 식당·옮겨 온 곳·넣은 곳, 그날 끌 줄이 둘 이상일 때) */
+  canDrag: boolean;
 };
 
-type Flags = Pick<DraftRow, 'canUp' | 'canDown' | 'canMove' | 'canRemove' | 'canSwap' | 'canRestore'>;
+type Flags = Pick<DraftRow, 'canUp' | 'canDown' | 'canMove' | 'canRemove' | 'canSwap' | 'canRestore' | 'canDrag'>;
 
-const NONE: Flags = { canUp: false, canDown: false, canMove: false, canRemove: false, canSwap: false, canRestore: false };
+const NONE: Flags = { canUp: false, canDown: false, canMove: false, canRemove: false, canSwap: false, canRestore: false, canDrag: false };
 
 function kindOf(stop: RouteStop): 'sight' | 'food' | 'lodging' {
   return stop.kind ?? 'sight';
@@ -104,6 +111,12 @@ function isReordered(d: PlanDraft, dayIndex: number, itemId: string): boolean {
   return shown(order).indexOf(itemId) !== shown(sightIds(d, dayIndex)).indexOf(itemId);
 }
 
+function omitDay<T>(record: Record<number, T>, day: number): Record<number, T> | undefined {
+  const next = { ...record };
+  delete next[day];
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
 function omit<T>(record: Record<string, T>, key: string): Record<string, T> {
   const next = { ...record };
   delete next[key];
@@ -129,6 +142,12 @@ export function restoreRow(d: PlanDraft, key: string): PlanDraft {
   if (d.moved[key] !== undefined) return { ...d, moved: omit(d.moved, key) };
   if (d.meals[key] !== undefined) return { ...d, meals: omit(d.meals, key) };
   if (d.added.some((a) => a.key === key)) return { ...d, added: d.added.filter((a) => a.key !== key) };
+  // 끌어서 자리가 바뀐 곳이면 그날 끈 순서 전체를 되돌린다.
+  const at = findStop(d, key);
+  if (at !== null && d.sequence?.[at.dayIndex] !== undefined) {
+    if (draftRows(d, at.dayIndex).find((r) => r.key === key)?.mark !== 'reordered') return d;
+    return { ...d, sequence: omitDay(d.sequence, at.dayIndex) };
+  }
   const found = findSight(d, key);
   if (found === null || !isReordered(d, found.dayIndex, key)) return d;
   const order = { ...d.order };
@@ -198,7 +217,52 @@ export function draftEdits(d: PlanDraft): PlanEdit[] {
   for (const [itemId, day] of Object.entries(d.moved).sort(byKey)) edits.push({ type: 'move', itemId, day });
   for (const a of d.added) edits.push({ type: 'add', placeId: a.placeId, day: a.dayIndex });
   for (const [itemId, swap] of Object.entries(d.meals).sort(byKey)) edits.push({ type: 'meal', itemId, placeId: swap.placeId });
+  for (const day of Object.keys(d.sequence ?? {}).map(Number).sort((a, b) => a - b)) {
+    const placeIds = sequenceKeys(d, day);
+    if (placeIds.length > 0) edits.push({ type: 'reorder', day, placeIds });
+  }
   return edits;
+}
+
+/**
+ * 끈 날의 reorder 순서. 서버는 이 요청에서 앞서 빼고 옮기고 넣은 뒤의 상태로 읽는다(v2.4):
+ * 그날 관광지 모두 한 번씩 + 끼니 식당 모두. 뺀 곳·숙소는 넣지 않는다.
+ * 서버는 장소 id와 지금 일정의 항목 id를 같은 표로 찾으므로, 장소 id가 없는 원래 곳은 항목 id를 보낸다(옮겨 온 곳은 장소 id여야 찾음).
+ */
+function sequenceKeys(d: PlanDraft, day: number): string[] {
+  return draftRows(d, day)
+    .filter((r) => r.kind !== 'lodging' && r.mark !== 'removed' && (r.kind === 'sight' || r.meal !== null))
+    .map((r) => r.added?.placeId ?? r.stop?.placeId ?? r.key);
+}
+
+/**
+ * 끌어서 놓기(v2.4). fromKey 줄을 targetKey 줄 자리로 옮긴다. 끌 수 있는 줄끼리만 자리를 바꾸고 다른 줄(뺀 곳)은 제자리.
+ * 점심이 저녁 뒤로 가면 서버가 받지 않으므로 그대로 둔다. 원래 순서로 돌아오면 그날 순서를 지운다.
+ */
+export function dropRow(d: PlanDraft, dayIndex: number, fromKey: string, targetKey: string): PlanDraft {
+  const rows = draftRows(d, dayIndex).filter((r) => r.kind !== 'lodging');
+  const movable = rows.filter((r) => r.canDrag).map((r) => r.key);
+  const from = movable.indexOf(fromKey);
+  const to = movable.indexOf(targetKey);
+  if (from < 0 || to < 0 || from === to) return d;
+  const reordered = [...movable];
+  reordered.splice(from, 1);
+  reordered.splice(to, 0, fromKey);
+  let k = 0;
+  const next = rows.map((r) => (r.canDrag ? reordered[k++]! : r.key));
+  const mealAt = (meal: 'lunch' | 'dinner') => next.findIndex((key) => rows.find((r) => r.key === key)?.meal === meal);
+  const lunch = mealAt('lunch');
+  const dinner = mealAt('dinner');
+  if (lunch >= 0 && dinner >= 0 && lunch > dinner) return d;
+  // 끈 날은 예전 순서(order)를 쓰지 않는다.
+  const order = { ...d.order };
+  delete order[dayIndex];
+  const plain = { ...d, order, sequence: d.sequence === undefined ? undefined : omitDay(d.sequence, dayIndex) };
+  const natural = draftRows(plain, dayIndex).filter((r) => r.kind !== 'lodging').map((r) => r.key);
+  if (natural.length === next.length && natural.every((key, i) => key === next[i])) {
+    return plain.sequence === undefined ? { ...plain, sequence: undefined } : plain;
+  }
+  return { ...plain, sequence: { ...(plain.sequence ?? {}), [dayIndex]: next } };
 }
 
 export function changeCount(d: PlanDraft): number {
@@ -226,6 +290,41 @@ function stopRow(stop: RouteStop, dayIndex: number, mark: DraftMark, flags: Part
  * 마지막 관광지 칸 뒤(없으면 첫 숙소 앞, 그것도 없으면 맨 뒤)에 옮겨 온 곳과 넣은 곳을 붙인다. 식당·숙소는 제자리.
  */
 export function draftRows(d: PlanDraft, dayIndex: number): DraftRow[] {
+  const rows = withDrag(baseRows(d, dayIndex));
+  const seq = d.sequence?.[dayIndex];
+  if (seq === undefined) return rows;
+  // 끈 순서: 숙소는 원래 자리(맨 앞 숙소는 앞, 나머지는 뒤), 나머지는 끈 순서대로.
+  // 끈 뒤에 생긴 곳(옮겨 온 곳·넣은 곳)은 서버처럼 저녁 앞에, 저녁이 없으면 끝에 붙인다.
+  const firstOther = rows.findIndex((r) => r.kind !== 'lodging');
+  const head = rows.filter((r, i) => r.kind === 'lodging' && (firstOther < 0 || i < firstOther));
+  const tail = rows.filter((r, i) => r.kind === 'lodging' && firstOther >= 0 && i > firstOther);
+  const others = rows.filter((r) => r.kind !== 'lodging');
+  const ordered = seq.map((key) => others.find((r) => r.key === key)).filter((r): r is DraftRow => r !== undefined);
+  const dinner = ordered.findIndex((r) => r.meal === 'dinner');
+  ordered.splice(dinner < 0 ? ordered.length : dinner, 0, ...others.filter((r) => !seq.includes(r.key)));
+  const natural = others.map((r) => r.key);
+  const movable = ordered.filter((r) => r.canDrag).map((r) => r.key);
+  const marked = ordered.map((r, i) => {
+    const moved = r.mark === null && natural.indexOf(r.key) !== i;
+    const m = movable.indexOf(r.key);
+    return {
+      ...r,
+      ...(moved && { mark: 'reordered' as const, canRestore: true }),
+      canUp: m > 0,
+      canDown: m >= 0 && m < movable.length - 1,
+    };
+  });
+  return [...head, ...marked, ...tail];
+}
+
+/** 끌 수 있는 줄 표시: 뺀 곳·숙소·끼니 아닌 식당은 못 끈다. 그날 끌 줄이 하나뿐이면 아무것도 못 끈다. */
+function withDrag(rows: DraftRow[]): DraftRow[] {
+  const can = (r: DraftRow) => r.mark !== 'removed' && (r.kind === 'sight' || (r.kind === 'food' && r.meal !== null));
+  const count = rows.filter(can).length;
+  return rows.map((r) => ({ ...r, canDrag: count > 1 && can(r) }));
+}
+
+function baseRows(d: PlanDraft, dayIndex: number): DraftRow[] {
   const stops = d.route[dayIndex]?.stops;
   if (stops === undefined) return [];
   const multiDay = d.route.length > 1;

@@ -30,10 +30,10 @@ import {
   createDraft,
   draftEdits,
   draftRows,
+  dropRow,
   moveRow,
   removeRow,
   restoreRow,
-  shiftRow,
   swapMeal,
   type DraftMark,
   type PlanDraft,
@@ -248,17 +248,11 @@ function LivePlanScreen() {
 
   // 줄마다 할 수 있는 일. 고치기 전에는 지금 서버 일정으로 만든 빈 초안에서 읽는다.
   const actionRows = !editable || board?.plan == null ? [] : draftRows(editing ? draft : createDraft(board.plan.route, board.plan.version), dayIndex);
-  const draggableKeys = actionRows.filter((r) => r.canUp || r.canDown).map((r) => r.key);
-  // 놓은 자리까지 한 칸씩 옮긴다(서버는 그날 관광지끼리만 순서를 받는다).
+  // v2.4: 관광지·끼니 식당·옮겨 온 곳·넣은 곳을 끌어서 그날 순서를 정한다(점심은 저녁보다 앞).
+  const draggableKeys = actionRows.filter((r) => r.canDrag).map((r) => r.key);
   const drop = (fromKey: string, targetKey: string) => {
-    const from = draggableKeys.indexOf(fromKey);
-    const to = draggableKeys.indexOf(targetKey);
-    if (from < 0 || to < 0 || from === to) return;
-    change((d) => {
-      let next = d;
-      for (let k = 0; k < Math.abs(to - from); k += 1) next = shiftRow(next, fromKey, to > from ? "down" : "up");
-      return next;
-    });
+    if (!draggableKeys.includes(fromKey) || !draggableKeys.includes(targetKey) || fromKey === targetKey) return;
+    change((d) => dropRow(d, dayIndex, fromKey, targetKey));
   };
   const tappable = (key: string) => {
     const r = actionRows.find((x) => x.key === key);
@@ -489,7 +483,7 @@ function PlanEditSheet({
       </View>
     );
   } else if (row !== undefined && row.kind === "food") {
-    // 식사도 다른 줄과 같은 ⋯ 메뉴(되돌리기·장소 변경). 식당은 서버가 끼니 자리를 정해서 순서·날짜는 못 바꾼다.
+    // 식사도 다른 줄과 같은 ⋯ 메뉴(되돌리기·장소 변경). 순서는 손잡이로 끌어 바꾸고(v2.4), 날짜는 못 바꾼다.
     title = `${mealLabel} · ${row.name}`;
     body = (
       <View>
