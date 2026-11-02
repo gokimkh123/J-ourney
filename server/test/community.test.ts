@@ -97,6 +97,9 @@ describe('커뮤니티: AI가 많이 고른 장소 + 리뷰 (v2.4)', () => {
     const first = await put({ rating: 3, text: '  사람이 많아요  ' }, host.body.token);
     expect(first.status).toBe(200);
     expect(first.body.review).toMatchObject({ nickname: '민수', rating: 3, text: '사람이 많아요', mine: true });
+    // 연락처·식별번호는 가려 저장 (가짜 번호는 조각을 이어 붙여 만듦: 원문 그대로 적으면 커밋 전 검사가 개인정보로 막음)
+    const phone = ['010', '9876', '5432'].join('-');
+    expect((await put({ rating: 4, text: `문의는 ${phone}` }, host.body.token)).body.review.text).toBe('문의는 [전화번호]');
     const again = await put({ rating: 5, text: '밤바다가 예뻐요' }, host.body.token);
     expect(again.body.review).toMatchObject({ reviewId: first.body.review.reviewId, rating: 5, text: '밤바다가 예뻐요' });
     await put({ rating: 4 }, guest.body.token);

@@ -11,10 +11,11 @@ import { parseBody } from '../lib/validate.js';
 import { closedOn, hoursLabel, hoursOn } from '../meeting/hours.js';
 import { HOURS_KEYS, REST_KEYS, intro } from '../meeting/retrieve.js';
 import { placeIdOf } from '../meeting/runs.js';
+import { maskPersonal } from '../persona/write.js';
 
 /**
  * 커뮤니티 (v2.4, 11/2 사용자 '트립어드바이저처럼 AI가 많이 고른 장소 + 사람들 리뷰')
- * AI가 고른 수 = 회의마다 3단계에서 AI(에이전트)가 그곳을 고른 수 (같은 회의·같은 AI는 한 번). 리뷰 글은 화면 표시만 하고 서버 코드는 읽지 않음
+ * AI가 고른 수 = 회의마다 3단계에서 AI(에이전트)가 그곳을 고른 수 (같은 회의·같은 AI는 한 번). 리뷰 글은 화면 표시만 하고 서버 코드는 읽지 않음 (연락처·식별번호만 가림)
  */
 export const COMMUNITY = {
   /** 묶음(관광공사 공식 대분류)마다 보여 줄 장소 수 */
@@ -190,7 +191,8 @@ export function communityRoutes(db: Db) {
     const body = await parseBody(c, reviewBody);
     const [place] = await db.select({ cid: places.contentId }).from(places).where(eq(places.contentId, cid)).limit(1);
     if (!place) throw new ApiError('NOT_FOUND', '장소를 찾을 수 없음');
-    const text = (body.text ?? '').trim();
+    // 리뷰 글은 뜻을 읽지 않고, 다른 사람에게 보이므로 연락처·식별번호만 가려 저장함 (성향 15번 글과 같은 규칙, 11/2 사용자 결정)
+    const text = maskPersonal((body.text ?? '').trim());
     const [row] = await db
       .insert(placeReviews)
       .values({ id: newId('rvw'), placeId: cid, memberId: me.id, tripId: me.tripId, nickname: me.nickname, rating: body.rating, text })

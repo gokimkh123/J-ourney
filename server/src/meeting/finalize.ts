@@ -12,6 +12,7 @@ import type { PlanProposal } from './schedule.js';
  * titleMax·summaryMax: 설명문에 쓰는 글자 수, …HardMax: 이만큼까지는 받음 (넘거나 칸 이름·표 번호가 나오면 그 칸만 기본값 'A안'·빈 설명)
  * pickMin·pickMax: 설명문이 고르라고 하는 표 번호 수, pickHardMax: 답 형식이 받는 수 (10/29 짝 비교에서 2일 여행은 5–7개를 고르기도 해 형식 오류가 남 → 넉넉히 받음)
  * tries: 형식이 틀리면 같은 요청을 1번 더 부름
+ * 설명이 summaryHardMax를 넘어 빈칸이 된 안이 있으면 글자 수를 알려 주는 다시 쓰기 줄(RETRY_LINE)을 붙여 1번 더 묻고 그 안의 설명만 받음 (11/2 사용자 결정: 시연 여행 B안 설명이 빈칸)
  */
 export const FINALIZE = {
   titleMax: 12,
@@ -105,6 +106,10 @@ export function namesRequest(plans: readonly PlanProposal[]) {
 }
 type Draft = z.infer<ReturnType<typeof namesRequest>['schema']>;
 
+/** 설명이 길어 빈칸이 된 안이 있을 때 설명문 끝에 붙이는 다시 쓰기 줄 (코드가 글자 수만 넣음, 첫 요청은 그대로라 녹화가 그대로 쓰임) */
+const RETRY_LINE = (sizes: string) =>
+  `다시 쓰기: 지난 답의 desc가 너무 길었다 (${sizes}). 이번에는 pick을 ${FINALIZE.pickMin}개로 줄이고 desc를 ${FINALIZE.summaryMax}자 이내 한 문장으로 쓴다. 나머지 규칙은 같다.`;
+
 /** 보이는 글 확인: 다듬고 길이·칸 이름·표 번호(A1·B2)만 봄 (뜻은 읽지 않음) */
 const shown = (text: string, hardMax: number) => {
   const t = text.replace(/\s+/g, ' ').trim();
@@ -120,7 +125,7 @@ export interface PlanNames {
 
 /**
  * 두 안의 이름·설명: 녹화된 같은 요청 → 회의 AI 상한 안에서 부름(부른 답은 녹화) → 형식이 틀리면 1번 더 → 못 쓰면 'A안'·'B안'
- * 두 안의 이름이 같으면 B안만 기본값으로 (사람이 고를 때 헷갈리지 않게)
+ * 두 안의 이름이 같으면 B안만 기본값으로 (사람이 고를 때 헷갈리지 않게). 설명이 길어 빈칸이 된 안은 다시 쓰기 줄을 붙여 그 설명만 1번 더
  */
 export async function namePlans(
   plans: readonly PlanProposal[],
@@ -137,29 +142,47 @@ export async function namePlans(
     const B = pick('B', d.b);
     return { A, B: B.title === A.title ? fallback('B') : B };
   };
-  for (let attempt = 1; attempt <= FINALIZE.tries; attempt++) {
-    const replayed = await opts.recorder?.replay(req, attempt);
-    if (replayed) return { ...accept(replayed), llmCalls: 0 };
-  }
   let calls = 0;
-  for (let attempt = 1; attempt <= FINALIZE.tries; attempt++) {
-    if (!opts.llm || !(await opts.reserve())) break;
-    calls++;
-    try {
-      let value: Draft;
-      if (opts.emit && opts.llm.streamJson) {
-        opts.emit({ type: 'llm.request', data: { agentId: null, purpose: 'names_final', try: attempt, model: opts.llm.name, system: req.system, input: req.input } });
-        const out = await opts.llm.streamJson(req, () => {});
-        opts.emit({ type: 'llm.response', data: { agentId: null, purpose: 'names_final', try: attempt, model: out.model, ms: out.ms, usage: out.usage, text: out.text } });
-        value = out.value;
-      } else value = await opts.llm.generateJson(req);
-      await opts.recorder?.record(req, value, attempt);
-      return { ...accept(value), llmCalls: calls };
-    } catch (err) {
-      console.warn(`13단계 이름 짓기 LLM ${attempt}번째 실패:`, err instanceof Error ? err.message.slice(0, 200) : err);
+  /** 녹화된 같은 요청(시도 번호까지) → 회의 AI 상한 안에서 부름(부른 답은 녹화), 형식이 틀리면 1번 더. 못 받으면 null */
+  const ask = async (r: typeof req): Promise<Draft | null> => {
+    for (let attempt = 1; attempt <= FINALIZE.tries; attempt++) {
+      const replayed = await opts.recorder?.replay(r, attempt);
+      if (replayed) return replayed as Draft;
+    }
+    for (let attempt = 1; attempt <= FINALIZE.tries; attempt++) {
+      if (!opts.llm || !(await opts.reserve())) break;
+      calls++;
+      try {
+        let value: Draft;
+        if (opts.emit && opts.llm.streamJson) {
+          opts.emit({ type: 'llm.request', data: { agentId: null, purpose: 'names_final', try: attempt, model: opts.llm.name, system: r.system, input: r.input } });
+          const out = await opts.llm.streamJson(r, () => {});
+          opts.emit({ type: 'llm.response', data: { agentId: null, purpose: 'names_final', try: attempt, model: out.model, ms: out.ms, usage: out.usage, text: out.text } });
+          value = out.value;
+        } else value = await opts.llm.generateJson(r);
+        await opts.recorder?.record(r, value, attempt);
+        return value;
+      } catch (err) {
+        console.warn(`13단계 이름 짓기 LLM ${attempt}번째 실패:`, err instanceof Error ? err.message.slice(0, 200) : err);
+      }
+    }
+    return null;
+  };
+  const first = await ask(req);
+  if (!first) return { A: fallback('A'), B: fallback('B'), llmCalls: calls };
+  const names = accept(first);
+  // 설명이 길어 빈칸이 된 안은 글자 수를 알려 1번 더 묻고 그 안의 설명만 받음 (칸 이름·표 번호가 섞인 설명은 다시 묻지 않음)
+  const draftOf = (d: Draft, l: PlanLabel) => (l === 'A' ? d.a : d.b);
+  const size = (text: string) => text.replace(/\s+/g, ' ').trim().length;
+  const long = (['A', 'B'] as const).filter((l) => names[l].source === 'llm' && !names[l].summary && size(draftOf(first, l).desc) > FINALIZE.summaryHardMax);
+  if (long.length) {
+    const again = await ask({ ...req, system: `${req.system}\n\n${RETRY_LINE(long.map((l) => `${l}안 ${size(draftOf(first, l).desc)}자`).join(' · '))}` });
+    for (const l of long) {
+      const summary = again ? shown(draftOf(again, l).desc, FINALIZE.summaryHardMax) : null;
+      if (summary) names[l] = { ...names[l], summary };
     }
   }
-  return { A: fallback('A'), B: fallback('B'), llmCalls: calls };
+  return { ...names, llmCalls: calls };
 }
 
 /** 13단계 결과 한 안 (meeting.agreed의 plans[]와 GET /plan의 candidates[]) */
