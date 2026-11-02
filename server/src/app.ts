@@ -20,6 +20,7 @@ import { meetingService } from './meeting/service.js';
 import { meetingDevRoutes } from './routes/meeting-dev.js';
 import { meetingRoutes } from './routes/meetings.js';
 import { planRoutes } from './routes/plan.js';
+import { communityRoutes } from './routes/community.js';
 import { planService } from './meeting/choose.js';
 import { personaRoutes } from './routes/persona.js';
 import type { TourClient } from './tour/client.js';
@@ -134,7 +135,11 @@ export function createApp({
     const liveRecorder = mode === 'only' && accessKeys.length > 0 && accessReplay !== 'only' && anyLlm ? llmRecorder(db, anyLlm.name, accessReplay) : null;
     const live = liveRecorder && llm ? { llm, recorder: liveRecorder } : null;
     const tripLlm = destinationLlm !== undefined ? destinationLlm : mode === 'only' ? null : llm;
-    api.route('/', tripRoutes(db, { llm: tripLlm, recorder, live, llmDailyLimit, accessKeys }));
+    // 여행 삭제는 그 회의들의 단계 기록(체크포인트)도 지움 (v2.4)
+    const forgetMeetings = async (ids: readonly string[]) => {
+      for (const id of ids) await checkpointer.deleteThread(id);
+    };
+    api.route('/', tripRoutes(db, { llm: tripLlm, recorder, live, llmDailyLimit, accessKeys, hub, forgetMeetings }));
     api.route('/', personaRoutes({ db, llm: mode === 'only' ? null : llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret, accessKeys, live }));
     // 회의 그래프와 실행기는 서버가 켜질 때 한 번만 만들고 공식 경로·시험 경로가 함께 씀
     const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
@@ -144,6 +149,8 @@ export function createApp({
     api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs, accessKeys, monitor }));
     // 13–15단계 (사람 선택·고치기·확정): 고칠 때 6단계 계산에 회의 단계 기록과 카카오 길찾기를 씀
     api.route('/', planRoutes({ db, plans: planService({ db, graph, router: routeClient, publisher: hub }) }));
+    // 커뮤니티: AI가 많이 고른 장소 + 사람들 리뷰 (v2.4)
+    api.route('/', communityRoutes(db));
     if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: tunnelDev, replay: mode !== 'off', accessKeys }));
   } else {
     api.all('*', () => {

@@ -11,6 +11,10 @@ import { type EventPublisher, type MeetingEnvelope, eventsAfter } from './runs.j
  */
 export const LIVE = { pingMs: 25_000, perMember: 2, maxPayloadBytes: 1024 } as const;
 
+/** 서버가 연결을 닫는 까닭 번호 (명세서 5장): 같은 구성원의 새 연결로 바뀜 · 구성원이 나감(v2.4) · 여행이 지워짐(v2.4) */
+export const CLOSE = { replaced: [4000, 'replaced'], left: [4001, 'left'], tripDeleted: [4004, 'trip deleted'] } as const;
+type Closer = { close: (code?: number, reason?: string) => void };
+
 /** 서버가 쓰는 WebSocket 받는 곳 (HTTP 서버의 업그레이드로만 받음, 앱이 보내는 글은 maxPayloadBytes까지) */
 export const liveSocketServer = () => new WebSocketServer({ noServer: true, maxPayload: LIVE.maxPayloadBytes });
 
@@ -19,7 +23,7 @@ type Listener = (e: MeetingEnvelope) => void;
 /** 여행별로 열린 연결에 이벤트를 보냄. 서버는 한 대라 메모리에 둠 (기록은 DB, 놓친 것은 afterSeq로 DB에서 다시 받음) */
 export class EventHub implements EventPublisher {
   private readonly listeners = new Map<string, Set<Listener>>();
-  private readonly sockets = new Map<string, { close: () => void }[]>();
+  private readonly sockets = new Map<string, Closer[]>();
 
   subscribe(tripId: string, listener: Listener): () => void {
     let set = this.listeners.get(tripId);
@@ -51,8 +55,13 @@ export class EventHub implements EventPublisher {
     return { trips: this.listeners.size, members: this.sockets.size };
   }
 
+  /** 구성원의 연결을 모두 닫음 (나가기·여행 삭제, v2.4). 닫힌 연결은 각자 등록을 지움 */
+  closeMember(memberId: string, [code, reason]: readonly [number, string]): void {
+    for (const s of [...(this.sockets.get(memberId) ?? [])]) s.close(code, reason);
+  }
+
   /** 구성원의 연결을 등록하고, perMember를 넘으면 가장 오래된 연결을 닫음. 돌려준 함수로 등록을 지움 */
-  register(memberId: string, socket: { close: () => void }, perMember: number = LIVE.perMember): () => void {
+  register(memberId: string, socket: Closer, perMember: number = LIVE.perMember): () => void {
     const list = this.sockets.get(memberId) ?? [];
     list.push(socket);
     this.sockets.set(memberId, list);

@@ -41,6 +41,8 @@ export interface MustKeepRule {
   start: string | null;
   end: string | null;
   amount: number | null;
+  /** 방장이 이미 예약한 곳 (v2.4 방장 질문, 회의 준비 때 코드가 붙임): 모두의 꼭 지킬 곳 · 숙소는 숙소 목록에서 찾음 */
+  booked?: 'place' | 'lodging';
 }
 
 /** 화면에 보이지 않는 회의용 값 (일정 배치·만족도 계산에 씀) */
@@ -61,10 +63,18 @@ export interface PersonaProfile {
   likes: string[];
 }
 
-/** 검사를 마친 설문 응답 */
+/** 검사를 마친 설문 응답. 11/2 새 설문의 칸(wantPlaces·pace·likesText·dislikesText)은 예전 응답에 없음 */
 export interface PersonaAnswers {
   scale: Record<string, number>;
   likes: string[];
   dislikes: string[];
+  /** q15 직접 쓴 글 (새 설문 '추가로 고려하고 싶은 사항', 예전 '꼭 지켰으면 하는 것') */
   mustKeepText: string | null;
+  /** q16 가고 싶은 곳 (사람이 쓴 장소 이름, AI가 읽음) */
+  wantPlaces?: string[];
+  /** q17 이번 여행 속도 보기 id (pace_slow·pace_normal·pace_packed) */
+  pace?: string | null;
+  /** q13·q14 '기타' 직접 입력 (AI가 읽음) */
+  likesText?: string | null;
+  dislikesText?: string | null;
 }

@@ -19,7 +19,7 @@ import { AREA_MATCH, type AreaAnswer, type AreaMatcher, type AreaRule, areaInput
 import { withSubDistricts } from '../src/meeting/regions.js';
 import { NAME_MATCH, type NameMatcher, type NamePlace, type NameRule, SYSTEM, decodeNames, nameInput, nameMatcher, savedNameMatcher } from '../src/meeting/names.js';
 import { type MemberInput, NO_NAME_ANSWER, RETRIEVE, retrieveCandidates } from '../src/meeting/retrieve.js';
-import { isAreaRule, isNameRule, ruleMatcher } from '../src/meeting/rules.js';
+import { bookedRules, isAreaRule, isNameRule, ruleMatcher } from '../src/meeting/rules.js';
 import type { PersonaProfile } from '../src/persona/types.js';
 import type { TourClient } from '../src/tour/client.js';
 import { meetings, tripPlans, trips } from '../src/db/schema.js';
@@ -405,6 +405,43 @@ describe('지역 맞추기 (2단계, 10/29: 지역 조건은 LLM이 구·군 목
     expect(r.nameMatches).toContainEqual(expect.objectContaining({ type: 'include', keyword: '태종대온천찜질방', places: ['태종대온천찜질방'] }));
     const none = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [spa], crowdClient: null, matchNames: textNames, today: '2026-11-01' });
     expect(none.missingRules).toEqual([{ memberId: 'm7', label: '태종대온천찜질방에서 쉬기', reason: NO_NAME_ANSWER }]);
+  });
+});
+
+describe('방장이 예약한 곳·숙소 (v2.4, 2단계)', () => {
+  it('예약한 곳은 AI 이름 맞추기로 찾아 모두의 꼭 지킬 곳(식당이어도), 예약한 숙소는 시·도 숙소 목록에서 찾아 숙소 후보를 그곳 하나로 · 당일치기·못 찾으면 메모', async () => {
+    const { db } = await createTestApp();
+    await seedDb(db);
+    const asked: string[] = [];
+    const names: NameMatcher = async (rules, list) => {
+      asked.push(...rules.map((r) => `${r.keyword}:${list.every((p) => p.category === '호텔' || p.category === '게스트하우스') ? '숙소 목록' : '장소 목록'}`));
+      return textNames(rules, list);
+    };
+    const host = { ...MEMBERS[0], mustKeep: bookedRules({ bookedPlaces: ['신창국밥'], bookedLodging: '해운대게스트하우스' }) };
+    const members = [host, ...MEMBERS.slice(1)];
+    const twoDays = { ...CONDITIONS, endDate: '2026-11-08' };
+    const r = await retrieveCandidates(db, { conditions: twoDays, destination: DEST, members, crowdClient: null, matchNames: names, matchAreas: textAreas, today: '2026-11-01' });
+    expect(asked).toEqual(['신창국밥:장소 목록', '돼지국밥:장소 목록', '해운대게스트하우스:숙소 목록']);
+    const soup = r.candidates.find((c) => c.name === '신창국밥 본점')!;
+    for (const m of members) expect(soup.marks[m.memberId]).toContainEqual({ kind: 'must', label: '예약한 곳: 신창국밥' });
+    expect(soup.booked).toBe(true);
+    expect(r.lodgings[0].booked).toBe(true);
+    // 예약한 곳은 누군가 ⚠를 달아도 사람 확인 안건(투표로 뺄 수 있음)에 올리지 않음 (예약 표시가 없으면 안건)
+    const board = { candidates: [{ placeId: 'plc_p4', name: '신창국밥 본점', lat: null, lng: null, proposedBy: ['agt_m1'], reactions: [] }], agenda: [] };
+    const ai = new Map([['agt_m2', [{ placeId: 'plc_p4', kind: 'warn' as const, reason: '시끄러울 것 같아요' }]]]);
+    expect(reactBoard(board, r, members, ai).agenda.filter((a) => a.placeId === 'plc_p4')).toEqual([]);
+    const unbooked = { ...r, candidates: r.candidates.map(({ booked: _booked, ...c }) => c) };
+    expect(reactBoard(board, unbooked, members, ai).agenda.map((a) => a.placeId)).toContain('plc_p4');
+    expect(r.lodgings.map((c) => c.name)).toEqual(['해운대게스트하우스']);
+    for (const m of members) expect(r.lodgings[0].marks[m.memberId]).toContainEqual({ kind: 'must', label: '예약한 숙소: 해운대게스트하우스' });
+    expect(r.nameMatches).toContainEqual(expect.objectContaining({ memberId: 'm1', label: '예약한 숙소: 해운대게스트하우스', places: ['해운대게스트하우스'] }));
+    // 당일치기는 숙소를 쓰지 않음 · 숙소 목록에 없으면 메모하고 숙소 후보는 평소대로
+    const day = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members, crowdClient: null, matchNames: textNames, matchAreas: textAreas, today: '2026-11-01' });
+    expect(day.missingRules).toContainEqual({ memberId: 'm1', label: '예약한 숙소: 해운대게스트하우스', reason: '당일치기라 숙소를 쓰지 않음' });
+    const lost = [{ ...host, mustKeep: bookedRules({ bookedLodging: '없는호텔' }) }, ...MEMBERS.slice(1)];
+    const none = await retrieveCandidates(db, { conditions: twoDays, destination: DEST, members: lost, crowdClient: null, matchNames: textNames, matchAreas: textAreas, today: '2026-11-01' });
+    expect(none.missingRules).toContainEqual({ memberId: 'm1', label: '예약한 숙소: 없는호텔', reason: '숙소 목록에서 찾지 못함' });
+    expect(none.lodgings.length).toBe(2);
   });
 });
 
@@ -969,6 +1006,12 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const boards = events.filter((e) => e.type === 'board.updated');
     expect(boards).toHaveLength(2);
     expect(boards[0].data.candidates.every((c: { reactions: unknown[] }) => c.reactions.length === 0)).toBe(true);
+    // 보드 후보마다 화면 아이콘용 종류(코드가 정한 값)와 공식 분류 이름 (v2.4): 1박이라 AI가 고른 숙소는 lodging
+    for (const c of boards[1].data.candidates) {
+      expect(['sight', 'food', 'lodging']).toContain(c.kind);
+      expect(c.category === null || typeof c.category === 'string').toBe(true);
+    }
+    expect(boards[1].data.candidates.some((c: { kind: string }) => c.kind === 'lodging')).toBe(true);
     const agentIds = new Set(events[0].data.agents.map((a: { agentId: string }) => a.agentId));
     for (const c of boards[1].data.candidates) for (const r of c.reactions) {
       expect(agentIds.has(r.agentId)).toBe(true);
@@ -1843,8 +1886,12 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     expect(out.results).toEqual([{ plan: 'A', applied: true, note: `1일째 ${first.name} 뺌` }]);
     expect(out.plan).toMatchObject({ planId: A.planId, version: A.version + 1, changes: [`1일째 ${first.name} 뺌`] });
     expect(out.edits.at(-1)).toMatchObject({ version: A.version + 1, by: hyunwoo.id });
+    // 옛 버전을 보고 보낸 고치기는 409 (baseVersion, v2.4): 다른 사람이 먼저 고쳐 지금은 한 버전 위
+    const stale = await edits({ baseVersion: A.version, edits: [{ type: 'remove', itemId: sightsOf(out.plan)[0].itemId }] });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toMatchObject({ code: 'PLAN_LOCKED', message: expect.stringContaining(`v${A.version + 1}`) });
     // 옛 화면에서 같은 곳을 또 빼도 다른 곳이 빠지지 않음 (항목 id는 자리 번호가 아니라 안·날짜·장소)
-    out = (await edits({ edits: [{ type: 'remove', itemId: first.itemId }] })).body;
+    out = (await edits({ baseVersion: A.version + 1, edits: [{ type: 'remove', itemId: first.itemId }] })).body;
     expect(out.results).toEqual([{ plan: 'A', applied: false, note: '반영 못 함: 지금 일정에 없는 항목' }]);
     expect(out.plan.version).toBe(A.version + 1);
     // 넣을 보기: 일정에 없는 관광지 (방금 뺀 곳도 다시 넣을 수 있음), 끼니마다 바꿀 식당
@@ -2408,6 +2455,10 @@ describe('접근 키 (ACCESS_KEYS): 키가 있는 서버는 키를 낸 터널 �
     const rows = await t.db.select({ trip: meetings.tripId, label: meetings.accessLabel }).from(meetings);
     expect(rows).toHaveLength(2);
     expect(rows).toEqual(expect.arrayContaining([{ trip: a.tripId, label: 'team' }, { trip: b.tripId, label: null }]));
+    // 파티를 없애 회의 행이 지워져도 키 몫은 되돌아가지 않음 (v2.4: 키마다 따로 셈)
+    expect((await call(t.app, 'DELETE', `/trips/${a.tripId}`, undefined, a.token)).status).toBe(204);
+    expect(await t.db.select().from(meetings).where(eq(meetings.tripId, a.tripId))).toHaveLength(0);
+    expect((await start(t, await readyTrip(t), withKey)).body.error.code).toBe('ACCESS_QUOTA_EXCEEDED');
   });
 
   it('LLM_REPLAY=true여도 키로 시작한 회의만 LLM을 부르고(키 그래프), 서버 안에서 시작한 회의는 LLM 0회', async () => {

@@ -4,7 +4,7 @@ import type { LlmClient } from '../llm/client.js';
 import type { LlmRecorder } from '../llm/record.js';
 import { DISLIKE_OPTIONS, LIKE_OPTIONS } from '../persona/questions.js';
 import { REACT, reactionOf } from './react.js';
-import type { Candidate, MemberInput, RetrieveResult } from './retrieve.js';
+import { type Candidate, type MemberInput, RETRIEVE, type RetrieveResult } from './retrieve.js';
 import { type MeetingEventDraft, agentIdOf, placeIdOf } from './runs.js';
 import type { Board, BoardCandidate } from './types.js';
 
@@ -409,12 +409,15 @@ export function savedPickFor(saved: PickResult | undefined, pool: RetrieveResult
 /** 4명의 고른 결과를 후보 보드로 모음 (명세서 board.updated: 반응은 4단계에서 채움) */
 export function boardOf(picks: readonly PickResult[], pool: RetrieveResult): Board {
   const byId = new Map([...pool.candidates, ...pool.lodgings].map((c) => [c.id, c]));
+  const lodgingIds = new Set(pool.lodgings.map((c) => c.id));
   const board = new Map<string, Omit<BoardCandidate, 'reactions'>>();
   for (const p of picks) {
     for (const item of [...p.picks, ...(p.lodging ? [p.lodging] : [])]) {
       const c = byId.get(item.id);
       if (!c) continue;
-      const row = board.get(c.id) ?? { placeId: placeIdOf(c.id), name: c.name, lat: c.lat, lng: c.lng, proposedBy: [] };
+      // 종류·분류 칸은 화면 아이콘용 (v2.4): 숙소 후보 → lodging, 관광공사 음식점 유형 → food, 그 밖 → sight
+      const kind = lodgingIds.has(c.id) ? 'lodging' : c.type === RETRIEVE.foodType ? 'food' : 'sight';
+      const row = board.get(c.id) ?? { placeId: placeIdOf(c.id), name: c.name, lat: c.lat, lng: c.lng, kind, category: c.category ?? null, proposedBy: [] };
       row.proposedBy.push(agentIdOf(p.memberId));
       board.set(c.id, row);
     }

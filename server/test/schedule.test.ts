@@ -216,7 +216,7 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     }
   });
 
-  it('✕가 붙은 곳은 빼되 5단계에서 사람이 남기기로 한 곳은 넣고, 사람이 뺀 곳은 다시 넣지 않음', async () => {
+  it('✕가 붙은 곳은 빼되 5단계에서 사람이 남기기로 한 곳·방장이 예약한 곳은 넣고, 사람이 뺀 곳은 다시 넣지 않음', async () => {
     const db = await testDb();
     const cands = Array.from({ length: 6 }, (_, i) => near(`관광지${i}`, i));
     const [x, y] = cands;
@@ -233,6 +233,10 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     const [A2, B2] = await run(db, fakeRouter().router, pool, { ...board, candidates: board.candidates.filter((c) => c.placeId !== `plc_${y.id}`) }, members, { decision });
     expect(ids(A2).has(`plc_${x.id}`)).toBe(true);
     expect(ids(A2).has(`plc_${y.id}`) || ids(B2).has(`plc_${y.id}`)).toBe(false);
+    // 방장이 예약한 곳(v2.4)은 ✕가 붙어도 사람 확인 없이 넣음
+    const bookedPool = poolOf(cands.map((c) => (c.id === x.id ? { ...c, booked: true as const } : c)), ['2026-11-07']);
+    const [A3] = await run(db, fakeRouter().router, bookedPool, board, members);
+    expect(ids(A3).has(`plc_${x.id}`)).toBe(true);
   });
 
   it('야경 좋아요가 있으면 해가 12° 지는 때(항해박명 끝)에 여는 전망대를 저녁 뒤 마지막에 두고, 18시에 닫는 전망대는 야경 자리에 두지 않음', async () => {
@@ -275,6 +279,91 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     expect(sights(out.plan).slice(0, -1).map((x) => x.name)).toEqual(want.slice(1).map((x) => x.name)); // 낮 장소는 사람이 정한 순서
     expect(out.plan.notes).toContain('1일째 밤 전망대은(는) 밤에 가는 곳이라 저녁 뒤 자리 그대로');
     expect(out.plan).toMatchObject({ planId: A.planId, version: A.version + 1, changes: ['1일째 관광지 순서 바꿈'] });
+  });
+
+  it('14단계 순서 바꾸기에 끼니(식당)도 넣으면 그 자리·그 식당 그대로 (v2.4): 끼니는 그날 모두 적고 점심은 저녁 앞, 끼니까지 정한 날에 넣는 곳은 저녁 앞, 같은 요청에서 넣은 곳은 장소 id로 순서를 정함', async () => {
+    const db = await testDb();
+    const cands = [near('해변', 0), near('공원', 1), near('시장', 4), near('박물관', 5), near('미술관', 8), near('수목원', 9)];
+    await db.insert(places).values([restaurant('r1', '점심식당', 35.158, 129.1, { opentimefood: '10:00~22:00' }), restaurant('r2', '저녁식당', 35.166, 129.11, { opentimefood: '10:00~22:00' })]);
+    const members = [member('mem_1', { placesPerDay: [4, 4] }), member('mem_2', { placesPerDay: [4, 4] })];
+    const input: ScheduleInput = { meetingId: 'mtg_test1', pool: poolOf(cands, ['2026-11-07']), board: boardOf(cands), members, decision: null, moveMode: 'transit' };
+    const { router } = fakeRouter();
+    const { plans, states } = await schedulePlans(db, router, input);
+    const A = plans.find((x) => x.label === 'A')!;
+    const lunch = A.route[0].stops.find((s) => s.meal === 'lunch')!;
+    const dinner = A.route[0].stops.find((s) => s.meal === 'dinner')!;
+    const day = sights(A);
+    expect(day).toHaveLength(4);
+    // 점심을 맨 앞, 저녁을 셋째 관광지 뒤로 (넷째 관광지는 저녁 뒤)
+    const want = [lunch, day[0], day[1], day[2], dinner, day[3]];
+    let out = await editPlan(db, router, input, { plan: A, state: states.A }, [{ type: 'reorder', day: 0, itemIds: want.map((x) => x.itemId) }]);
+    expect(out.results).toEqual([{ plan: 'A', applied: true, note: '1일째 관광지·끼니 순서 바꿈' }]);
+    expect(out.plan.route[0].stops.map((x) => x.name)).toEqual(want.map((x) => x.name));
+    // 끼니를 하나만 적거나 저녁을 점심 앞에 두면 반영하지 않음 (버전 그대로)
+    const bad = await editPlan(db, router, input, { plan: out.plan, state: out.state }, [
+      { type: 'reorder', day: 0, itemIds: [lunch.itemId, ...day.map((x) => x.itemId)] },
+      { type: 'reorder', day: 0, itemIds: [dinner.itemId, ...day.map((x) => x.itemId), lunch.itemId] },
+    ]);
+    expect(bad.results.map((r) => r.note)).toEqual(['반영 못 함: 끼니를 옮기려면 그날 끼니를 모두 한 번씩 적어야 함', '반영 못 함: 점심은 저녁보다 앞이어야 함']);
+    expect(bad.plan.version).toBe(out.plan.version);
+    // 끼니까지 정한 날에 넣는 곳은 저녁 앞 (사람이 정한 저녁 뒤 자리를 밀어내지 않음)
+    const [x1, x2] = cands.filter((c) => !ids(A).has(`plc_${c.id}`));
+    out = await editPlan(db, router, input, { plan: out.plan, state: out.state }, [{ type: 'add', placeId: `plc_${x1.id}`, day: 0 }]);
+    let names = out.plan.route[0].stops.map((x) => x.name);
+    expect(names.indexOf(x1.name)).toBe(names.indexOf(dinner.name) - 1);
+    expect(names.at(-1)).toBe(day[3].name);
+    // 같은 요청에서 넣은 곳도 장소 id로 바로 순서를 정함 (끼니 식당도 장소 id로)
+    const now = out.plan.route[0].stops.filter((x) => x.kind === 'sight').map((x) => x.placeId);
+    out = await editPlan(db, router, input, { plan: out.plan, state: out.state }, [
+      { type: 'add', placeId: `plc_${x2.id}`, day: 0 },
+      { type: 'reorder', day: 0, placeIds: [`plc_${x2.id}`, lunch.placeId, ...now, dinner.placeId] },
+    ]);
+    expect(out.results.map((r) => r.applied)).toEqual([true, true]);
+    names = out.plan.route[0].stops.map((x) => x.name);
+    expect(names).toEqual([x2.name, lunch.name, ...now.map((id) => cands.find((c) => `plc_${c.id}` === id)!.name), dinner.name]);
+  });
+
+  it('B안의 좋아요 1곳 넣기는 A안에 없는 곳을 먼저 씀: A안에 그 사람이 좋아하는 곳이 있어도 B안이 A안으로 되돌아가지 않음 (11/2 검증29b: 18개 중 4개 여행의 B안 관광지가 A안과 같음)', async () => {
+    const db = await testDb();
+    // 모두 한 자리에 두어 점수(인기)만으로 고름: A안 = 인기 1·2·3위, B안 = A의 1순위 + A에 없는 곳
+    const top = near('인기1', 0, { popularity: 99 });
+    const likedA = near('좋아요A', 0, { popularity: 95, marks: { mem_1: [{ kind: 'like', label: '바다' }] } });
+    const likedB = near('좋아요B', 0, { popularity: 10, marks: { mem_1: [{ kind: 'like', label: '바다' }] } });
+    const cands = [top, likedA, near('인기3', 0, { popularity: 90 }), near('인기4', 0, { popularity: 85 }), near('인기5', 0, { popularity: 80 }), likedB];
+    const members = [member('mem_1', { placesPerDay: [3, 3] }), member('mem_2', { placesPerDay: [3, 3] })];
+    const [A, B] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07']), boardOf(cands), members);
+    expect(sights(A).map((x) => x.name).sort()).toEqual(['인기1', '인기3', '좋아요A']);
+    expect(sights(B).map((x) => x.name)).toContain('좋아요B');
+    expect([...ids(B)].filter((id) => ids(A).has(id))).toEqual([`plc_${top.id}`]); // A와 같이 쓰는 곳은 A의 1순위뿐
+  });
+
+  it('항공편 (v2.4): 첫날은 도착 + 60분부터·마지막 날은 출발 − 120분까지 — 늦게 도착한 날은 점심이 없고 관광지가 적으며, 일찍 떠나는 날은 저녁·야경이 없음 (시각이 없으면 모든 날이 같음)', async () => {
+    const db = await testDb();
+    const tower = near('밤 전망대', 1, { code: 'VE010200', open: { open: 600, close: 1320 } });
+    const cands = [tower, ...Array.from({ length: 14 }, (_, i) => near(`관광지${i}`, i + 2))];
+    await db.insert(places).values([
+      restaurant('r1', '식당1', 35.158, 129.1, { opentimefood: '10:00~22:00' }),
+      restaurant('r2', '식당2', 35.166, 129.11, { opentimefood: '10:00~22:00' }),
+      restaurant('r3', '식당3', 35.16, 129.12, { opentimefood: '10:00~22:00' }),
+      restaurant('r4', '식당4', 35.152, 129.115, { opentimefood: '10:00~22:00' }),
+    ]);
+    const members = [member('mem_1', { placesPerDay: [4, 4] }, ['like_night']), member('mem_2', { placesPerDay: [4, 4] })];
+    const base: ScheduleInput = { meetingId: 'mtg_test1', pool: poolOf(cands, ['2026-11-07', '2026-11-08'], [near('호텔', 2, { type: 32, code: 'AC010100' })]), board: boardOf(cands), members, decision: null, moveMode: 'transit' };
+    const { router } = fakeRouter();
+    const meals = (plan: PlanProposal, day: number) => plan.route[day].stops.filter((x) => x.kind === 'food').map((x) => x.meal);
+    const [N] = (await schedulePlans(db, router, base)).plans;
+    expect([sights(N, 0).length, sights(N, 1).length]).toEqual([4, 4]);
+    expect([meals(N, 0), meals(N, 1)]).toEqual([['lunch', 'dinner'], ['lunch', 'dinner']]);
+    // 하루 09:30–23:00(810분) · 14:00 도착 → 15:00부터(480분: 점심 없음, 관광지 4 × 480/810 → 2곳) · 15:00 출발 → 13:00까지(210분: 저녁 없음, 1곳)
+    const [F] = (await schedulePlans(db, router, { ...base, arrivalTime: '14:00', departureTime: '15:00' })).plans;
+    expect([sights(F, 0).length, sights(F, 1).length]).toEqual([2, 1]);
+    expect([meals(F, 0), meals(F, 1)]).toEqual([['dinner'], ['lunch']]);
+    expect(F.route[1].stops.some((x) => x.night)).toBe(false);
+    expect(F.route[0].stops.at(-1)).toMatchObject({ kind: 'lodging' }); // 1일째는 숙소로 끝남
+    // 밤늦게 도착하면 첫날은 숙소만 (관광지·끼니 없음)
+    const [L] = (await schedulePlans(db, router, { ...base, arrivalTime: '22:30' })).plans;
+    expect(L.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
+    expect(sights(L, 1).length).toBe(4);
   });
 
   it('시작 시각이 모두 저녁 뒤인 곳(밤 행사·야시장)은 저녁 뒤에 두고, 하루가 저녁 전에 끝나면 넣지 않음', async () => {
@@ -626,6 +715,20 @@ describe('6단계 회의 조건·인원', () => {
     const bad = await call(app, 'PUT', `/trips/${tripId}/conditions`, { ...base, moveMode: 'bike' }, token);
     expect(bad.status).toBe(400);
     expect(bad.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('방장 질문 (v2.4): 도착·출발 시각(HH:MM)·예약한 숙소·장소(3곳까지)를 받고, 없으면 null·빈 목록 · 당일치기는 도착이 출발보다 앞', async () => {
+    const { app, token, tripId } = await hostOnly();
+    const put = (body: object) => call(app, 'PUT', `/trips/${tripId}/conditions`, body, token);
+    const base = { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-08' };
+    expect((await put(base)).body.conditions).toMatchObject({ arrivalTime: null, departureTime: null, bookedLodging: null, bookedPlaces: [] });
+    const full = await put({ ...base, arrivalTime: '09:40', departureTime: '18:30', bookedLodging: ' 광안호텔 ', bookedPlaces: ['스카이라인 루지', '해운대 요트'] });
+    expect(full.body.conditions).toMatchObject({ arrivalTime: '09:40', departureTime: '18:30', bookedLodging: '광안호텔', bookedPlaces: ['스카이라인 루지', '해운대 요트'] });
+    for (const bad of [{ arrivalTime: '9:40' }, { departureTime: '24:00' }, { bookedPlaces: ['가', '나', '다', '라'] }, { bookedPlaces: [''] }, { bookedLodging: '가'.repeat(41) }])
+      expect((await put({ ...base, ...bad })).body.error.code).toBe('VALIDATION_ERROR');
+    const sameDay = { ...base, endDate: '2099-11-07' };
+    expect((await put({ ...sameDay, arrivalTime: '18:00', departureTime: '10:00' })).body.error.message).toContain('도착 시각');
+    expect((await put({ ...sameDay, arrivalTime: '10:00', departureTime: '18:00' })).status).toBe(200);
   });
 
   it('방장 혼자면(성향을 마쳐도) 회의를 시작하지 않음 (NOT_ENOUGH_MEMBERS, 실행 횟수 안 씀)', async () => {
