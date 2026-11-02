@@ -100,7 +100,7 @@ export function planService({ db, graph, router, publisher }: { db: Db; graph: M
       candidates: r.candidates,
       choice: { votes: votedFor, answered: votedFor.length, total: ppl.length, chosen: r.chosen ?? null },
       plan: r.plan ?? null,
-      edits: r.edits,
+      edits: r.edits.map(({ kakao: _kakao, ...e }) => e),
       confirm: r.voteVersion !== null ? { version: r.voteVersion, votes: confirmVotes, answered: confirmVotes.length, total: ppl.length } : null,
       confirmedAt: r.confirmedAt ? nowKst(r.confirmedAt) : null,
     };
@@ -189,19 +189,23 @@ export function planService({ db, graph, router, publisher }: { db: Db; graph: M
     if (r.status !== 'revising' || !r.plan || !r.planState) throw new ApiError('PLAN_LOCKED', r.status === 'choosing' ? 'A·B를 먼저 골라야 함' : '확정 투표 중이거나 확정되어 고칠 수 없음');
     // 앱이 보고 있던 버전과 다르면 받지 않음 (그 사이 다른 사람이 고침, v2.4 baseVersion)
     if (baseVersion !== undefined && baseVersion !== r.plan.version) throw new ApiError('PLAN_LOCKED', `다른 사람이 먼저 고쳐 지금은 v${r.plan.version}임 — 다시 불러와 주세요`);
+    // 카카오 회의당 상한(ROUTE.perMeeting)은 고치기 전체에 걸쳐 셈: 앞서 고친 기록의 카카오 횟수에서 이어 셈 (11/2 보안 점검: 요청마다 0부터 세면 고치기를 되풀이해 하루 한도를 다 쓸 수 있음)
     const meter = newRouteMeter();
+    for (const e of r.edits) for (const k of ['transit', 'walk', 'car'] as const) meter.calls[k] += e.kakao?.[k] ?? 0;
+    const before = { ...meter.calls };
     const { input, failed } = await inputOf(r.meetingId);
     const out = await editPlan(db, cachedRouter(db, router, meter, undefined, new Set(failed)), input, { plan: r.plan, state: r.planState }, edits);
+    const used = { transit: meter.calls.transit - before.transit, walk: meter.calls.walk - before.walk, car: meter.calls.car - before.car };
     if (out.plan !== r.plan) {
       const saved = await db
         .update(tripPlans)
-        .set({ plan: out.plan, planState: out.state, edits: [...r.edits, { version: out.plan.version, by: caller.id, at: nowKst(), changes: out.plan.changes ?? [] }], updatedAt: new Date() })
+        .set({ plan: out.plan, planState: out.state, edits: [...r.edits, { version: out.plan.version, by: caller.id, at: nowKst(), changes: out.plan.changes ?? [], kakao: used }], updatedAt: new Date() })
         .where(and(eq(tripPlans.tripId, tripId), eq(tripPlans.status, 'revising'), sql`(${tripPlans.plan}->>'version')::int = ${r.plan.version}`))
         .returning({ tripId: tripPlans.tripId });
       if (!saved.length) throw new ApiError('PLAN_LOCKED', '다른 사람이 먼저 고쳤거나 확정 투표가 시작됨 — 다시 불러와 주세요');
       await record(r)({ type: 'plan.proposed', data: out.plan });
     }
-    return { ...(await view(tripId, caller)), results: out.results, kakao: meter };
+    return { ...(await view(tripId, caller)), results: out.results, kakao: { ...meter, calls: used } };
   }
 
   /** 15단계 확정 투표 시작 (POST /trips/{id}/plan/confirm, 방장): 지금 버전으로 모두에게 묻고 이 동안은 고치지 않음 */

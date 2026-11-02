@@ -59,7 +59,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('커뮤니티: AI가 많이 고른 장소 + 리뷰 (v2.4)', () => {
+// 시험마다 PGlite DB·여행을 새로 만들어 로컬 약 1.7초 — 느린 CI에서 5초를 넘지 않게 이 묶음만 20초
+describe('커뮤니티: AI가 많이 고른 장소 + 리뷰 (v2.4)', { timeout: 20_000 }, () => {
   it('목록: AI가 고른 곳·리뷰가 있는 곳을 공식 대분류로 묶어 AI가 많이 고른 순서로 (같은 회의의 같은 AI는 한 번), 다른 시·도와 아무도 안 고른 곳은 빼고, 사진은 https', async () => {
     // 2026-11-02(월) 12:00 한국 시각: 해변 09–18시 → 엶 · 카페는 월요일 휴무 → 닫음 · 시장은 시간 모름
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -84,6 +85,17 @@ describe('커뮤니티: AI가 많이 고른 장소 + 리뷰 (v2.4)', () => {
     // 지역 없이 부르면 전국 · 형식이 틀린 지역 코드는 400
     expect((await call(app, 'GET', '/community/places')).body.sections.flatMap((s: { places: { placeId: string }[] }) => s.places.map((p) => p.placeId))).toContain('plc_p_seoul');
     expect((await call(app, 'GET', '/community/places?regionCode=busan')).body.error.code).toBe('VALIDATION_ERROR');
+    // 구·군 코드는 시·도 안에서만 하나라 regionCode와 함께 (11/2 점검: districtCode만 보내면 다른 시·도의 같은 번호 구·군이 섞임)
+    expect((await call(app, 'GET', '/community/places?districtCode=500')).body.error.code).toBe('VALIDATION_ERROR');
+    expect((await call(app, 'GET', '/community/places?regionCode=26&districtCode=500')).status).toBe(200);
+  });
+
+  it('비표출(폐업 등) 장소는 상세·리뷰 쓰기도 404 (11/2 점검: 목록에서만 뺐음)', async () => {
+    const { app, db, guest } = await setup();
+    await db.update(places).set({ visible: false }).where(eq(places.contentId, 'p_cafe'));
+    expect((await call(app, 'GET', '/community/places/plc_p_cafe')).status).toBe(404);
+    expect((await call(app, 'PUT', '/community/places/plc_p_cafe/review', { rating: 5 }, guest.body.token)).status).toBe(404);
+    expect((await call(app, 'GET', '/community/places/plc_p_beach')).status).toBe(200);
   });
 
   it('리뷰: 여행 참여자는 장소마다 1개(다시 쓰면 덮어씀)·지우기, 토큰을 보내면 내 리뷰에 mine, 나가도 리뷰는 그때 닉네임으로 남음', async () => {

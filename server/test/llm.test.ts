@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { parseModelSpec, withFallbacks } from '../src/llm/client.js';
+import { isFormatError, parseModelSpec, withFallbacks } from '../src/llm/client.js';
 import { fakeLlm } from './helpers.js';
 
 const req = { system: '시험', input: {}, schema: z.object({ title: z.string() }), schemaName: 'test' };
 
 describe('LLM 공급자 연결', () => {
+  it('형식이 틀린 실패(JSON·스키마)만 다시 부를 실패로 봄 · 시간 초과·공급자 오류는 아님 (11/2 점검)', () => {
+    expect(isFormatError(req.schema.safeParse({}).error)).toBe(true);
+    expect(isFormatError(new SyntaxError('JSON이 아님'))).toBe(true);
+    expect(isFormatError(Object.assign(new Error('Failed to parse'), { name: 'OutputParserException' }))).toBe(true);
+    expect(isFormatError(new DOMException('시간 초과', 'TimeoutError'))).toBe(false);
+    expect(isFormatError(new Error('529 overloaded_error'))).toBe(false);
+  });
+
   it("'공급자:모델' 형식을 읽음 (모델 이름 안의 ':'·'/'는 그대로 둠)", () => {
     expect(parseModelSpec('google-genai:gemini-3.5-flash-lite')).toEqual({ provider: 'google-genai', model: 'gemini-3.5-flash-lite' });
     expect(parseModelSpec('mistralai:mistral-small-latest')).toEqual({ provider: 'mistralai', model: 'mistral-small-latest' });

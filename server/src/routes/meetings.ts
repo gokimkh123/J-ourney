@@ -9,7 +9,8 @@ import { type AuthEnv, type Member, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken } from '../lib/ids.js';
 import { parseBody } from '../lib/validate.js';
-import { CLOSE, type EventHub, LIVE, streamTrip } from '../meeting/live.js';
+import type { WebSocket } from 'ws';
+import { CLOSE, type EventHub, LIVE, streamTrip, watchSocket } from '../meeting/live.js';
 import type { Monitor } from '../lib/monitor.js';
 import { REACT } from '../meeting/react.js';
 import { eventsAfter } from '../meeting/runs.js';
@@ -111,6 +112,7 @@ export function meetingRoutes({ db, service, hub, pingMs, accessKeys = [], monit
       const afterSeq = afterSeqOf(c.req.query('afterSeq'));
       let stop = () => {};
       let unregister = () => {};
+      let unwatch = () => {};
       let watched: ReturnType<Monitor['socketOpened']> | null = null;
       return {
         onOpen(_e, ws) {
@@ -124,6 +126,8 @@ export function meetingRoutes({ db, service, hub, pingMs, accessKeys = [], monit
             }
           };
           unregister = hub.register(member.id, { close: (code: number = CLOSE.replaced[0], reason: string = CLOSE.replaced[1]) => ws.close(code, reason) }, LIVE.perMember);
+          // 끊긴 연결·읽지 않는 연결 정리 (ws 소켓이 있을 때, 11/2 점검)
+          if (ws.raw) unwatch = watchSocket(ws.raw as unknown as WebSocket, pingMs);
           stop = streamTrip(db, hub, {
             tripId: member.tripId,
             afterSeq,
@@ -137,6 +141,7 @@ export function meetingRoutes({ db, service, hub, pingMs, accessKeys = [], monit
         },
         onClose(e) {
           stop();
+          unwatch();
           unregister();
           watched?.closed(e.code, e.reason);
         },

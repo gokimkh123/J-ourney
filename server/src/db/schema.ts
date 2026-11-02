@@ -335,7 +335,7 @@ export const tripPlans = pgTable('trip_plans', {
   /** 고른 안의 지금 버전과 재료, 사람이 고친 기록 */
   plan: jsonb('plan').$type<PlanProposal>(),
   planState: jsonb('plan_state').$type<PlanSets>(),
-  edits: jsonb('edits').$type<{ version: number; by: string; at: string; changes: string[] }[]>().notNull().default([]),
+  edits: jsonb('edits').$type<{ version: number; by: string; at: string; changes: string[]; kakao?: { transit: number; walk: number; car: number } }[]>().notNull().default([]),
   /** 15단계: 확정 투표 (memberId → approve·reject)와 투표를 시작한 버전 */
   votes: jsonb('votes').$type<Record<string, 'approve' | 'reject'>>().notNull().default({}),
   voteVersion: integer('vote_version'),

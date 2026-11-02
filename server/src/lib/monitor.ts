@@ -21,7 +21,16 @@ export const MONITOR = {
   clientChars: 6,
   /** 초대 코드는 앞 몇 글자만 보임 */
   codeShown: 2,
+  /**
+   * 1분에 따로 세는 묶음 주소 수 · 기록에 남기는 주소 길이 (11/2 보안 점검: 아무 주소나 길게 보내면 분당 묶음이 끝없이 늘어 메모리가 참)
+   * 넘는 묶음은 '그 밖'으로 셈. 앱이 쓰는 경로는 30개 안팎
+   */
+  routesPerMinute: 100,
+  pathChars: 200,
 } as const;
+
+/** 분당 묶음 상한을 넘거나 없는 주소(404)인 요청을 세는 묶음 */
+const OTHER_ROUTE = '(그 밖)';
 
 /** 기록하지 않는 주소 (이 화면이 2초마다 묻는 것·그림·컨테이너 상태 확인) */
 const SKIP = [/^\/dev\/monitor/, /^\/dev\/img\//, /^\/api\/v1\/health$/];
@@ -63,7 +72,7 @@ export function maskPath(url: string): string {
   for (const k of [...u.searchParams.keys()]) if (/token|key/i.test(k)) u.searchParams.set(k, '***');
   const path = u.pathname.replace(/(\/invites\/)([^/]+)/, (_all, head: string, code: string) => `${head}${code.slice(0, MONITOR.codeShown)}****`);
   const query = [...u.searchParams.entries()].map(([k, v]) => `${k}=${v}`).join('&');
-  return query ? `${path}?${query}` : path;
+  return (query ? `${path}?${query}` : path).slice(0, MONITOR.pathChars);
 }
 
 /** 주소의 id를 묶음 이름으로 (분당 횟수용): trp_… → :tripId, mtg_… → :meetingId, mem_… → :memberId, 초대 코드 → :code */
@@ -73,6 +82,8 @@ export const routeOf = (path: string) =>
     .replace(/trp_[A-Za-z0-9]+/g, ':tripId')
     .replace(/mtg_[A-Za-z0-9]+/g, ':meetingId')
     .replace(/mem_[A-Za-z0-9]+/g, ':memberId')
+    .replace(/plc_[A-Za-z0-9_-]+/g, ':placeId')
+    .replace(/itm_[A-Za-z0-9_-]+/g, ':itemId')
     .replace(/(\/invites\/)[^/]+/, '$1:code');
 
 const push = <T>(list: T[], item: T, max: number) => {
@@ -99,7 +110,8 @@ export function createMonitor(opts: { accessKeys: readonly AccessKey[]; ipSecret
   const count = (route: string) => {
     const minute = nowKst().slice(0, 16);
     const m = perMinute.get(minute) ?? new Map<string, number>();
-    m.set(route, (m.get(route) ?? 0) + 1);
+    const key = m.has(route) || m.size < MONITOR.routesPerMinute ? route : OTHER_ROUTE;
+    m.set(key, (m.get(key) ?? 0) + 1);
     perMinute.set(minute, m);
     for (const k of [...perMinute.keys()].sort().slice(0, -MONITOR.minutes)) perMinute.delete(k);
   };
@@ -110,7 +122,8 @@ export function createMonitor(opts: { accessKeys: readonly AccessKey[]; ipSecret
     const url = new URL(c.req.url);
     if (SKIP.some((re) => re.test(url.pathname))) return;
     const path = maskPath(`${url.pathname}${url.search}`);
-    const route = `${c.req.method} ${routeOf(url.pathname)}`;
+    // 없는 주소(404)는 한 묶음으로 (주소마다 묶음을 만들지 않음)
+    const route = c.res.status === 404 ? OTHER_ROUTE : `${c.req.method} ${routeOf(url.pathname).slice(0, MONITOR.pathChars)}`;
     push(requests, { at: nowKst(), method: c.req.method, path, route, status: c.res.status, ms: Math.round(performance.now() - started), who: whoOf(c), client: clientOf(c) }, MONITOR.requests);
     count(route);
   };
