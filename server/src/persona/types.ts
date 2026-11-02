@@ -61,10 +61,18 @@ export interface PersonaProfile {
   likes: string[];
 }
 
-/** 검사를 마친 설문 응답 */
+/** 검사를 마친 설문 응답. 11/2 새 설문의 칸(wantPlaces·pace·likesText·dislikesText)은 예전 응답에 없음 */
 export interface PersonaAnswers {
   scale: Record<string, number>;
   likes: string[];
   dislikes: string[];
+  /** q15 직접 쓴 글 (새 설문 '추가로 고려하고 싶은 사항', 예전 '꼭 지켰으면 하는 것') */
   mustKeepText: string | null;
+  /** q16 가고 싶은 곳 (사람이 쓴 장소 이름, AI가 읽음) */
+  wantPlaces?: string[];
+  /** q17 이번 여행 속도 보기 id (pace_slow·pace_normal·pace_packed) */
+  pace?: string | null;
+  /** q13·q14 '기타' 직접 입력 (AI가 읽음) */
+  likesText?: string | null;
+  dislikesText?: string | null;
 }

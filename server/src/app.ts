@@ -20,6 +20,7 @@ import { meetingService } from './meeting/service.js';
 import { meetingDevRoutes } from './routes/meeting-dev.js';
 import { meetingRoutes } from './routes/meetings.js';
 import { planRoutes } from './routes/plan.js';
+import { communityRoutes } from './routes/community.js';
 import { planService } from './meeting/choose.js';
 import { personaRoutes } from './routes/persona.js';
 import type { TourClient } from './tour/client.js';
@@ -148,6 +149,8 @@ export function createApp({
     api.route('/', meetingRoutes({ db, service, hub, pingMs: livePingMs, accessKeys, monitor }));
     // 13–15단계 (사람 선택·고치기·확정): 고칠 때 6단계 계산에 회의 단계 기록과 카카오 길찾기를 씀
     api.route('/', planRoutes({ db, plans: planService({ db, graph, router: routeClient, publisher: hub }) }));
+    // 커뮤니티: AI가 많이 고른 장소 + 사람들 리뷰 (v2.4)
+    api.route('/', communityRoutes(db));
     if (devUi) api.route('/', meetingDevRoutes({ db, crowdClient, limits, service, hub, allowTunnel: tunnelDev, replay: mode !== 'off', accessKeys }));
   } else {
     api.all('*', () => {

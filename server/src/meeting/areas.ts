@@ -12,8 +12,8 @@ import type { MeetingEventDraft } from './runs.js';
 export const AREA_MATCH = {
   /** 한 번에 보내는 규칙 수 (넘으면 나눠 보냄) */
   maxRules: 6,
-  /** 회의 1번에 지역 맞추기 LLM을 부르는 최대 횟수. 넘는 규칙은 'AI 맞추기를 하지 못함' 메모 */
-  maxCalls: 2,
+  /** 회의 1번에 지역 맞추기 LLM을 부르는 최대 횟수. 넘는 규칙은 'AI 맞추기를 하지 못함' 메모 (11/2 새 설문의 가고 싶은 곳에 지역 이름도 와서 2 → 3) */
+  maxCalls: 3,
 } as const;
 
 /** 지역 조건 하나 (꼭 지킬 것의 넣기 또는 꼭 피할 것) */

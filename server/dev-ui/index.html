@@ -437,7 +437,7 @@ document.querySelectorAll('.tab[data-tab]').forEach((b) => { b.onclick = () => s
 
 // ---------- 2번 묶음: 성향 설문과 캐릭터 카드 ----------
 let questions = null;
-let ans = { scale: {}, likes: new Set(), dislikes: new Set(), text: '' };
+let ans = { scale: {}, likes: new Set(), dislikes: new Set(), text: '', places: [], pace: null, likesText: '', dislikesText: '' };
 const PRESETS = {
   seoyeon: { scale: [5, 2, 2, 5, 2, 5, 5, 9, 8, 6, 7, 5], likes: ['like_spa', 'like_sea', 'like_cafe'], dislikes: ['dislike_walk', 'dislike_crowd'],
     text: '해산물은 꼭 먹고, 밤 9시 전엔 숙소에 들어가고 싶어요' },
@@ -480,7 +480,29 @@ function renderSurvey(missing) {
       for (const o of q.options) {
         row.append(el('button', { class: set.has(o.id) ? 'on' : '', onclick: () => { if (set.has(o.id)) set.delete(o.id); else set.add(o.id); renderSurvey(); } }, o.emoji + ' ' + o.text));
       }
-      wrap.append(row, el('div', { class: 'ends' }, el('span', {}, q.minSelect + '–' + q.maxSelect + '개 선택'), el('span', {}, set.size + '개 선택됨')));
+      wrap.append(row);
+      if (q.other) {
+        // 기타 직접 입력 (11/2 새 설문)
+        const key = q.id === 'q13' ? 'likesText' : 'dislikesText';
+        const other = el('input', { type: 'text', placeholder: q.other.placeholder, maxlength: String(q.other.maxLength) });
+        other.value = ans[key];
+        other.addEventListener('input', () => { ans[key] = other.value; });
+        wrap.append(other);
+      }
+      wrap.append(el('div', { class: 'ends' }, el('span', {}, q.minSelect + '–' + q.maxSelect + '개 선택'), el('span', {}, set.size + '개 선택됨')));
+    } else if (q.type === 'single') {
+      const row = el('div', { class: 'opts' });
+      for (const o of q.options) row.append(el('button', { class: ans.pace === o.id ? 'on' : '', onclick: () => { ans.pace = ans.pace === o.id ? null : o.id; renderSurvey(); } }, o.emoji + ' ' + o.text));
+      wrap.append(row, el('div', { class: 'ends' }, el('span', {}, '하나 선택'), el('span', {}, ans.pace ? '선택됨' : '미응답 (예전 앱처럼 2·8번 성향으로 정함)')));
+    } else if (q.type === 'list') {
+      // 가고 싶은 곳: 입력 + 추가 (11/2 새 설문)
+      const input = el('input', { type: 'text', placeholder: q.placeholder, maxlength: String(q.maxLength) });
+      const add = () => { const v = input.value.trim(); if (v && ans.places.length < q.maxItems && !ans.places.includes(v)) { ans.places.push(v); renderSurvey(); } };
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
+      const chips = el('div', { class: 'opts' });
+      ans.places.forEach((v, i) => chips.append(el('button', { class: 'on', title: '빼기', onclick: () => { ans.places.splice(i, 1); renderSurvey(); } }, v + ' ✕')));
+      wrap.append(el('div', { class: 'opts' }, input, el('button', { onclick: add }, '추가')), chips,
+        el('div', { class: 'ends' }, el('span', {}, '선택 문항 (건너뛰어도 됨)'), el('span', {}, ans.places.length + ' / ' + q.maxItems + '곳')));
     } else {
       const counter = el('span', {}, ans.text.length + ' / ' + q.maxLength + '자');
       const ta = el('textarea', { placeholder: q.placeholder, maxlength: String(q.maxLength) });
@@ -495,16 +517,16 @@ function renderSurvey(missing) {
 function presetState(p) {
   const scale = {};
   p.scale.forEach((v, i) => { scale['q' + (i + 1)] = v; });
-  return { scale, likes: new Set(p.likes), dislikes: new Set(p.dislikes), text: p.text };
+  return { scale, likes: new Set(p.likes), dislikes: new Set(p.dislikes), text: p.text, places: [...(p.places ?? [])], pace: p.pace ?? null, likesText: '', dislikesText: '' };
 }
 function applyPreset(name) {
   if (!questions) return;
-  if (name === 'clear') ans = { scale: {}, likes: new Set(), dislikes: new Set(), text: '' };
+  if (name === 'clear') ans = { scale: {}, likes: new Set(), dislikes: new Set(), text: '', places: [], pace: null, likesText: '', dislikesText: '' };
   else if (name === 'random') {
     const scale = {};
     for (let i = 1; i <= 12; i++) scale['q' + i] = Math.floor(Math.random() * 11);
     const pick = (id, n) => qById(id).options.map((o) => o.id).sort(() => Math.random() - 0.5).slice(0, n);
-    ans = { scale, likes: new Set(pick('q13', 1 + Math.floor(Math.random() * 3))), dislikes: new Set(pick('q14', Math.floor(Math.random() * 3))), text: '' };
+    ans = { scale, likes: new Set(pick('q13', 1 + Math.floor(Math.random() * 3))), dislikes: new Set(pick('q14', Math.floor(Math.random() * 3))), text: '', places: [], pace: pick('q17', 1)[0], likesText: '', dislikesText: '' };
   } else ans = presetState(PRESETS[name]);
   renderSurvey();
 }
@@ -513,9 +535,11 @@ document.querySelectorAll('[data-preset]').forEach((b) => { b.onclick = () => ap
 function buildAnswers(state) {
   const out = [];
   for (let i = 1; i <= 12; i++) if (state.scale['q' + i] !== undefined) out.push({ questionId: 'q' + i, value: state.scale['q' + i] });
-  out.push({ questionId: 'q13', optionIds: [...state.likes] });
-  out.push({ questionId: 'q14', optionIds: [...state.dislikes] });
+  out.push({ questionId: 'q13', optionIds: [...state.likes], ...((state.likesText ?? '').trim() ? { text: state.likesText } : {}) });
+  out.push({ questionId: 'q14', optionIds: [...state.dislikes], ...((state.dislikesText ?? '').trim() ? { text: state.dislikesText } : {}) });
   if (state.text.trim()) out.push({ questionId: 'q15', text: state.text });
+  if (state.places && state.places.length) out.push({ questionId: 'q16', texts: [...state.places] });
+  if (state.pace) out.push({ questionId: 'q17', optionIds: [state.pace] });
   return out;
 }
 

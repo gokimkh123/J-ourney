@@ -343,3 +343,25 @@ export const tripPlans = pgTable('trip_plans', {
   confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
 });
 
+
+/**
+ * 커뮤니티 장소 리뷰 (v2.4, 11/2): 여행에 참여한 사람 누구나 장소마다 1개 (다시 쓰면 덮어씀). 글은 화면 표시만 하고 서버 코드는 읽지 않음
+ * 나가거나 여행을 지워도 리뷰는 남김 (그때의 닉네임으로 보임)
+ */
+export const placeReviews = pgTable(
+  'place_reviews',
+  {
+    id: text('id').primaryKey(),
+    placeId: text('place_id')
+      .notNull()
+      .references(() => places.contentId, { onDelete: 'cascade' }),
+    memberId: text('member_id').references(() => members.id, { onDelete: 'set null' }),
+    tripId: text('trip_id').references(() => trips.id, { onDelete: 'set null' }),
+    nickname: text('nickname').notNull(),
+    rating: smallint('rating').notNull(),
+    text: text('text').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('place_reviews_place_member').on(t.placeId, t.memberId), index('place_reviews_place_idx').on(t.placeId), check('place_reviews_rating', sql`${t.rating} between 1 and 5`)],
+);
