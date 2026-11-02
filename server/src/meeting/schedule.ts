@@ -432,9 +432,9 @@ function pickSets(ctx: Ctx, avoid: ReadonlySet<string>, required: readonly Spot[
   // 그날 쉬는 곳·그날 저녁이 없는데 저녁 뒤에 가는 곳(밤 행사·야시장)은 그날에 넣지 않음 (저녁이 없는 날은 마지막 날 이른 출발 등, v2.4)
   const openOn = (p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed' && (!p.evening || (ctx.days[d].dinner && (p.startsAt ?? DINNER_START) < ctx.days[d].end));
   for (const p of byPrio(required)) {
-    // 다닐 시간이 있는 날이 있으면 그날들에만 (늦게 도착한 첫날·일찍 떠나는 마지막 날은 다닐 시간이 0일 수 있음)
-    const openAll = Array.from({ length: D }, (_, d) => d).filter((d) => openOn(p, d));
-    const open = openAll.some((d) => ctx.days[d].perDay > 0) ? openAll.filter((d) => ctx.days[d].perDay > 0) : openAll;
+    // 다닐 시간이 있는 날에만 (늦게 도착한 첫날·일찍 떠나는 마지막 날은 다닐 시간이 0일 수 있음). 그런 날이 없으면 넣지 않고 메모 (unplacedNotes)
+    // (11/2 검증02: 2일째 월요일에 쉬는 꼭 지킬 곳이 22:30에 도착한 첫날로 들어감)
+    const open = Array.from({ length: D }, (_, d) => d).filter((d) => openOn(p, d) && ctx.days[d].perDay > 0);
     const full = (d: number) => (p.meal ? sets[d].filter((q) => q.meal).length >= mealsOn(d) : attrCount(d) >= ctx.days[d].perDay + SCHEDULE.mustOverflow);
     const near = (d: number) => {
       const c = centerOf(sets[d]);

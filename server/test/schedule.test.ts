@@ -336,6 +336,15 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
       expect(p.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
       expect(sights(p, 1).map((x) => x.name)).toContain('온천');
     }
+    // 다닐 시간이 있는 날(2일째 월요일)에 쉬는 꼭 지킬 곳은 0분인 첫날로 옮기지 않고 메모 (11/2 검증02: 국립해양박물관이 22:30 도착 첫날에 들어감)
+    const monday = near('월요일휴관', 9, { rest: '매주 월요일', marks: { mem_1: [{ kind: 'must', label: '휴관곳' }] } });
+    const withMonday = [monday, ...cands];
+    const lateMon: ScheduleInput = { ...late, pool: poolOf(withMonday, ['2026-11-15', '2026-11-16'], [hotel]), board: boardOf(withMonday), members: [member('mem_1', { placesPerDay: [4, 4] }, [], [include('온천'), include('휴관곳')]), members[1]] };
+    for (const p of (await schedulePlans(db, fakeRouter().router, lateMon)).plans) {
+      expect(p.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
+      expect(p.route.flatMap((d) => d.stops).some((x) => x.name === '월요일휴관')).toBe(false);
+      expect(p.notes.some((n) => n.startsWith('월요일휴관 — 꼭 지킬 곳이지만'))).toBe(true);
+    }
     // 20:00 출발 → 18:00까지: 21:00 드론쇼·해 진 뒤(18시 넘어) 야경은 넣지 않음
     const tower = near('밤 전망대', 1, { code: 'VE010200', open: { open: 600, close: 1320 } });
     const show = near('드론쇼', 6, { type: 15, code: 'EV010200', open: { open: 1260, close: 1290 } });
