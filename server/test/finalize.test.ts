@@ -45,6 +45,18 @@ describe('13단계 마무리: 두 안의 이름·설명 (AI 1회, 못 쓰면 A�
     expect(ids).toMatchObject({ A: { title: 'A안', source: 'rule' }, B: { title: '시장 코스', summary: '', source: 'llm' } });
   });
 
+  it('두 안의 관광지가 같으면(꼭 지킬 곳이 자리를 다 채움) B안은 기본값 대신 코드가 다른 점을 적음 · AI가 다른 이름을 지으면 그대로 (11/2 밤)', async () => {
+    const shared = ['광안리해수욕장', '광안대교'];
+    const same = [plan('A', ['광안리해수욕장', '수변최고돼지국밥', '광안대교'], shared), plan('B', ['광안리해수욕장', '신창국밥 본점', '광안대교'], shared)];
+    const r = await namePlans(same, { llm: fakeLlm(() => answer('광안리 코스', '광안리 코스')), reserve: always });
+    expect(r).toMatchObject({ A: { title: '광안리 코스', source: 'llm' }, B: { title: 'B안 · 식당 다름', summary: 'A안과 같은 장소를 들르고 식당만 다른 일정', source: 'rule' } });
+    expect((await namePlans(same, { llm: null, reserve: always })).B).toMatchObject({ title: 'B안 · 식당 다름' }); // AI를 못 써도
+    const all = ['광안리해수욕장', '수변최고돼지국밥', '광안대교'];
+    const twin = [plan('A', all, all), plan('B', all, all)];
+    expect((await namePlans(twin, { llm: null, reserve: always })).B).toEqual({ title: 'B안 · A안과 같음', summary: 'A안과 같은 일정', source: 'rule' });
+    expect((await namePlans(same, { llm: fakeLlm(() => answer('광안리 돼지국밥', '광안리 국밥')), reserve: always })).B).toMatchObject({ title: '광안리 국밥', source: 'llm' });
+  });
+
   it('AI 답의 형식이 두 번 틀리면 A안·B안 (2회) · 시간 초과·공급자 오류는 다시 부르지 않음 (1회, 11/2 점검) · 회의 AI 상한이면 부르지 않음', async () => {
     const malformed = fakeLlm(() => ({ 틀린: '형식' }));
     expect(await namePlans(PLANS, { llm: malformed, reserve: always })).toEqual({

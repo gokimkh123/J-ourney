@@ -127,15 +127,40 @@ export interface PlanNames {
 }
 
 /**
+ * 두 안의 관광지(식당·숙소 뺌)가 같을 때 B안에 붙이는 이름·설명: 코드가 두 안의 장소 id를 견줘 다른 점(식당·순서·숙소)만 적음 (뜻을 읽지 않음)
+ * 꼭 지킬 곳이 하루 자리를 다 채우면 B안도 같은 관광지가 됨 → 'B안'·빈 설명 대신 무엇이 같고 다른지 보여 줌 (11/2 밤 사용자: 시연 리허설에서 B안이 'B안'·설명 없음)
+ * 관광지가 다르면 null (그때는 예전처럼 기본값)
+ */
+export function sameSightsNames(plans: readonly PlanProposal[]): PlanNames | null {
+  const [a, b] = (['A', 'B'] as const).map((l) => plans.find((p) => p.label === l));
+  if (!a || !b) return null;
+  const sights = (p: PlanProposal) => p.route.map((d) => d.stops.filter((s) => s.kind === 'sight').map((s) => s.placeId));
+  const set = (p: PlanProposal) => [...new Set(sights(p).flat())].sort().join();
+  if (set(a) !== set(b)) return null;
+  const meals = (p: PlanProposal) => p.route.map((d) => d.stops.filter((s) => s.kind === 'food').map((s) => `${s.meal}:${s.placeId}`).join()).join('|');
+  const order = (p: PlanProposal) => sights(p).map((d) => d.join()).join('|');
+  const diffs = [
+    ...(meals(a) !== meals(b) ? ['식당'] : []),
+    ...(order(a) !== order(b) ? ['순서'] : []),
+    ...(a.lodging?.placeId !== b.lodging?.placeId ? ['숙소'] : []),
+  ];
+  return diffs.length
+    ? { title: `B안 · ${diffs.join('·')} 다름`, summary: `A안과 같은 장소를 들르고 ${diffs.join('·')}만 다른 일정`, source: 'rule' }
+    : { title: 'B안 · A안과 같음', summary: 'A안과 같은 일정', source: 'rule' };
+}
+
+/**
  * 두 안의 이름·설명: 녹화된 같은 요청 → 회의 AI 상한 안에서 부름(부른 답은 녹화) → 형식이 틀리면 1번 더 → 못 쓰면 'A안'·'B안'
- * 두 안의 이름이 같으면 B안만 기본값으로 (사람이 고를 때 헷갈리지 않게). 설명이 길어 빈칸이 된 안은 다시 쓰기 줄을 붙여 그 설명만 1번 더
+ * 두 안의 이름이 같으면 B안만 기본값으로 (사람이 고를 때 헷갈리지 않게), 두 안의 관광지가 같으면 그 기본값 대신 코드가 다른 점을 적음(sameSightsNames).
+ * 설명이 길어 빈칸이 된 안은 다시 쓰기 줄을 붙여 그 설명만 1번 더
  */
 export async function namePlans(
   plans: readonly PlanProposal[],
   opts: { llm: LlmClient | null; recorder?: LlmRecorder | null; reserve: () => Promise<boolean>; emit?: (e: MeetingEventDraft) => void },
 ): Promise<Record<PlanLabel, PlanNames> & { llmCalls: number }> {
   const req = namesRequest(plans);
-  const fallback = (l: PlanLabel): PlanNames => ({ title: `${l}안`, summary: '', source: 'rule' });
+  const sameB = sameSightsNames(plans);
+  const fallback = (l: PlanLabel): PlanNames => (l === 'B' && sameB ? sameB : { title: `${l}안`, summary: '', source: 'rule' });
   const accept = (d: Draft) => {
     const pick = (l: PlanLabel, v: { name: string; desc: string }): PlanNames => {
       const title = shown(v.name, FINALIZE.titleHardMax);
