@@ -2,8 +2,8 @@ import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { categories, llmIpUsage, llmRecords, llmUsage, members, personas, places, trips } from '../src/db/schema.js';
 import { ApiError } from '../src/lib/errors.js';
-import { buildProfile, pickChips, readAnswers, scoreTraits } from '../src/persona/score.js';
-import { maskPersonal } from '../src/persona/write.js';
+import { buildProfile, pickChips, readAnswers, sameAnswers, scoreTraits } from '../src/persona/score.js';
+import { maskPersonal, ownWords, ruleCard } from '../src/persona/write.js';
 import { createApp } from '../src/app.js';
 import { config } from '../src/config.js';
 import { createLangChainLlm, inputTokenUpperBound, LlmTokenLimitError } from '../src/llm/client.js';
@@ -95,6 +95,44 @@ describe('성향 점수와 칩 (규칙)', () => {
     expect(() => readAnswers(answersOf(SEOYEON, ['like_sea'], ['dislike_walk', 'dislike_early', 'dislike_crowd', 'dislike_pricey']))).toThrowError(/q14/);
     expect(() => readAnswers([...seoyeon(), { questionId: 'q99', value: 1 }])).toThrowError(ApiError);
   });
+
+  it('11/2 새 설문: 가고 싶은 곳(목록 3곳)·이번 여행 속도(보기 하나)·좋아요/싫어요 기타 글 검사, 기타 글이 있으면 좋아요 보기 0개도 됨', () => {
+    const base = seoyeon().filter((a) => a.questionId !== 'q13');
+    const ok = readAnswers([
+      ...base,
+      { questionId: 'q13', optionIds: [], text: ' 빵집 투어 ' },
+      { questionId: 'q16', texts: ['광안리해수욕장', ' ', '감천문화마을', '광안리해수욕장'] },
+      { questionId: 'q17', optionIds: ['pace_packed'] },
+    ]);
+    expect(ok).toMatchObject({ likes: [], likesText: '빵집 투어', wantPlaces: ['광안리해수욕장', '감천문화마을'], pace: 'pace_packed', dislikesText: null });
+    expect(() => readAnswers([...seoyeon(), { questionId: 'q16', texts: ['가', '나', '다', '라'] }])).toThrowError(/q16.*3곳/);
+    expect(() => readAnswers([...seoyeon(), { questionId: 'q16', texts: ['가'.repeat(31)] }])).toThrowError(/q16/);
+    expect(() => readAnswers([...seoyeon(), { questionId: 'q17', optionIds: ['pace_slow', 'pace_packed'] }])).toThrowError(/q17/);
+    expect(() => readAnswers([...seoyeon(), { questionId: 'q17', optionIds: ['pace_fast'] }])).toThrowError(/q17/);
+    expect(() => readAnswers([...base, { questionId: 'q13', optionIds: ['like_sea'], text: '가'.repeat(51) }])).toThrowError(/q13.*50자/);
+    expect(() => readAnswers([...base, { questionId: 'q13', optionIds: [] }])).toThrowError(/q13/); // 보기도 기타 글도 없음
+  });
+
+  it('11/2 새 설문: 이번 여행 속도가 하루 장소 수를 정하고(없으면 2·8번 성향), 예전 응답(새 칸 없음)은 같은 응답으로 봄 · 사람이 쓴 칸은 문항 이름을 붙여 AI에 넘김', () => {
+    const old = readAnswers(seoyeon(MUST_KEEP));
+    const traits = scoreTraits(old.scale); // 서연: 느긋형
+    expect(buildProfile(traits, old, []).placesPerDay).toEqual([2, 3]);
+    const packed = readAnswers([...seoyeon(MUST_KEEP), { questionId: 'q17', optionIds: ['pace_packed'] }]);
+    expect(buildProfile(traits, packed, []).placesPerDay).toEqual([5, 6]); // 걸음 수는 '오래 걷기' 싫어요가 더 낮게 잡음
+    // DB에 저장된 예전 응답(새 칸 없음)과 새 칸이 빈 응답은 같음 → 이전 카드를 그대로 씀
+    const stored = { scale: old.scale, likes: old.likes, dislikes: old.dislikes, mustKeepText: old.mustKeepText };
+    expect(sameAnswers(stored, old)).toBe(true);
+    expect(sameAnswers(stored, packed)).toBe(false);
+    expect(ownWords(stored)).toBe(`추가로 고려할 사항: ${MUST_KEEP}`);
+    const all = readAnswers([
+      ...seoyeon(MUST_KEEP).filter((a) => a.questionId !== 'q14'),
+      { questionId: 'q14', optionIds: [], text: '놀이공원' },
+      { questionId: 'q16', texts: ['광안리해수욕장', '감천문화마을'] },
+    ]);
+    expect(ownWords(all)).toBe(`가고 싶은 곳: 광안리해수욕장, 감천문화마을\n싫어하는 것(기타): 놀이공원\n추가로 고려할 사항: ${MUST_KEEP}`);
+    // 규칙 카드(AI 못 씀): 추가 사항 글은 예전처럼 맨 앞, 다른 칸은 문항 이름을 붙여 바람으로만 보관
+    expect(ruleCard([], all).wishes).toEqual([MUST_KEEP.slice(0, 40), '가고 싶은 곳: 광안리해수욕장, 감천문화마을', '싫어하는 것(기타): 놀이공원']);
+  });
 });
 
 describe('성향 질문·페르소나 API', () => {
@@ -104,10 +142,16 @@ describe('성향 질문·페르소나 API', () => {
     return { ...t, host, token: host.body.token as string };
   };
 
-  it('GET /persona/questions: 15문항, 채점 정보는 보내지 않음', async () => {
+  it('GET /persona/questions: 17문항(11/2 새 설문 순서), 채점 정보는 보내지 않음', async () => {
     const { app } = await createTestApp();
     const res = await call(app, 'GET', '/persona/questions');
-    expect(res.body.questions).toHaveLength(15);
+    expect(res.body.questions).toHaveLength(17);
+    expect(res.body.questions.map((q: { order: number }) => q.order)).toEqual(Array.from({ length: 17 }, (_, i) => i + 1));
+    expect(res.body.questions.slice(12).map((q: { id: string; type: string }) => `${q.id}:${q.type}`)).toEqual(['q16:list', 'q17:single', 'q14:multi', 'q13:multi', 'q15:text']);
+    expect(res.body.questions[12]).toMatchObject({ text: '이번 여행에서 가고 싶은 곳이 있나요?', required: false, maxItems: 3, maxLength: 30 });
+    expect(res.body.questions[13].options.map((o: { text: string }) => o.text)).toEqual(['여유', '적당', '알차게']);
+    expect(res.body.questions[15].other).toEqual({ maxLength: 50, placeholder: '기타 (직접 입력)' });
+    expect(res.body.questions[13].options[0].level).toBeUndefined();
     expect(res.body.questions[0]).toMatchObject({ id: 'q1', type: 'scale', min: 0, max: 10 });
     expect(res.body.questions[0].trait).toBeUndefined();
     expect(res.body.questions[0].reverse).toBeUndefined();
@@ -127,7 +171,7 @@ describe('성향 질문·페르소나 API', () => {
     });
     const { app, token } = await setup({ llm });
     const res = await call(app, 'POST', '/me/persona', { answers: seoyeon(`해산물은 꼭 먹고 싶어요. 연락처 ${phone.replaceAll('-', '')}`) }, token);
-    expect(sent).toBe('해산물은 꼭 먹고 싶어요. 연락처 [전화번호]');
+    expect(sent).toBe('추가로 고려할 사항: 해산물은 꼭 먹고 싶어요. 연락처 [전화번호]');
     expect(res.body.persona.mustKeep).toEqual([{ type: 'include', label: '해산물 먹기' }]);
   });
 

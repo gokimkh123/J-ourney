@@ -13,7 +13,7 @@ import type { LlmClient } from '../llm/client.js';
 import { tunnelIp } from '../lib/rate-limit.js';
 import { ipKey, releaseIpLlm, releaseLlmCard, reserveIpLlm, reserveLlmCard, tryConsumeLlmCall } from '../llm/usage.js';
 import { ruleCategories } from '../meeting/categories.js';
-import { DISLIKE_OPTIONS, LIKE_OPTIONS, PUBLIC_QUESTIONS } from '../persona/questions.js';
+import { DISLIKE_OPTIONS, LIKE_OPTIONS, PACE_OPTIONS, PUBLIC_QUESTIONS } from '../persona/questions.js';
 import { buildProfile, pickChips, readAnswers, sameAnswers, scoreTraits } from '../persona/score.js';
 import type { PersonaAnswers } from '../persona/types.js';
 import type { LlmRecorder } from '../llm/record.js';
@@ -35,8 +35,9 @@ export interface PersonaDeps {
   live?: { llm: LlmClient; recorder: LlmRecorder } | null;
 }
 
-/** 한 번에 받는 응답 수 상한 (문항 15개보다 넉넉히, 문항별 검사는 score.ts가 함) */
+/** 한 번에 받는 응답 수 상한 (문항 17개보다 넉넉히, 문항별 검사는 score.ts가 함) · 목록 문항 항목 수 상한 (가고 싶은 곳 3곳보다 넉넉히, 빈 항목은 score.ts가 버림) */
 const ANSWERS_MAX = 30;
+const LIST_MAX = 10;
 const answersBody = z.object({
   answers: z
     .array(
@@ -45,6 +46,7 @@ const answersBody = z.object({
         value: z.number().optional(),
         optionIds: z.array(z.string()).optional(),
         text: z.string().optional(),
+        texts: z.array(z.string()).max(LIST_MAX).optional(),
       }),
     )
     .max(ANSWERS_MAX),
@@ -128,6 +130,8 @@ const personaView = (m: Member, p: PersonaRow) => ({
   traits: p.traits,
   likes: p.answers.likes.map((id) => LIKE_OPTIONS.find((o) => o.id === id)!).map(({ id, text, emoji }) => ({ id, text, emoji })),
   dislikes: p.answers.dislikes.map((id) => DISLIKE_OPTIONS.find((o) => o.id === id)!).map(({ id, text, emoji }) => ({ id, text, emoji })),
+  // 이번 여행 속도 (11/2 새 설문, 예전 응답은 null)
+  pace: PACE_OPTIONS.filter((o) => o.id === p.answers.pace).map(({ id, text, emoji }) => ({ id, text, emoji }))[0] ?? null,
   mustKeep: p.mustKeep.map(({ type, label }) => ({ type, label })),
   wishes: p.wishes,
   source: p.source,

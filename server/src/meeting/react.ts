@@ -111,6 +111,7 @@ export function agendaOf(
     named?: ReadonlyMap<string, string>;
     mustBy?: ReadonlyMap<string, ReadonlySet<string>>;
     notes?: readonly string[];
+    booked?: ReadonlySet<string>;
   } = {},
 ): Board['agenda'] {
   const nick = new Map(members.map((m) => [agentIdOf(m.memberId), m.nickname]));
@@ -123,7 +124,7 @@ export function agendaOf(
       outside: extra.outside?.get(c.placeId) ?? null,
       named: extra.named?.get(c.placeId) ?? null,
     }))
-    .filter((x) => x.blocks.length + x.warns.length > 0 || x.outside || x.named)
+    .filter((x) => !extra.booked?.has(x.c.placeId) && (x.blocks.length + x.warns.length > 0 || x.outside || x.named))
     .sort(
       (a, b) =>
         Number(!!b.outside || !!b.named) - Number(!!a.outside || !!a.named) ||
@@ -205,7 +206,9 @@ export function reactBoard(board: Board, pool: RetrieveResult, members: readonly
     .concat(namedNotes)
     // 후보에 하나도 없는 꼭 지킬 것은 까닭과 함께 메모로 남김 (표시 없이 빠지지 않게)
     .concat((pool.missingRules ?? []).map((r) => `${nick.get(r.memberId) ?? r.memberId}의 꼭 지킬 것 '${r.label}' — ${r.reason}`));
-  return { candidates, agenda: agendaOf(candidates, members, { outside, named, mustBy, notes }) };
+  // 방장이 이미 예약한 곳·숙소(v2.4)는 사람 확인 투표로 빼지 않으므로 안건에 올리지 않음 (반응은 보드에 그대로 보임)
+  const booked = new Set([...pool.candidates, ...pool.lodgings].filter((c) => c.booked).map((c) => placeIdOf(c.id)));
+  return { candidates, agenda: agendaOf(candidates, members, { outside, named, mustBy, notes, booked }) };
 }
 
 /** 반응 점수 (6단계 일정 배치에서 씀). blocked면 그 장소는 일정안에서 뺌 */

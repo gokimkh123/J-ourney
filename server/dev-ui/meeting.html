@@ -249,13 +249,21 @@ async function showTrip() {
         <label>끝나는 날<input id="ed" type="date" value="${esc(c?.endDate ?? c?.startDate ?? nextSaturday())}"></label>
         <label>1인 예산(원, 선택)<input id="bg" type="number" min="0" value="${esc(c?.budgetPerPerson ?? '')}"></label>
         <label>현지 이동 수단 (6단계)<select id="mv"><option value="transit">대중교통·택시</option><option value="car" ${c?.moveMode === 'car' ? 'selected' : ''}>자차</option></select></label>
+        <label>첫날 도착 시각 (항공편·열차, 선택)<input id="arr" type="time" value="${esc(c?.arrivalTime ?? '')}"></label>
+        <label>마지막 날 출발 시각 (선택)<input id="dep" type="time" value="${esc(c?.departureTime ?? '')}"></label>
+        <label>이미 예약한 숙소 (선택)<input id="bl" maxlength="40" value="${esc(c?.bookedLodging ?? '')}" placeholder="예: 광안호텔"></label>
+        <label>이미 예약한 장소 (쉼표로 3곳까지, 선택)<input id="bp" value="${esc((c?.bookedPlaces ?? []).join(', '))}" placeholder="예: 스카이라인 루지, 해운대 요트"></label>
       </div>
       <div class="row"><button class="btn primary" id="save">조건 저장</button><span id="saveMsg" class="note">${c ? '저장된 조건: ' + esc(c.destination) + ' · ' + esc(c.startDate) + (c.endDate !== c.startDate ? '~' + esc(c.endDate) : '') : '아직 저장 안 함'}</span></div>
       <p class="note">혼잡도 예측은 오늘부터 30일 안의 날짜에만 있습니다. 여행은 3일까지.</p>`;
     $('save').onclick = async () => {
       try {
         const budget = $('bg').value.trim();
-        const r = await api('PUT', `/trips/${saved.tripId}/conditions`, { destination: $('dst').value, startDate: $('sd').value, endDate: $('ed').value, budgetPerPerson: budget ? Number(budget) : null, moveMode: $('mv').value });
+        const places = $('bp').value.split(',').map((x) => x.trim()).filter(Boolean);
+        const r = await api('PUT', `/trips/${saved.tripId}/conditions`, {
+          destination: $('dst').value, startDate: $('sd').value, endDate: $('ed').value, budgetPerPerson: budget ? Number(budget) : null, moveMode: $('mv').value,
+          arrivalTime: $('arr').value || null, departureTime: $('dep').value || null, bookedLodging: $('bl').value.trim() || null, bookedPlaces: places,
+        });
         $('saveMsg').innerHTML = `<span class="ok">저장함: ${esc(r.destination.label)} (지역 코드 ${esc(r.destination.regionCode)})</span> → 2단계로`;
       } catch (err) { $('saveMsg').innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
     };

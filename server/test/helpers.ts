@@ -25,7 +25,9 @@ export async function call(app: TestApp, method: string, path: string, body?: un
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  return { status: res.status, body: (await res.json()) as any };
+  // 204(나가기·파티 없애기)는 본문이 없음
+  const text = await res.text();
+  return { status: res.status, body: (text ? JSON.parse(text) : null) as any };
 }
 
 /** 시험용 가짜 LLM: respond가 돌려준 값을 스키마로 검사해 돌려줌 (system: LLM에 보낸 지시문, schema: 응답 형식) */

@@ -1,7 +1,9 @@
 import { eq } from 'drizzle-orm';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { MemorySaver } from '@langchain/langgraph';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { meetings, members, trips } from '../src/db/schema.js';
 import { hashToken } from '../src/lib/ids.js';
+import { EventHub } from '../src/meeting/live.js';
 import { call, createTestApp } from './helpers.js';
 
 let t: Awaited<ReturnType<typeof createTestApp>>;
@@ -139,6 +141,63 @@ describe('GET /trips/{tripId} 여행 상세', () => {
     expect((await call(t.app, 'GET', path, undefined, 'tok_wrong')).status).toBe(401);
     expect((await call(t.app, 'GET', path, undefined, other.body.token)).body.error.code).toBe('FORBIDDEN');
     expect((await call(t.app, 'GET', '/trips/trp_none', undefined, mine.body.token)).status).toBe(404);
+  });
+});
+
+describe('파티 나가기·없애기 (v2.4)', () => {
+  it('방장 아닌 사람은 회의 전까지 나갈 수 있고(204·열린 연결은 4001로 닫음·빈 자리는 다음 참여자가 씀), 방장은 나갈 수 없음(403), 회의가 시작된 여행은 409', async () => {
+    const hub = new EventHub();
+    const app = await createTestApp({ hub });
+    const host = await call(app.app, 'POST', '/trips', { title: '부산', nickname: '민수' });
+    const code = host.body.trip.inviteCode as string;
+    const tripId = host.body.trip.id as string;
+    const leave = (token: string) => call(app.app, 'DELETE', `/trips/${tripId}/members/me`, undefined, token);
+    const a = await call(app.app, 'POST', `/invites/${code}/join`, { nickname: '지은' });
+    const b = await call(app.app, 'POST', `/invites/${code}/join`, { nickname: '현우' });
+    const closed: [number?, string?][] = [];
+    hub.register(a.body.member.id, { close: (c, r) => closed.push([c, r]) });
+    expect((await leave(host.body.token)).body.error.code).toBe('FORBIDDEN');
+    expect((await leave(a.body.token)).status).toBe(204);
+    expect(closed).toEqual([[4001, 'left']]);
+    expect((await call(app.app, 'GET', `/trips/${tripId}`, undefined, a.body.token)).status).toBe(401); // 나간 사람의 토큰은 더 못 씀
+    const c = await call(app.app, 'POST', `/invites/${code}/join`, { nickname: '서연' });
+    expect(c.body.member.color).toBe(a.body.member.color); // 나간 사람의 자리(2번)·색
+    const view = await call(app.app, 'GET', `/trips/${tripId}`, undefined, host.body.token);
+    expect(view.body.members.map((m: { nickname: string }) => m.nickname)).toEqual(['민수', '서연', '현우']);
+    // 회의가 시작된 여행(공식 경로 meeting · 시험 경로의 진행 중인 회의)은 나가지 못함
+    await app.db.update(trips).set({ status: 'meeting' }).where(eq(trips.id, tripId));
+    expect((await leave(b.body.token)).body.error.code).toBe('MEETING_IN_PROGRESS');
+    await app.db.update(trips).set({ status: 'preparing' }).where(eq(trips.id, tripId));
+    await app.db.insert(meetings).values({ id: 'mtg_leave_test', tripId, runNo: 1, status: 'reviewing' });
+    expect((await leave(b.body.token)).status).toBe(409);
+    await app.db.update(meetings).set({ status: 'failed' }).where(eq(meetings.id, 'mtg_leave_test'));
+    expect((await leave(b.body.token)).status).toBe(204);
+  });
+
+  it('방장만 파티를 없앰(204): 여행·구성원·회의를 지우고 모두의 연결을 4004로 닫고 회의 단계 기록도 지움. 회의가 도는 중이면 409', async () => {
+    const hub = new EventHub();
+    const checkpointer = new MemorySaver();
+    const forget = vi.spyOn(checkpointer, 'deleteThread');
+    const app = await createTestApp({ hub, checkpointer });
+    const host = await call(app.app, 'POST', '/trips', { title: '부산', nickname: '민수' });
+    const code = host.body.trip.inviteCode as string;
+    const tripId = host.body.trip.id as string;
+    const guest = await call(app.app, 'POST', `/invites/${code}/join`, { nickname: '지은' });
+    const closed: string[] = [];
+    for (const m of [host.body.member, guest.body.member]) hub.register(m.id, { close: (c, r) => closed.push(`${m.nickname} ${c} ${r}`) });
+    const drop = (token: string) => call(app.app, 'DELETE', `/trips/${tripId}`, undefined, token);
+    expect((await drop(guest.body.token)).body.error.code).toBe('FORBIDDEN');
+    await app.db.insert(meetings).values({ id: 'mtg_drop_test', tripId, runNo: 1, status: 'running' });
+    expect((await drop(host.body.token)).body.error.code).toBe('MEETING_IN_PROGRESS');
+    await app.db.update(meetings).set({ status: 'done' }).where(eq(meetings.id, 'mtg_drop_test'));
+    expect((await drop(host.body.token)).status).toBe(204);
+    expect(closed).toEqual(['민수 4004 trip deleted', '지은 4004 trip deleted']);
+    expect(forget).toHaveBeenCalledWith('mtg_drop_test');
+    expect(await app.db.select().from(trips).where(eq(trips.id, tripId))).toHaveLength(0);
+    expect(await app.db.select().from(members).where(eq(members.tripId, tripId))).toHaveLength(0);
+    expect(await app.db.select().from(meetings).where(eq(meetings.tripId, tripId))).toHaveLength(0);
+    expect((await call(app.app, 'GET', `/invites/${code}`)).status).toBe(404);
+    expect((await call(app.app, 'GET', `/trips/${tripId}`, undefined, host.body.token)).status).toBe(401);
   });
 });
 

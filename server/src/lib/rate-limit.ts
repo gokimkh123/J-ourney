@@ -42,11 +42,12 @@ function perMinuteCounter() {
   };
 }
 
-/** IP별 요청 제한: 쓰기 요청(POST·PUT)만 1분에 perMinute회까지 (조회는 제한하지 않음) */
+/** IP별 요청 제한: 쓰기 요청(POST·PUT·DELETE)만 1분에 perMinute회까지 (조회는 제한하지 않음) */
 export function writeRateLimit(perMinute: number) {
   const hits = perMinuteCounter();
   return createMiddleware(async (c, next) => {
-    if (c.req.method !== 'POST' && c.req.method !== 'PUT') return next();
+    // 쓰기 요청만 셈 (DELETE: v2.4 나가기·파티 없애기·리뷰 지우기)
+    if (c.req.method !== 'POST' && c.req.method !== 'PUT' && c.req.method !== 'DELETE') return next();
     if (hits.add(clientIp(c)) > perMinute) throw new ApiError('RATE_LIMITED', '요청이 너무 많음. 잠시 후 다시 시도');
     await next();
   });

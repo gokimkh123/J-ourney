@@ -79,14 +79,31 @@ export const DISLIKE_OPTIONS: readonly { id: string; text: string; emoji: string
   { id: 'dislike_queue', text: '줄 서는 맛집', emoji: '⏳' },
 ];
 
+/** 이번 여행 속도 (11/2 새 설문): 보기마다 6단계 하루 장소 수·걸음 수를 정하는 속도 단계 (score.ts PACE). 고르지 않은 예전 응답은 2·8번 속도 성향으로 정함 */
+export const PACE_OPTIONS: readonly { id: string; text: string; emoji: string; level: 'low' | 'neutral' | 'high' }[] = [
+  { id: 'pace_slow', text: '여유', emoji: '🐢', level: 'low' },
+  { id: 'pace_normal', text: '적당', emoji: '🚶', level: 'neutral' },
+  { id: 'pace_packed', text: '알차게', emoji: '🏃', level: 'high' },
+];
+
 export const LIKE_SELECT = { min: 1, max: 5 } as const;
 export const DISLIKE_SELECT = { min: 0, max: 3 } as const;
 export const MUST_KEEP_MAX_LENGTH = 200;
+/** 좋아요·싫어요의 '기타' 직접 입력: 보기에 없는 것 한두 개를 적는 칸 */
+export const OTHER_MAX_LENGTH = 50;
+/** 가고 싶은 곳: 장소 이름을 하나씩 추가 (사람마다 꼭 넣을 곳이 늘면 하루 일정이 꼭 지킬 곳으로만 차므로 3곳까지) */
+export const WANT_PLACES = { max: 3, maxLength: 30 } as const;
+// 문항 id는 예전 응답을 그대로 읽도록 그대로 둠 (q13 좋아요·q14 싫어요·q15 직접 쓴 글). 화면 순서는 order로 정함 (11/2 새 설문)
 export const LIKES_ID = 'q13';
 export const DISLIKES_ID = 'q14';
 export const MUST_KEEP_ID = 'q15';
+export const WANT_PLACES_ID = 'q16';
+export const PACE_ID = 'q17';
 
-/** GET /persona/questions 응답: 채점 정보(성향·방향)는 앱에 보내지 않음 */
+/**
+ * GET /persona/questions 응답: 채점 정보(성향·방향)는 앱에 보내지 않음. order 순서로 보냄
+ * 11/2 새 설문 순서: 1–12 성향 → 13 가고 싶은 곳 → 14 이번 여행 속도 → 15 싫은 것(+기타) → 16 좋은 것(+기타) → 17 추가로 고려하고 싶은 사항
+ */
 export const PUBLIC_QUESTIONS = [
   ...SCALE_QUESTIONS.map((q, i) => ({
     id: q.id,
@@ -99,30 +116,50 @@ export const PUBLIC_QUESTIONS = [
     maxLabel: '매우 그렇다',
   })),
   {
-    id: LIKES_ID,
+    id: WANT_PLACES_ID,
     order: 13,
-    type: 'multi' as const,
-    text: '여행에서 좋아하는 것을 골라 주세요',
-    minSelect: LIKE_SELECT.min,
-    maxSelect: LIKE_SELECT.max,
-    options: LIKE_OPTIONS.map(({ id, text, emoji }) => ({ id, text, emoji })),
+    type: 'list' as const,
+    text: '이번 여행에서 가고 싶은 곳이 있나요?',
+    required: false,
+    maxItems: WANT_PLACES.max,
+    maxLength: WANT_PLACES.maxLength,
+    placeholder: '예: 광안리해수욕장',
+  },
+  {
+    id: PACE_ID,
+    order: 14,
+    type: 'single' as const,
+    text: '이번 여행은 어떤 속도로 다니고 싶나요?',
+    required: true,
+    options: PACE_OPTIONS.map(({ id, text, emoji }) => ({ id, text, emoji })),
   },
   {
     id: DISLIKES_ID,
-    order: 14,
+    order: 15,
     type: 'multi' as const,
     text: '여행에서 싫은 것을 골라 주세요 (없으면 넘어가도 됨)',
     minSelect: DISLIKE_SELECT.min,
     maxSelect: DISLIKE_SELECT.max,
     options: DISLIKE_OPTIONS.map(({ id, text, emoji }) => ({ id, text, emoji })),
+    other: { maxLength: OTHER_MAX_LENGTH, placeholder: '기타 (직접 입력)' },
+  },
+  {
+    id: LIKES_ID,
+    order: 16,
+    type: 'multi' as const,
+    text: '여행에서 좋아하는 것을 골라 주세요',
+    minSelect: LIKE_SELECT.min,
+    maxSelect: LIKE_SELECT.max,
+    options: LIKE_OPTIONS.map(({ id, text, emoji }) => ({ id, text, emoji })),
+    other: { maxLength: OTHER_MAX_LENGTH, placeholder: '기타 (직접 입력)' },
   },
   {
     id: MUST_KEEP_ID,
-    order: 15,
+    order: 17,
     type: 'text' as const,
-    text: '이번 여행에서 꼭 지켰으면 하는 것이 있나요?',
+    text: '추가로 고려하고 싶은 사항이 있나요?',
     required: false,
     maxLength: MUST_KEEP_MAX_LENGTH,
-    placeholder: '예: 해산물은 꼭 먹고 싶어요, 밤 9시 전엔 숙소에 들어가요',
+    placeholder: '예: 밤 9시 전엔 숙소에 들어가요, 해산물은 꼭 먹고 싶어요',
   },
 ];

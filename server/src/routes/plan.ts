@@ -19,12 +19,17 @@ const editBody = z.object({
         z.object({ type: z.literal('remove'), itemId: z.string().min(1).max(ID_MAX) }),
         z.object({ type: z.literal('add'), placeId: z.string().min(1).max(ID_MAX), day }),
         z.object({ type: z.literal('move'), itemId: z.string().min(1).max(ID_MAX), day }),
-        z.object({ type: z.literal('reorder'), day, itemIds: z.array(z.string().min(1).max(ID_MAX)).min(1).max(30) }),
+        // 순서: 항목 id 또는 장소 id 중 하나 (v2.4: 식당 항목도 넣으면 끼니 자리까지, 같은 요청에서 넣은 곳은 장소 id로)
+        z
+          .object({ type: z.literal('reorder'), day, itemIds: z.array(z.string().min(1).max(ID_MAX)).min(1).max(30).optional(), placeIds: z.array(z.string().min(1).max(ID_MAX)).min(1).max(30).optional() })
+          .refine((x) => !!x.itemIds !== !!x.placeIds, { message: 'reorder는 itemIds와 placeIds 중 하나만 보냄' }),
         z.object({ type: z.literal('meal'), itemId: z.string().min(1).max(ID_MAX), placeId: z.string().min(1).max(ID_MAX).nullable() }),
       ]),
     )
     .min(1)
     .max(CHOOSE.editsPerRequest),
+  /** 앱이 보고 있던 버전 (v2.4). 지금 버전과 다르면 다른 사람이 먼저 고친 것이라 409 PLAN_LOCKED */
+  baseVersion: z.number().int().min(1).optional(),
 });
 
 /**
@@ -38,7 +43,10 @@ export function planRoutes({ db, plans }: { db: Db; plans: PlanService }) {
   r.post('/trips/:tripId/plan/choice', auth, async (c) => c.json(await plans.choose(c.req.param('tripId'), c.get('member'), await parseBody(c, choiceBody))));
   r.post('/trips/:tripId/plan/choice/close', auth, async (c) => c.json(await plans.closeChoice(c.req.param('tripId'), c.get('member'))));
   r.get('/trips/:tripId/plan/options', auth, async (c) => c.json(await plans.options(c.req.param('tripId'), c.get('member'))));
-  r.post('/trips/:tripId/plan/edits', auth, async (c) => c.json(await plans.edit(c.req.param('tripId'), c.get('member'), (await parseBody(c, editBody)).edits)));
+  r.post('/trips/:tripId/plan/edits', auth, async (c) => {
+    const body = await parseBody(c, editBody);
+    return c.json(await plans.edit(c.req.param('tripId'), c.get('member'), body.edits, body.baseVersion));
+  });
   r.post('/trips/:tripId/plan/confirm', auth, async (c) => c.json(await plans.requestConfirm(c.req.param('tripId'), c.get('member'))));
   r.post('/trips/:tripId/plan/votes', auth, async (c) => c.json(await plans.vote(c.req.param('tripId'), c.get('member'), await parseBody(c, voteBody))));
   return r;
