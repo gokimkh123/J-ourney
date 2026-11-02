@@ -1,7 +1,7 @@
 import type { BaseCheckpointSaver } from '@langchain/langgraph';
 import { and, asc, desc, eq, gt, inArray, lt, notExists, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { meetingEvents, meetings, tripPlans, trips } from '../db/schema.js';
+import { accessKeyUsage, meetingEvents, meetings, tripPlans, trips } from '../db/schema.js';
 import type { AccessGrant } from '../lib/access.js';
 import { ApiError } from '../lib/errors.js';
 import { newId } from '../lib/ids.js';
@@ -98,8 +98,8 @@ export async function startMeeting(db: Db, tripId: string, limits: MeetingLimits
     if (rows.length >= limits.runsPerTrip) throw new ApiError('MEETING_LIMIT', `이 여행의 회의 실행 횟수(${limits.runsPerTrip}회)를 모두 씀`);
     if (access) {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`access:${access.label}`}))`);
-      const [{ used }] = await tx.select({ used: sql<number>`count(*)::int` }).from(meetings).where(eq(meetings.accessLabel, access.label));
-      if (used >= access.quota) throw new ApiError('ACCESS_QUOTA_EXCEEDED', `이 접근 키로 짤 수 있는 여행 횟수(${access.quota}회)를 모두 씀`);
+      const [row] = await tx.select({ used: accessKeyUsage.used }).from(accessKeyUsage).where(eq(accessKeyUsage.label, access.label));
+      if ((row?.used ?? 0) >= access.quota) throw new ApiError('ACCESS_QUOTA_EXCEEDED', `이 접근 키로 짤 수 있는 여행 횟수(${access.quota}회)를 모두 씀`);
     }
     const reviewing = rows.filter((m) => m.status === 'reviewing').length;
     if (opts.replaceReviewing && reviewing) {
@@ -120,6 +120,11 @@ export async function startMeeting(db: Db, tripId: string, limits: MeetingLimits
       .onConflictDoNothing()
       .returning();
     if (!inserted.length) throw new ApiError('MEETING_IN_PROGRESS', '같은 여행의 회의가 방금 시작됨');
+    if (access)
+      await tx
+        .insert(accessKeyUsage)
+        .values({ label: access.label, used: 1 })
+        .onConflictDoUpdate({ target: accessKeyUsage.label, set: { used: sql`${accessKeyUsage.used} + 1` } });
     if (opts.official) await tx.update(trips).set({ status: 'meeting' }).where(eq(trips.id, tripId));
     return inserted[0];
   });

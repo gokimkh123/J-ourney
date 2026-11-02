@@ -277,6 +277,62 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     expect(out.plan).toMatchObject({ planId: A.planId, version: A.version + 1, changes: ['1일째 관광지 순서 바꿈'] });
   });
 
+  it('14단계 순서 바꾸기에 끼니(식당)도 넣으면 그 자리·그 식당 그대로 (v2.4): 끼니는 그날 모두 적고 점심은 저녁 앞, 끼니까지 정한 날에 넣는 곳은 저녁 앞, 같은 요청에서 넣은 곳은 장소 id로 순서를 정함', async () => {
+    const db = await testDb();
+    const cands = [near('해변', 0), near('공원', 1), near('시장', 4), near('박물관', 5), near('미술관', 8), near('수목원', 9)];
+    await db.insert(places).values([restaurant('r1', '점심식당', 35.158, 129.1, { opentimefood: '10:00~22:00' }), restaurant('r2', '저녁식당', 35.166, 129.11, { opentimefood: '10:00~22:00' })]);
+    const members = [member('mem_1', { placesPerDay: [4, 4] }), member('mem_2', { placesPerDay: [4, 4] })];
+    const input: ScheduleInput = { meetingId: 'mtg_test1', pool: poolOf(cands, ['2026-11-07']), board: boardOf(cands), members, decision: null, moveMode: 'transit' };
+    const { router } = fakeRouter();
+    const { plans, states } = await schedulePlans(db, router, input);
+    const A = plans.find((x) => x.label === 'A')!;
+    const lunch = A.route[0].stops.find((s) => s.meal === 'lunch')!;
+    const dinner = A.route[0].stops.find((s) => s.meal === 'dinner')!;
+    const day = sights(A);
+    expect(day).toHaveLength(4);
+    // 점심을 맨 앞, 저녁을 셋째 관광지 뒤로 (넷째 관광지는 저녁 뒤)
+    const want = [lunch, day[0], day[1], day[2], dinner, day[3]];
+    let out = await editPlan(db, router, input, { plan: A, state: states.A }, [{ type: 'reorder', day: 0, itemIds: want.map((x) => x.itemId) }]);
+    expect(out.results).toEqual([{ plan: 'A', applied: true, note: '1일째 관광지·끼니 순서 바꿈' }]);
+    expect(out.plan.route[0].stops.map((x) => x.name)).toEqual(want.map((x) => x.name));
+    // 끼니를 하나만 적거나 저녁을 점심 앞에 두면 반영하지 않음 (버전 그대로)
+    const bad = await editPlan(db, router, input, { plan: out.plan, state: out.state }, [
+      { type: 'reorder', day: 0, itemIds: [lunch.itemId, ...day.map((x) => x.itemId)] },
+      { type: 'reorder', day: 0, itemIds: [dinner.itemId, ...day.map((x) => x.itemId), lunch.itemId] },
+    ]);
+    expect(bad.results.map((r) => r.note)).toEqual(['반영 못 함: 끼니를 옮기려면 그날 끼니를 모두 한 번씩 적어야 함', '반영 못 함: 점심은 저녁보다 앞이어야 함']);
+    expect(bad.plan.version).toBe(out.plan.version);
+    // 끼니까지 정한 날에 넣는 곳은 저녁 앞 (사람이 정한 저녁 뒤 자리를 밀어내지 않음)
+    const [x1, x2] = cands.filter((c) => !ids(A).has(`plc_${c.id}`));
+    out = await editPlan(db, router, input, { plan: out.plan, state: out.state }, [{ type: 'add', placeId: `plc_${x1.id}`, day: 0 }]);
+    let names = out.plan.route[0].stops.map((x) => x.name);
+    expect(names.indexOf(x1.name)).toBe(names.indexOf(dinner.name) - 1);
+    expect(names.at(-1)).toBe(day[3].name);
+    // 같은 요청에서 넣은 곳도 장소 id로 바로 순서를 정함 (끼니 식당도 장소 id로)
+    const now = out.plan.route[0].stops.filter((x) => x.kind === 'sight').map((x) => x.placeId);
+    out = await editPlan(db, router, input, { plan: out.plan, state: out.state }, [
+      { type: 'add', placeId: `plc_${x2.id}`, day: 0 },
+      { type: 'reorder', day: 0, placeIds: [`plc_${x2.id}`, lunch.placeId, ...now, dinner.placeId] },
+    ]);
+    expect(out.results.map((r) => r.applied)).toEqual([true, true]);
+    names = out.plan.route[0].stops.map((x) => x.name);
+    expect(names).toEqual([x2.name, lunch.name, ...now.map((id) => cands.find((c) => `plc_${c.id}` === id)!.name), dinner.name]);
+  });
+
+  it('B안의 좋아요 1곳 넣기는 A안에 없는 곳을 먼저 씀: A안에 그 사람이 좋아하는 곳이 있어도 B안이 A안으로 되돌아가지 않음 (11/2 검증29b: 18개 중 4개 여행의 B안 관광지가 A안과 같음)', async () => {
+    const db = await testDb();
+    // 모두 한 자리에 두어 점수(인기)만으로 고름: A안 = 인기 1·2·3위, B안 = A의 1순위 + A에 없는 곳
+    const top = near('인기1', 0, { popularity: 99 });
+    const likedA = near('좋아요A', 0, { popularity: 95, marks: { mem_1: [{ kind: 'like', label: '바다' }] } });
+    const likedB = near('좋아요B', 0, { popularity: 10, marks: { mem_1: [{ kind: 'like', label: '바다' }] } });
+    const cands = [top, likedA, near('인기3', 0, { popularity: 90 }), near('인기4', 0, { popularity: 85 }), near('인기5', 0, { popularity: 80 }), likedB];
+    const members = [member('mem_1', { placesPerDay: [3, 3] }), member('mem_2', { placesPerDay: [3, 3] })];
+    const [A, B] = await run(db, fakeRouter().router, poolOf(cands, ['2026-11-07']), boardOf(cands), members);
+    expect(sights(A).map((x) => x.name).sort()).toEqual(['인기1', '인기3', '좋아요A']);
+    expect(sights(B).map((x) => x.name)).toContain('좋아요B');
+    expect([...ids(B)].filter((id) => ids(A).has(id))).toEqual([`plc_${top.id}`]); // A와 같이 쓰는 곳은 A의 1순위뿐
+  });
+
   it('시작 시각이 모두 저녁 뒤인 곳(밤 행사·야시장)은 저녁 뒤에 두고, 하루가 저녁 전에 끝나면 넣지 않음', async () => {
     const db = await testDb();
     const show = near('드론쇼', 1, { id: 'ev1', type: 15, code: 'EV030400', open: null });

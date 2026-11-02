@@ -2,12 +2,13 @@ import { and, asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
-import { MAX_MEMBERS, members, personas, tripPlans, trips } from '../db/schema.js';
+import { MAX_MEMBERS, meetings, members, personas, tripPlans, trips } from '../db/schema.js';
 import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken, newId, newInviteCode, newToken } from '../lib/ids.js';
 import { failureLimit } from '../lib/rate-limit.js';
 import { parseBody } from '../lib/validate.js';
+import { CLOSE, type EventHub } from '../meeting/live.js';
 import { activeMeetingOf } from '../meeting/runs.js';
 import type { LlmClient } from '../llm/client.js';
 import type { LlmRecorder } from '../llm/record.js';
@@ -73,6 +74,10 @@ export interface TripDeps {
   live?: { llm: LlmClient; recorder: LlmRecorder } | null;
   llmDailyLimit: number;
   accessKeys?: readonly AccessKey[];
+  /** 나가기·여행 삭제 때 그 사람의 실시간 연결을 닫음 (v2.4) */
+  hub?: EventHub;
+  /** 여행 삭제 때 그 여행 회의들의 단계 기록(체크포인트)을 지움 (v2.4) */
+  forgetMeetings?: (meetingIds: readonly string[]) => Promise<void>;
 }
 
 /** 1번 묶음: 여행 생성·초대·참여·상세 (명세서 4.2) */
@@ -161,13 +166,16 @@ export function tripRoutes(db: Db, deps: TripDeps) {
       // 회의가 끝나 일정 표(14·15단계)가 열린 여행도 받지 않음: 고르기·확정 투표의 인원수가 바뀜 (시험 경로 여행은 상태가 preparing으로 남음)
       if ((await tx.select({ id: tripPlans.tripId }).from(tripPlans).where(eq(tripPlans.tripId, trip.id))).length)
         throw new ApiError('MEETING_IN_PROGRESS', '회의가 끝나 일정 표가 열린 여행에는 참여할 수 없음');
-      const joined = await tx.select({ id: members.id }).from(members).where(eq(members.tripId, trip.id));
+      const joined = await tx.select({ id: members.id, seat: members.seat }).from(members).where(eq(members.tripId, trip.id));
       if (joined.length >= MAX_MEMBERS) {
         throw new ApiError('TRIP_FULL', `참가 인원이 가득 참 (방장 포함 최대 ${MAX_MEMBERS}명)`);
       }
+      // 비어 있는 가장 앞 자리 (나간 사람의 자리를 다시 씀, v2.4 — 자리 번호는 여행 안에서 겹치지 않음)
+      const taken = new Set(joined.map((j) => j.seat));
+      const seat = Array.from({ length: MAX_MEMBERS }, (_, i) => i + 1).find((n) => !taken.has(n))!;
       const [member] = await tx
         .insert(members)
-        .values({ id: newId('mem'), tripId: trip.id, nickname: body.nickname, seat: joined.length + 1, tokenHash: hashToken(token) })
+        .values({ id: newId('mem'), tripId: trip.id, nickname: body.nickname, seat, tokenHash: hashToken(token) })
         .returning();
       return { trip, member };
     });
@@ -217,6 +225,42 @@ export function tripRoutes(db: Db, deps: TripDeps) {
       .returning({ id: trips.id });
     if (!saved.length) throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작되어 조건을 바꿀 수 없음');
     return c.json({ conditions: body, destination: { regionCode: destination.regionCode, label: destination.label } });
+  });
+
+  // 파티 나가기 (v2.4, 방장 아닌 구성원): 회의를 시작하기 전까지만. 내 성향·사람 확인 응답도 함께 지움, 열린 실시간 연결은 4001로 닫음
+  r.delete('/trips/:tripId/members/me', auth, async (c) => {
+    const me = c.get('member');
+    if (me.tripId !== c.req.param('tripId')) throw new ApiError('FORBIDDEN', '참여한 여행만 나갈 수 있음');
+    if (me.isHost) throw new ApiError('FORBIDDEN', '방장은 나갈 수 없음 (파티 없애기를 씀)');
+    await db.transaction(async (tx) => {
+      // 참여·회의 시작과 같은 여행 행을 잠가 차례로 돎 (나가는 사이에 회의가 시작되지 않게)
+      const [trip] = await tx.select().from(trips).where(eq(trips.id, me.tripId)).for('update');
+      if (!trip) throw new ApiError('NOT_FOUND', '여행을 찾을 수 없음');
+      const opened = await tx.select({ id: tripPlans.tripId }).from(tripPlans).where(eq(tripPlans.tripId, trip.id));
+      if (trip.status !== 'preparing' || (await activeMeetingOf(tx, trip.id)) || opened.length) throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작된 여행은 나갈 수 없음');
+      await tx.delete(members).where(eq(members.id, me.id));
+    });
+    deps.hub?.closeMember(me.id, CLOSE.left);
+    return c.body(null, 204);
+  });
+
+  // 파티 없애기 (v2.4, 방장): 여행과 구성원·성향·회의·이벤트·일정 표를 모두 지움. 회의가 도는 중이면 409 (끝난 뒤 다시)
+  r.delete('/trips/:tripId', auth, async (c) => {
+    const me = c.get('member');
+    if (me.tripId !== c.req.param('tripId')) throw new ApiError('FORBIDDEN', '참여한 여행만 지울 수 있음');
+    if (!me.isHost) throw new ApiError('FORBIDDEN', '방장만 파티를 없앨 수 있음');
+    const gone = await db.transaction(async (tx) => {
+      const [trip] = await tx.select().from(trips).where(eq(trips.id, me.tripId)).for('update');
+      if (!trip) throw new ApiError('NOT_FOUND', '여행을 찾을 수 없음');
+      const runs = await tx.select({ id: meetings.id, status: meetings.status }).from(meetings).where(eq(meetings.tripId, trip.id));
+      if (runs.some((m) => m.status === 'running')) throw new ApiError('MEETING_IN_PROGRESS', '회의가 진행 중이라 지울 수 없음 (회의가 끝난 뒤 다시)');
+      const people = await tx.select({ id: members.id }).from(members).where(eq(members.tripId, trip.id));
+      await tx.delete(trips).where(eq(trips.id, trip.id));
+      return { meetingIds: runs.map((m) => m.id), memberIds: people.map((p) => p.id) };
+    });
+    for (const id of gone.memberIds) deps.hub?.closeMember(id, CLOSE.tripDeleted);
+    await deps.forgetMeetings?.(gone.meetingIds).catch((err) => console.warn('지운 여행의 회의 기록 정리 실패:', err instanceof Error ? err.message : err));
+    return c.body(null, 204);
   });
 
   return r;

@@ -9,7 +9,7 @@ import { type AuthEnv, type Member, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken } from '../lib/ids.js';
 import { parseBody } from '../lib/validate.js';
-import { type EventHub, LIVE, streamTrip } from '../meeting/live.js';
+import { CLOSE, type EventHub, LIVE, streamTrip } from '../meeting/live.js';
 import type { Monitor } from '../lib/monitor.js';
 import { REACT } from '../meeting/react.js';
 import { eventsAfter } from '../meeting/runs.js';
@@ -123,7 +123,7 @@ export function meetingRoutes({ db, service, hub, pingMs, accessKeys = [], monit
               stop(); // 닫히는 중이면 보내기만 멈춤
             }
           };
-          unregister = hub.register(member.id, { close: () => ws.close(4000, 'replaced') }, LIVE.perMember);
+          unregister = hub.register(member.id, { close: (code: number = CLOSE.replaced[0], reason: string = CLOSE.replaced[1]) => ws.close(code, reason) }, LIVE.perMember);
           stop = streamTrip(db, hub, {
             tripId: member.tripId,
             afterSeq,

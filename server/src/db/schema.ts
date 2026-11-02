@@ -74,6 +74,15 @@ export const llmUsage = pgTable('llm_usage', {
   count: integer('count').notNull().default(0),
 });
 
+/**
+ * 접근 키마다 시작한 회의 수 (키마다 짤 수 있는 여행 횟수, v2.4). 회의 행과 따로 셈:
+ * 여행을 지우면(파티 없애기) 회의 행이 함께 지워지므로 회의 행으로 세면 횟수가 되돌아감
+ */
+export const accessKeyUsage = pgTable('access_key_usage', {
+  label: text('label').primaryKey(),
+  used: integer('used').notNull().default(0),
+});
+
 /** 터널로 들어온 IP별 하루 AI(LLM) 작업 횟수 (팀원 개발·외부 요청의 키 사용량 제한용). IP는 원문 대신 HMAC 값만 저장함 */
 export const llmIpUsage = pgTable(
   'llm_ip_usage',

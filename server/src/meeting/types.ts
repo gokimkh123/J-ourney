@@ -33,6 +33,10 @@ export interface BoardCandidate {
   name: string;
   lat: number | null;
   lng: number | null;
+  /** 화면 아이콘용 장소 종류 (v2.4, 코드가 정한 값): 숙소 후보 · 음식점(관광공사 음식점 유형) · 그 밖 관광지. 예전 회의의 보드에는 없음 */
+  kind?: 'sight' | 'food' | 'lodging';
+  /** 공식 분류 이름 (예: 해수욕장·카페, 없으면 null) */
+  category?: string | null;
   proposedBy: string[];
   reactions: Reaction[];
 }

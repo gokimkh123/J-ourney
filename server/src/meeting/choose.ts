@@ -174,10 +174,12 @@ export function planService({ db, graph, router, publisher }: { db: Db; graph: M
    * 고치기 (POST /trips/{id}/plan/edits): 구성원 누구나, 고른 값만 받음. 6단계 계산으로 다시 짜 plan.proposed(같은 planId, version + 1)
    * 동시에 고치면 먼저 저장한 쪽만 (version이 그대로일 때만 저장, 아니면 PLAN_LOCKED로 다시 불러오게 함)
    */
-  async function edit(tripId: string, caller: Member, edits: HumanEdit[]) {
+  async function edit(tripId: string, caller: Member, edits: HumanEdit[], baseVersion?: number) {
     own(caller, tripId);
     const r = await rowOf(db, tripId);
     if (r.status !== 'revising' || !r.plan || !r.planState) throw new ApiError('PLAN_LOCKED', r.status === 'choosing' ? 'A·B를 먼저 골라야 함' : '확정 투표 중이거나 확정되어 고칠 수 없음');
+    // 앱이 보고 있던 버전과 다르면 받지 않음 (그 사이 다른 사람이 고침, v2.4 baseVersion)
+    if (baseVersion !== undefined && baseVersion !== r.plan.version) throw new ApiError('PLAN_LOCKED', `다른 사람이 먼저 고쳐 지금은 v${r.plan.version}임 — 다시 불러와 주세요`);
     const meter = newRouteMeter();
     const { input, failed } = await inputOf(r.meetingId);
     const out = await editPlan(db, cachedRouter(db, router, meter, undefined, new Set(failed)), input, { plan: r.plan, state: r.planState }, edits);

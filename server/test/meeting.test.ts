@@ -969,6 +969,12 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const boards = events.filter((e) => e.type === 'board.updated');
     expect(boards).toHaveLength(2);
     expect(boards[0].data.candidates.every((c: { reactions: unknown[] }) => c.reactions.length === 0)).toBe(true);
+    // 보드 후보마다 화면 아이콘용 종류(코드가 정한 값)와 공식 분류 이름 (v2.4): 1박이라 AI가 고른 숙소는 lodging
+    for (const c of boards[1].data.candidates) {
+      expect(['sight', 'food', 'lodging']).toContain(c.kind);
+      expect(c.category === null || typeof c.category === 'string').toBe(true);
+    }
+    expect(boards[1].data.candidates.some((c: { kind: string }) => c.kind === 'lodging')).toBe(true);
     const agentIds = new Set(events[0].data.agents.map((a: { agentId: string }) => a.agentId));
     for (const c of boards[1].data.candidates) for (const r of c.reactions) {
       expect(agentIds.has(r.agentId)).toBe(true);
@@ -1843,8 +1849,12 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     expect(out.results).toEqual([{ plan: 'A', applied: true, note: `1일째 ${first.name} 뺌` }]);
     expect(out.plan).toMatchObject({ planId: A.planId, version: A.version + 1, changes: [`1일째 ${first.name} 뺌`] });
     expect(out.edits.at(-1)).toMatchObject({ version: A.version + 1, by: hyunwoo.id });
+    // 옛 버전을 보고 보낸 고치기는 409 (baseVersion, v2.4): 다른 사람이 먼저 고쳐 지금은 한 버전 위
+    const stale = await edits({ baseVersion: A.version, edits: [{ type: 'remove', itemId: sightsOf(out.plan)[0].itemId }] });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toMatchObject({ code: 'PLAN_LOCKED', message: expect.stringContaining(`v${A.version + 1}`) });
     // 옛 화면에서 같은 곳을 또 빼도 다른 곳이 빠지지 않음 (항목 id는 자리 번호가 아니라 안·날짜·장소)
-    out = (await edits({ edits: [{ type: 'remove', itemId: first.itemId }] })).body;
+    out = (await edits({ baseVersion: A.version + 1, edits: [{ type: 'remove', itemId: first.itemId }] })).body;
     expect(out.results).toEqual([{ plan: 'A', applied: false, note: '반영 못 함: 지금 일정에 없는 항목' }]);
     expect(out.plan.version).toBe(A.version + 1);
     // 넣을 보기: 일정에 없는 관광지 (방금 뺀 곳도 다시 넣을 수 있음), 끼니마다 바꿀 식당
@@ -2408,6 +2418,10 @@ describe('접근 키 (ACCESS_KEYS): 키가 있는 서버는 키를 낸 터널 �
     const rows = await t.db.select({ trip: meetings.tripId, label: meetings.accessLabel }).from(meetings);
     expect(rows).toHaveLength(2);
     expect(rows).toEqual(expect.arrayContaining([{ trip: a.tripId, label: 'team' }, { trip: b.tripId, label: null }]));
+    // 파티를 없애 회의 행이 지워져도 키 몫은 되돌아가지 않음 (v2.4: 키마다 따로 셈)
+    expect((await call(t.app, 'DELETE', `/trips/${a.tripId}`, undefined, a.token)).status).toBe(204);
+    expect(await t.db.select().from(meetings).where(eq(meetings.tripId, a.tripId))).toHaveLength(0);
+    expect((await start(t, await readyTrip(t), withKey)).body.error.code).toBe('ACCESS_QUOTA_EXCEEDED');
   });
 
   it('LLM_REPLAY=true여도 키로 시작한 회의만 LLM을 부르고(키 그래프), 서버 안에서 시작한 회의는 LLM 0회', async () => {
