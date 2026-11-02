@@ -2,12 +2,13 @@ import { z } from 'zod';
 import type { LlmClient } from '../llm/client.js';
 import type { RuleCategory } from '../meeting/categories.js';
 import { fallbackText } from './fallback.js';
-import { DISLIKE_OPTIONS, LIKE_OPTIONS } from './questions.js';
+import { DISLIKE_OPTIONS, LIKE_OPTIONS, WANT_PLACES } from './questions.js';
 import { type Chip, type MustKeepRule, type PersonaAnswers, RULE_TARGETS, type TraitResult } from './types.js';
 
 /** 카드 문장·15번 해석 결과의 길이·개수 상한 (codes: 규칙 하나에 고르는 분류 코드 수) */
 // rules·wishes: 11/2 새 설문으로 사람이 쓰는 칸이 4개(가고 싶은 곳 최대 3곳·좋아요 기타·싫어요 기타·추가 사항)가 되어 3·2 → 6·4
-export const LIMITS = { title: 12, catchphrase: 30, tmi: 30, label: 30, keyword: 20, wish: 40, rules: 6, wishes: 4, codes: 5 } as const;
+// keyword: 가고 싶은 곳 칸(최대 WANT_PLACES.maxLength자)을 그대로 옮겨도 버리지 않게 같은 길이 (11/2 점검: 21–30자 장소 이름이 조용히 빠짐)
+export const LIMITS = { title: 12, catchphrase: 30, tmi: 30, label: 30, keyword: WANT_PLACES.maxLength, wish: 40, rules: 6, wishes: 4, codes: 5 } as const;
 /** 사람이 직접 쓴 칸을 AI에 넘길 때 줄 앞에 붙이는 문항 이름 (코드가 붙이는 표시, 11/2 새 설문) */
 const OWN_LABEL = { want: '가고 싶은 곳', likes: '좋아하는 것(기타)', dislikes: '싫어하는 것(기타)', extra: '추가로 고려할 사항' } as const;
 /** 15번 숫자 조건의 허용 범위 (벗어나면 버림) */

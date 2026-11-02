@@ -16,6 +16,7 @@ import { tryConsumeLlmCall } from '../llm/usage.js';
 import { type AccessKey, accessOf } from '../lib/access.js';
 import { DestinationError, DestinationUnavailable, resolveDestination } from '../meeting/destination.js';
 import { MEETING_RULES } from '../meeting/rounds.js';
+import { dayTripSpanMinutes, FLIGHT } from '../meeting/schedule.js';
 import { DEMO_SEEDS, seedPersona } from '../persona/seeds.js';
 import { DAY_MS, todayKst } from '../lib/time.js';
 import { memberView, tripView } from './views.js';
@@ -72,7 +73,9 @@ const conditionsBody = z
   .refine((b) => realDay(b.startDate) && realDay(b.endDate), { message: '없는 날짜임' })
   .refine((b) => b.endDate >= b.startDate, { message: '끝나는 날은 시작하는 날과 같거나 뒤여야 함' })
   .refine((b) => (Date.parse(b.endDate) - Date.parse(b.startDate)) / DAY_MS + 1 <= MAX_TRIP_DAYS, { message: `여행은 ${MAX_TRIP_DAYS}일 이하여야 함` })
-  .refine((b) => b.startDate !== b.endDate || !b.arrivalTime || !b.departureTime || b.arrivalTime < b.departureTime, { message: '당일치기는 도착 시각이 출발 시각보다 앞이어야 함' });
+  .refine((b) => b.startDate !== b.endDate || !b.arrivalTime || !b.departureTime || dayTripSpanMinutes(b.arrivalTime, b.departureTime) > 0, {
+    message: `당일치기는 도착 ${FLIGHT.arrivalBufferMinutes}분 뒤부터 출발 ${FLIGHT.departureBufferMinutes}분 전 사이에 다닐 시간이 있어야 함`,
+  });
 
 /**
  * 여행지 확인에 쓰는 LLM (10/29: 방장이 쓴 여행지 글은 LLM이 공식 지역 목록에서 고름, destination.ts)

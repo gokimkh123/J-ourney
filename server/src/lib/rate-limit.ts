@@ -3,7 +3,6 @@ import { createMiddleware } from 'hono/factory';
 import { ApiError } from './errors.js';
 
 const WINDOW_MS = 60_000;
-const PRUNE_AT = 5000;
 
 /**
  * 터널로 들어온 요청의 접속자 IP. 이 PC에서 직접 보낸 요청은 null
@@ -17,12 +16,31 @@ export const tunnelIp = (c: Context): string | null => {
   return cf?.trim() || xff?.split(',')[0]?.trim() || 'unknown';
 };
 
-/** 터널 뒤에서는 Cloudflare가 넣어 주는 접속자 IP를 씀 */
-const clientIp = (c: Context) => tunnelIp(c) ?? 'local';
+/**
+ * 요청 제한을 세는 묶음: IPv4는 주소 그대로, IPv6는 앞 64비트(/64, 보통 한 집·한 기기) — 같은 사람이 IPv6 주소를 바꿔 가며 보내 제한을 피하지 않게 (11/2 보안 점검)
+ * IPv4를 품은 IPv6(::ffff:1.2.3.4)는 IPv4로 봄
+ */
+export function ipBucket(ip: string): string {
+  if (!ip.includes(':')) return ip;
+  const v4 = /(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip);
+  if (v4) return v4[1];
+  const [head, tail] = ip.toLowerCase().split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups = tail === undefined ? left : [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right];
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+}
 
-/** 1분 창으로 IP마다 횟수를 셈 (오래된 IP는 PRUNE_AT개를 넘을 때 지움) */
+/** 터널 뒤에서는 Cloudflare가 넣어 주는 접속자 IP를 씀 (IPv6는 /64 묶음) */
+const clientIp = (c: Context) => {
+  const ip = tunnelIp(c);
+  return ip === null ? 'local' : ipBucket(ip);
+};
+
+/** 1분 창으로 IP마다 횟수를 셈. 창이 지난 IP는 1분에 한 번 지움 (요청마다 전체를 훑지 않고, 지난 창의 기록이 쌓이지 않게) */
 function perMinuteCounter() {
   const hits = new Map<string, { start: number; count: number }>();
+  let pruned = Date.now();
   return {
     /** 이번 창의 횟수 (지난 창이면 0) */
     count(ip: string, now = Date.now()) {
@@ -31,7 +49,10 @@ function perMinuteCounter() {
     },
     /** 1 올리고 이번 창의 횟수를 돌려줌 */
     add(ip: string, now = Date.now()) {
-      if (hits.size > PRUNE_AT) for (const [k, h] of hits) if (now - h.start >= WINDOW_MS) hits.delete(k);
+      if (now - pruned >= WINDOW_MS) {
+        for (const [k, h] of hits) if (now - h.start >= WINDOW_MS) hits.delete(k);
+        pruned = now;
+      }
       const h = hits.get(ip);
       if (!h || now - h.start >= WINDOW_MS) {
         hits.set(ip, { start: now, count: 1 });

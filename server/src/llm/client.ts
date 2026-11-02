@@ -56,6 +56,12 @@ export function inputTokenUpperBound(system: string, input: unknown, schema: z.Z
 
 export class LlmTokenLimitError extends Error {}
 
+/**
+ * 답의 형식이 틀린 실패인지 (JSON이 아니거나 스키마와 다름). 시간 초과·연결·공급자 오류(5xx·429)·토큰 상한은 아님
+ * 형식이 틀린 답만 1번 더 부를 가치가 있음 (11/2 점검: 공급자가 멈추면 다시 부르기마다 모델 2개의 시간 제한을 또 기다려 회의가 몇 분 걸림)
+ */
+export const isFormatError = (err: unknown) => err instanceof z.ZodError || err instanceof SyntaxError || (err instanceof Error && err.name === 'OutputParserException');
+
 /** 'google-genai:gemini-3.5-flash-lite' → { provider, model } (형식이 틀리면 null) */
 export function parseModelSpec(spec: string): ModelSpec | null {
   const at = spec.indexOf(':');

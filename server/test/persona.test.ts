@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { categories, llmIpUsage, llmRecords, llmUsage, members, personas, places, trips } from '../src/db/schema.js';
 import { ApiError } from '../src/lib/errors.js';
 import { buildProfile, pickChips, readAnswers, sameAnswers, scoreTraits } from '../src/persona/score.js';
-import { maskPersonal, ownWords, ruleCard } from '../src/persona/write.js';
+import { cardFromDraft, maskPersonal, ownWords, ruleCard } from '../src/persona/write.js';
+import { WANT_PLACES } from '../src/persona/questions.js';
 import { createApp } from '../src/app.js';
 import { config } from '../src/config.js';
 import { createLangChainLlm, inputTokenUpperBound, LlmTokenLimitError } from '../src/llm/client.js';
@@ -132,6 +133,21 @@ describe('성향 점수와 칩 (규칙)', () => {
     expect(ownWords(all)).toBe(`가고 싶은 곳: 광안리해수욕장, 감천문화마을\n싫어하는 것(기타): 놀이공원\n추가로 고려할 사항: ${MUST_KEEP}`);
     // 규칙 카드(AI 못 씀): 추가 사항 글은 예전처럼 맨 앞, 다른 칸은 문항 이름을 붙여 바람으로만 보관
     expect(ruleCard([], all).wishes).toEqual([MUST_KEEP.slice(0, 40), '가고 싶은 곳: 광안리해수욕장, 감천문화마을', '싫어하는 것(기타): 놀이공원']);
+  });
+
+  it('가고 싶은 곳 칸 길이(30자)까지의 이름을 AI가 그대로 옮겨도 넣기 규칙으로 남음 (11/2 점검: 21–30자 이름이 조용히 빠짐)', () => {
+    const name = '부산 해운대 블루라인파크 해변열차 미포정거장';
+    expect(name.length).toBeGreaterThan(20);
+    expect(name.length).toBeLessThanOrEqual(WANT_PLACES.maxLength);
+    const answers = readAnswers([...seoyeon(MUST_KEEP), { questionId: 'q16', texts: [name] }]);
+    const draft = {
+      title: '바다형',
+      catchphrase: '가자',
+      tmi: '바다',
+      mustKeep: { include: [{ label: '해변열차 타기', quote: name, target: 'place', keyword: name, codes: [] }], avoid: [], time: [], budget: [], steps: [], move: [] },
+      wishes: [],
+    };
+    expect(cardFromDraft(draft as Parameters<typeof cardFromDraft>[0], answers, [], []).mustKeep).toMatchObject([{ type: 'include', keyword: name, target: 'place' }]);
   });
 });
 

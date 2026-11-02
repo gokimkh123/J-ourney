@@ -16,6 +16,8 @@ export const NAME_MATCH = {
    * 11/2 새 설문으로 사람마다 가고 싶은 곳을 3곳까지 적어 4명 × (3곳 + 추가 사항의 이름 규칙) ≈ 20규칙 → 6개씩 4묶음 (예전 2묶음)
    */
   maxCalls: 5,
+  /** 방장이 예약한 숙소(v2.4) 찾기에 maxCalls와 따로 남겨 두는 횟수 (11/2 점검: 이름 규칙이 많으면 maxCalls를 다 써서 예약한 숙소를 묻지 못함) */
+  bookedLodgingCalls: 1,
   /** 규칙마다 이름(음식은 메뉴도)과 글자가 겹치는 후보 수 */
   overlapPerRule: 20,
   /** 장소 규칙에 함께 보이는 인기 상위 장소 수 (이름이 전혀 달라도 유명한 곳은 찾게 함) */
@@ -58,7 +60,7 @@ export interface NamePlace {
  */
 export type NameMatches = Map<string, string[]>;
 /** 2단계가 부르는 이름 맞추기 함수 */
-export type NameMatcher = (rules: readonly NameRule[], places: readonly NamePlace[]) => Promise<NameMatches>;
+export type NameMatcher = (rules: readonly NameRule[], places: readonly NamePlace[], how?: { bookedLodging?: boolean }) => Promise<NameMatches>;
 
 // 근거를 먼저 쓰고 번호를 고르게 함 ('확실함' 칸은 두지 않음, 근거 ⑩). 10/28 시험의 답 형식 그대로 (설명 글자도 같게 둠)
 export const NameDraft = z.object({
@@ -251,8 +253,8 @@ export function nameMatcher(
     const { codes, input } = nameInput(rules, places);
     return { codes, input, req: { system: SYSTEM, input, schema: NameDraft, schemaName: 'place_names' } };
   };
-  const ask = async (rules: readonly NameRule[], r: ReturnType<typeof requestOf>): Promise<NameMatches> => {
-    if (!llm || calls >= NAME_MATCH.maxCalls || !(await reserve())) return new Map();
+  const ask = async (rules: readonly NameRule[], r: ReturnType<typeof requestOf>, bookedLodging: boolean): Promise<NameMatches> => {
+    if (!llm || calls >= NAME_MATCH.maxCalls + (bookedLodging ? NAME_MATCH.bookedLodgingCalls : 0) || !(await reserve())) return new Map();
     calls++;
     try {
       if (!emit || !llm.streamJson) {
@@ -270,7 +272,7 @@ export function nameMatcher(
       return new Map();
     }
   };
-  return async (rules, places) => {
+  return async (rules, places, how = {}) => {
     const out: NameMatches = new Map();
     if (!rules.length || !places.length) return out;
     for (let i = 0; i < rules.length; i += NAME_MATCH.maxRules) {
@@ -288,7 +290,7 @@ export function nameMatcher(
       if (!sent.length) continue;
       const part = sent.length < batch.length ? requestOf(sent, places) : whole;
       const again = part === whole ? null : await recorder?.replay(part.req);
-      for (const [k, v] of again ? decodeNames(again, sent, part.codes) : await ask(sent, part)) out.set(k, v);
+      for (const [k, v] of again ? decodeNames(again, sent, part.codes) : await ask(sent, part, !!how.bookedLodging)) out.set(k, v);
     }
     return out;
   };

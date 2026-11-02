@@ -206,6 +206,12 @@ export function eventRecorder(db: Db, tripId: string, meetingId: string, publish
   };
 }
 
+/** 여행의 마지막 이벤트 번호 (없으면 0) */
+export async function lastSeqOf(db: Db, tripId: string): Promise<number> {
+  const [row] = await db.select({ seq: sql<number>`coalesce(max(${meetingEvents.seq}), 0)` }).from(meetingEvents).where(eq(meetingEvents.tripId, tripId));
+  return Number(row.seq);
+}
+
 /** 다시 접속한 화면에 afterSeq 뒤의 이벤트를 보냄 */
 export async function eventsAfter(db: Db, tripId: string, afterSeq: number): Promise<MeetingEnvelope[]> {
   const rows = await db
