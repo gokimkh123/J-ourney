@@ -49,7 +49,11 @@ const evalAnswer = (input: { plans: Record<string, string> }) => ({
   requests: [],
 });
 /** 13단계 이름 짓기 가짜 답 (입력에 plans만 있고 me가 없음) */
-const namesAnswer = () => ({ a: { name: '바다 따라 힐링', desc: '바다를 따라 쉬엄쉬엄 도는 일정' }, b: { name: '시장 골목 먹방', desc: '시장과 골목을 돌며 먹는 일정' } });
+/** 13단계 이름 짓기 가짜 답: 표에서 안마다 숙소가 아닌 첫 번호를 고름 (답 형식은 그 회의 표의 번호만 받음) */
+const namesAnswer = (input: { plans: string }) => {
+  const first = (l: string) => input.plans.split('\n').find((r) => r.startsWith(l) && !r.split('|')[2]?.startsWith('숙소'))?.split('|')[0];
+  return { a: { pick: [first('A')], name: '바다 따라 힐링', desc: '바다를 따라 쉬엄쉬엄 도는 일정' }, b: { pick: [first('B')], name: '시장 골목 먹방', desc: '시장과 골목을 돌며 먹는 일정' } };
+};
 /** 7단계 평가에서 부른 LLM 수 (사람 확인을 기다리면 0) */
 const evalCalls = (r: { evaluation: { members: { llmCalls: number }[] } | null }) => r.evaluation?.members.reduce((a, m) => a + m.llmCalls, 0) ?? 0;
 
@@ -885,7 +889,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
       // 2단계 이름 맞추기 요청 1번 (지은의 흰여울문화마을·현우의 돼지국밥): 목록에서 이름·메뉴에 그 말이 든 곳을 고름 (흰여울문화마을은 시험 자료에 없음)
       if (input.areas !== undefined) return areaAnswer(input);
       if (input.rules) return nameAnswer(input);
-      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
+      if (input.plans && !input.me) return namesAnswer(input); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) return { checks: [] }; // 4단계 AI 반응: 반응 없음
       const title: string = input.me.title;
@@ -1026,7 +1030,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     const llm = fakeLlm((input) => {
       if (input.areas !== undefined) return areaAnswer(input);
       if (input.rules) return nameAnswer(input);
-      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
+      if (input.plans && !input.me) return namesAnswer(input); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) {
         // 서연(싫어요: 오래 걷기)만 반응함
@@ -1066,7 +1070,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
   it('자기 조건에 걸린 곳을 고르면 그 AI만 1번 더 부르고, 그래도 고르면 코드가 걸리지 않는 곳으로 바꿈', async () => {
     // 나쁜 AI: 내 조건에 ⚠·✕가 붙은 곳을 먼저 고름
     const llm = fakeLlm((input) => {
-      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
+      if (input.plans && !input.me) return namesAnswer(input); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) return { checks: [] }; // 4단계 AI 반응: 반응 없음
       const rows = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|'));
@@ -1751,7 +1755,7 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     fakeLlm((input) => {
       if (input.areas !== undefined) return areaAnswer(input);
       if (input.rules) return nameAnswer(input); // 2단계 이름 맞추기 (흰여울문화마을은 시험 자료에 없음)
-      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
+      if (input.plans && !input.me) return namesAnswer(input); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) return { checks: [] }; // 4단계 AI 반응: 반응 없음
       const rows = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|'));
@@ -2354,7 +2358,7 @@ describe('접근 키 (ACCESS_KEYS): 키가 있는 서버는 키를 낸 터널 �
     fakeLlm((input) => {
       if (input.areas !== undefined) return areaAnswer(input);
       if (input.rules) return nameAnswer(input);
-      if (input.plans && !input.me) return namesAnswer(); // 13단계 이름 짓기
+      if (input.plans && !input.me) return namesAnswer(input); // 13단계 이름 짓기
       if (input.plans) return evalAnswer(input); // 7단계 평가: 모두 찬성
       if (input.places) return { checks: [] };
       const ids = (input.candidates as string).split('\n').slice(1).map((l) => l.split('|')[0]).slice(0, PICK.count);
