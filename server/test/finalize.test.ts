@@ -58,6 +58,22 @@ describe('13단계 마무리: 두 안의 이름·설명 (AI 1회, 못 쓰면 A�
     expect(capped.calls).toBe(0);
   });
 
+  it('설명이 60자를 넘어 빈칸이 된 안은 글자 수를 알려 1번 더 묻고 그 안의 설명만 받음 (11/2) · 다시 써도 길면 빈칸 그대로', async () => {
+    const systems: string[] = [];
+    const llm = fakeLlm((_input, n, system) => {
+      systems.push(system);
+      return n === 1 ? answer('바다 코스', '시장 코스', (x) => (x === '시장 코스' ? '가'.repeat(FINALIZE.summaryHardMax + 5) : '바다 하루')) : answer('다른 이름', '또 다른 이름', () => '국제시장을 둘러보는 일정');
+    });
+    const out = await namePlans(PLANS, { llm, reserve: always });
+    expect(out).toMatchObject({ A: { title: '바다 코스', summary: '바다 하루' }, B: { title: '시장 코스', summary: '국제시장을 둘러보는 일정', source: 'llm' }, llmCalls: 2 });
+    expect(systems[1]).toContain(`B안 ${FINALIZE.summaryHardMax + 5}자`);
+    expect(systems[1].startsWith(systems[0])).toBe(true); // 첫 요청의 설명문은 그대로 (녹화가 그대로 쓰임)
+    const still = await namePlans(PLANS, { llm: fakeLlm(() => answer('바다 코스', '시장 코스', () => '가'.repeat(FINALIZE.summaryHardMax + 1))), reserve: always });
+    expect(still).toMatchObject({ A: { summary: '' }, B: { summary: '' }, llmCalls: 2 });
+    // 설명이 짧으면 다시 묻지 않음
+    expect((await namePlans(PLANS, { llm: fakeLlm(() => answer('바다', '시장')), reserve: always })).llmCalls).toBe(1);
+  });
+
   it('녹화된 같은 요청이 있으면 AI 0회로 그 답을 씀', async () => {
     const llm = fakeLlm(() => answer('새 답', '새 답 2'));
     const recorder = { mode: 'only', replay: async () => answer('녹화 답', '녹화 답 2'), record: async () => {} } as unknown as LlmRecorder;
