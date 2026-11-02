@@ -139,6 +139,8 @@ interface Spot {
   evening: boolean;
   /** 저녁 뒤에 가는 곳의 가장 이른 시작 시각 (분, 영업시간 칸 또는 관광공사 시간 글). 그날 다니는 끝 시각보다 늦으면 그날 넣지 않음 */
   startsAt: number | null;
+  /** 방장이 이미 예약한 곳 (v2.4): 하루 자리가 없어도 넣음 */
+  booked: boolean;
 }
 
 interface Ctx {
@@ -245,6 +247,8 @@ const openAt = (open: OpenHours | null, at: number) => {
 };
 const isNightSpot = (p: Spot, dusk: number) => !!p.code?.startsWith(SCHEDULE.night.code) && openAt(p.open, dusk);
 const DINNER_START = toMinutes(SCHEDULE.meals.dinner[0]);
+/** 그날 그곳에 갈 수 있는지: 그날 쉬지 않고, 저녁 뒤에 가는 곳(밤 행사·야시장)은 그날 저녁이 있고 시작이 그날 끝 시각보다 앞 (저녁이 없는 날은 마지막 날 이른 출발 등, v2.4) */
+const visitable = (ctx: Ctx, p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed' && (!p.evening || (ctx.days[d].dinner && (p.startsAt ?? DINNER_START) < ctx.days[d].end));
 /** 카카오에 묻지 못한 구간의 메모 (한도·오류·교통 장애). 카카오가 '경로 없음'으로 답한 구간과 나눠 셈 */
 const UNAVAILABLE = '길찾기 정보 없음';
 /** 시간 문장의 가장 이른 시작 시각(구간이면 앞 시각, 하나뿐이면 그 시각, 분). 시각이 하나도 없으면 null */
@@ -342,6 +346,7 @@ async function moreRestaurants(db: Db, pool: RetrieveResult, members: readonly M
         must: count('must') > 0,
         evening: false,
         startsAt: null,
+        booked: false,
       },
     ];
   });
@@ -395,6 +400,7 @@ function spotsOf(
       must: Object.values(c.marks).some((ks) => ks.some((k) => k.kind === 'must')),
       evening: c.open ? c.open.open >= DINNER_START && c.open.open < DAY : (start ?? -1) >= DINNER_START,
       startsAt: c.open ? c.open.open : start,
+      booked: !!c.booked,
     };
   };
   return {
@@ -429,21 +435,41 @@ function pickSets(ctx: Ctx, avoid: ReadonlySet<string>, required: readonly Spot[
   const sets: Spot[][] = Array.from({ length: D }, () => []);
   const attrCount = (d: number) => sets[d].filter((q) => !q.meal).length;
   const mealsOn = (d: number) => Number(ctx.days[d].lunch) + Number(ctx.days[d].dinner);
-  // 그날 쉬는 곳·그날 저녁이 없는데 저녁 뒤에 가는 곳(밤 행사·야시장)은 그날에 넣지 않음 (저녁이 없는 날은 마지막 날 이른 출발 등, v2.4)
-  const openOn = (p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed' && (!p.evening || (ctx.days[d].dinner && (p.startsAt ?? DINNER_START) < ctx.days[d].end));
-  for (const p of byPrio(required)) {
-    // 다닐 시간이 있는 날에만 (늦게 도착한 첫날·일찍 떠나는 마지막 날은 다닐 시간이 0일 수 있음). 그런 날이 없으면 넣지 않고 메모 (unplacedNotes)
-    // (11/2 검증02: 2일째 월요일에 쉬는 꼭 지킬 곳이 22:30에 도착한 첫날로 들어감)
-    const open = Array.from({ length: D }, (_, d) => d).filter((d) => openOn(p, d) && ctx.days[d].perDay > 0);
-    const full = (d: number) => (p.meal ? sets[d].filter((q) => q.meal).length >= mealsOn(d) : attrCount(d) >= ctx.days[d].perDay + SCHEDULE.mustOverflow);
-    const near = (d: number) => {
-      const c = centerOf(sets[d]);
-      return c ? distanceKm(c, p) : 0;
-    };
-    // 여는 날 중 자리가 있는 가장 가까운 날, 여는 날이 모두 찼으면 그중 가장 덜 찬 날 (꼭 지킬 곳이 휴무 때문에 사라지지 않게)
-    const roomy = open.filter((d) => !full(d)).sort((a, b) => near(a) - near(b) || a - b);
-    const best = roomy[0] ?? open.sort((a, b) => sets[a].length - sets[b].length || a - b)[0];
-    if (best !== undefined) sets[best].push(p);
+  const openOn = (p: Spot, d: number) => visitable(ctx, p, d);
+  /** 꼭 지킬 곳을 order 순서로 놓고, 하루 자리(관광지 수 + mustOverflow, 식당은 끼니 수)가 없어 못 넣은 곳을 돌려줌 */
+  const place = (order: readonly Spot[]): Spot[] => {
+    for (const set of sets) set.length = 0;
+    const left: Spot[] = [];
+    for (const p of order) {
+      // 다닐 시간이 있는 날에만 (늦게 도착한 첫날·일찍 떠나는 마지막 날은 다닐 시간이 0일 수 있음). 그런 날이 없으면 넣지 않고 메모 (unplacedNotes)
+      // (11/2 검증02: 2일째 월요일에 쉬는 꼭 지킬 곳이 22:30에 도착한 첫날로 들어감)
+      const open = Array.from({ length: D }, (_, d) => d).filter((d) => openOn(p, d) && ctx.days[d].perDay > 0);
+      const full = (d: number) => (p.meal ? sets[d].filter((q) => q.meal).length >= mealsOn(d) : attrCount(d) >= ctx.days[d].perDay + SCHEDULE.mustOverflow);
+      const near = (d: number) => {
+        const c = centerOf(sets[d]);
+        return c ? distanceKm(c, p) : 0;
+      };
+      // 여는 날 중 자리가 있는 가장 가까운 날. 방장이 예약한 곳만 여는 날이 모두 찼어도 그중 가장 덜 찬 날에 넣음
+      const roomy = open.filter((d) => !full(d)).sort((a, b) => near(a) - near(b) || a - b);
+      const best = roomy[0] ?? (p.booked ? open.sort((a, b) => sets[a].length - sets[b].length || a - b)[0] : undefined);
+      if (best !== undefined) sets[best].push(p);
+      else if (open.length) left.push(p);
+    }
+    return left;
+  };
+  // 자리가 모자라면(가고 싶은 곳이 모두 꼭 지킬 곳이라 짧은 여행에 몰림, 11/2 검증02: 당일치기 하루 7–9곳·이동 477분) 예약한 곳 → 사람마다 돌아가며 1곳씩 놓아
+  // 한 사람의 곳만 남지 않게 하고, 남은 곳은 넣지 않고 메모 (사람이 14단계에서 직접 넣을 수 있음). 자리가 넉넉한 여행은 예전과 같은 순서
+  if (place(byPrio(required)).some((p) => p.must)) {
+    const booked = byPrio(required.filter((p) => p.booked));
+    const queues = ctx.members.map((m) => byPrio(required.filter((p) => !p.booked && marksOf(p, m).some((k) => k.kind === 'must'))));
+    const order: Spot[] = [...booked];
+    while (queues.some((q) => q.length))
+      for (const q of queues) {
+        while (q.length && order.includes(q[0])) q.shift();
+        const p = q.shift();
+        if (p) order.push(p);
+      }
+    place([...order, ...byPrio(required.filter((p) => !order.includes(p)))]);
   }
   const used = new Set(sets.flat().map((p) => p.id));
   const fresh = ctx.attractions.filter((p) => !avoid.has(p.id));
@@ -950,8 +976,12 @@ async function contextOf(db: Db, router: RouteClient, input: ScheduleInput): Pro
 }
 
 /** 꼭 지킬 곳(예약한 곳 포함)인데 여행 날짜·시간에 갈 수 있는 날이 없어 넣지 못한 곳을 메모로 남김 (예: 저녁에 여는 곳인데 하루가 저녁 전에 끝남, 11/2 시뮬레이션) */
-function unplacedNotes(st: PlanState, required: readonly Spot[]): void {
-  for (const p of required) if (!st.sets.some((d) => d.includes(p))) st.notes.push(`${p.name} — 꼭 지킬 곳이지만 여행 날짜·시간에 갈 수 있는 날이 없어 넣지 못함`);
+function unplacedNotes(ctx: Ctx, st: PlanState, required: readonly Spot[]): void {
+  for (const p of required) {
+    if (!p.must || st.sets.some((d) => d.includes(p))) continue;
+    const canGo = ctx.dates.some((_, d) => visitable(ctx, p, d) && ctx.days[d].perDay > 0);
+    st.notes.push(`${p.name} — 꼭 지킬 곳이지만 ${canGo ? '하루에 다닐 수 있는 곳 수를 넘어 넣지 못함 (직접 넣을 수 있음)' : '여행 날짜·시간에 갈 수 있는 날이 없어 넣지 못함'}`);
+  }
 }
 
 const planIdOf = (meetingId: string | null, label: 'A' | 'B') => `${meetingId ? meetingId.replace(/^mtg_/, 'pln_') : 'pln'}_${label.toLowerCase()}`;
@@ -1016,7 +1046,7 @@ export async function schedulePlans(db: Db, router: RouteClient, input: Schedule
   const { ctx, extras } = await contextOf(db, router, input);
   const required = requiredPlaces(ctx, new Set());
   const stA = fresh('A', pickSets(ctx, new Set(), required));
-  unplacedNotes(stA, required);
+  unplacedNotes(ctx, stA, required);
   const A = await buildPlan(ctx, stA, planIdOf(input.meetingId, 'A'));
   const aStops = A.route.flatMap((d) => d.stops);
   const byId = new Map(ctx.everywhere.map((p) => [p.id, p]));
@@ -1025,7 +1055,7 @@ export async function schedulePlans(db: Db, router: RouteClient, input: Schedule
   const sharedIds = new Set(shared.map((p) => p.id));
   const avoid = new Set(aStops.map((s) => rawId(s.placeId)).filter((id) => !sharedIds.has(id)));
   const stB = fresh('B', pickSets(ctx, avoid, shared));
-  unplacedNotes(stB, shared);
+  unplacedNotes(ctx, stB, shared);
   stB.softMeals = new Set(stopIds(A, 'food').filter((id) => !sharedIds.has(id)));
   const B = await buildPlan(ctx, stB, planIdOf(input.meetingId, 'B'));
   return { plans: [A, B], extras: extrasIn([A, B], extras, input.pool), states: { A: setsOf(stA, []), B: setsOf(stB, [...sharedIds]) } };
@@ -1112,7 +1142,7 @@ export async function revisePlans(
   }
   const mealsOn = (d: number) => Number(ctx.days[d].lunch) + Number(ctx.days[d].dinner);
   const home = ctx.lodging ? [ctx.lodging] : [];
-  const openOn = (p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed' && (!p.evening || (ctx.days[d].dinner && (p.startsAt ?? DINNER_START) < ctx.days[d].end));
+  const openOn = (p: Spot, d: number) => visitable(ctx, p, d);
   const fans = (q: Spot) => ctx.members.filter((m) => marksOf(q, m).some((k) => k.kind === 'like')).length;
   const mustKeys = (p: Spot) => Object.entries(p.marks).flatMap(([memberId, ks]) => ks.filter((k) => k.kind === 'must').map((k) => `${memberId}\n${k.label}`));
   const dayIn = (w: Work, id: string) => w.sets.findIndex((x) => x.some((p) => p.id === id));
@@ -1321,6 +1351,7 @@ const HUMAN_SKIP = {
   present: '이미 일정에 있는 곳',
   day: '여행 날짜에 없는 날',
   closed: '그날 쉬는 곳',
+  late: '그날 일정이 끝난 뒤에 시작하는 곳 (밤 행사·야경)',
   notSight: '관광지만 옮기거나 순서를 바꿀 수 있음',
   notMeal: '끼니 식당이 아님',
   order: '그날 관광지를 모두 한 번씩 적어야 함',
@@ -1414,6 +1445,8 @@ export async function editPlan(
       else if (inPlan(p.id)) skip('present');
       else if (!(e.day >= 0 && e.day < D)) skip('day');
       else if (!openOn(p, e.day)) skip('closed');
+      // 저녁이 없는 날·그날 끝난 뒤에 시작하는 밤 행사·야경은 자동 짜기와 같이 넣지 않음 (11/2 검증02: 18시 전에 끝나는 당일치기에 낙조분수를 넣음)
+      else if (!visitable(ctx, p, e.day)) skip('late');
       else {
         sets[e.day] = [...sets[e.day], p];
         banned.delete(p.id);
@@ -1478,6 +1511,8 @@ export async function editPlan(
       if (stop.kind !== 'sight' || !p || k < 0) skip('notSight');
       else if (!(e.day >= 0 && e.day < D)) skip('day');
       else if (!openOn(p, e.day)) skip('closed');
+      // 저녁이 없는 날·그날 끝난 뒤에 시작하는 밤 행사·야경은 자동 짜기와 같이 넣지 않음 (11/2 검증02: 18시 전에 끝나는 당일치기에 낙조분수를 넣음)
+      else if (!visitable(ctx, p, e.day)) skip('late');
       else if (e.day === k) skip('same');
       else {
         sets[k] = sets[k].filter((q) => q.id !== id);
@@ -1544,7 +1579,8 @@ export async function editOptions(
       lng: p.lng,
       likedBy: who(p, 'like'),
       mustFor: who(p, 'must'),
-      closedDays: ctx.dates.map((d, i) => (closedOn(p.rest, d) === 'closed' ? i : -1)).filter((i) => i >= 0),
+      // 그날 쉬거나 그날 일정이 끝난 뒤에 시작해 갈 수 없는 날 (11/2: 저녁 없는 날의 밤 행사·야경도 넣음)
+      closedDays: ctx.dates.map((_, i) => (visitable(ctx, p, i) ? -1 : i)).filter((i) => i >= 0),
     }));
   const meals: Record<string, { placeId: string; name: string; category: string | null; detourKm: number }[]> = {};
   plan.route.forEach((day, d) => {
