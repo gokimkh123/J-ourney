@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, StyleSheet, View, type StyleProp, type Vi
 import { disabledOpacity, hitSize, pressedOpacity, radius, spacing, useTheme, type ThemeColors } from "../theme/index.ts";
 import AppText, { type TextTone } from "./AppText.tsx";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+export type ButtonVariant = "primary" | "secondary" | "soft" | "ghost" | "danger";
 export type ButtonSize = "xs" | "sm" | "md" | "lg";
 
 export type ButtonProps = {
@@ -26,6 +26,8 @@ function variantColors(c: ThemeColors): Record<ButtonVariant, { bg: string; bord
   return {
     primary: { bg: c.accent, border: c.accent, text: "onAccent", spinner: c.onAccent },
     secondary: { bg: c.surfaceRaised, border: c.border, text: "default", spinner: c.text },
+    // 넘어가도 되는 동작(설문 "건너뛰기"). 연한 메인 색 바탕.
+    soft: { bg: c.accentSoft, border: c.accentSoft, text: "accent", spinner: c.accentSoftText },
     ghost: { bg: "transparent", border: "transparent", text: "accent", spinner: c.accentSoftText },
     // 되돌리기 어려운 동작(파티 나가기). 빨간 바탕에 onDanger 글자(다크 모드는 짙은 글자).
     danger: { bg: c.danger, border: c.danger, text: "onDanger", spinner: c.onDanger },

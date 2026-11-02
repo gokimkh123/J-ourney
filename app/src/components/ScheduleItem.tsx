@@ -11,8 +11,8 @@ const TIME_WIDTH = 44;
 const STICKER = 38;
 
 export type ScheduleItemProps = {
-  /** "10:00" */
-  time: string;
+  /** "10:00". 없으면 시각 칸도 없다(일정 수정 중에는 시각이 확정 뒤 다시 계산돼서 숨긴다) */
+  time?: string;
   title: string;
   /** "식사", "산책" 등 */
   category: string;
@@ -27,6 +27,16 @@ export type ScheduleItemProps = {
   /** 장소 종류 스티커. 없으면 기본 핀. 분류 → kind 변환은 화면이 한다. */
   kind?: PlaceKind;
   onPress?: () => void;
+  /** 누를 때 읽어 줄 안내. 기본은 장소 정보 보기 */
+  pressHint?: string;
+  /** 있으면 오른쪽 끝에 ⋯ 버튼(일정 고치기). 없으면 버튼 자리도 없다 */
+  onMore?: () => void;
+  /** ⋯ 대신 글자 버튼(예: 뺀 곳의 "되돌리기") */
+  moreLabel?: string;
+  /** 일정 수정 중 바뀐 표시("뺌", "넣음", "바꿈", "순서", "옮김") */
+  badge?: { label: string; tone: "accent" | "warning" | "danger" };
+  /** 뺀 곳: 이름에 줄을 긋고 흐리게 */
+  struck?: boolean;
 };
 
 /** C1 합의 일정 한 줄: (이동) → 시간 | 스티커 | 이름·부가줄 | 대상 구성원. 누르면 C2 근거 보기. */
@@ -40,6 +50,11 @@ export default function ScheduleItem({
   moveLabel,
   kind = "pin",
   onPress,
+  pressHint,
+  onMore,
+  moreLabel,
+  badge,
+  struck = false,
 }: ScheduleItemProps) {
   const { colors } = useTheme();
   const styles = useStyles(createStyles);
@@ -59,16 +74,20 @@ export default function ScheduleItem({
         onPress={onPress}
         disabled={!onPress}
         accessibilityRole={onPress ? "button" : undefined}
-        accessibilityLabel={`${time} ${title}, ${category}${costLabel === undefined ? "" : `, ${costLabel}`}${verified ? "" : ", 지도 확인 필요"}`}
-        accessibilityHint={onPress ? "고른 이유와 장소 정보를 봅니다" : undefined}
+        accessibilityLabel={`${time === undefined ? "" : `${time} `}${title}, ${category}${costLabel === undefined ? "" : `, ${costLabel}`}${verified ? "" : ", 지도 확인 필요"}${badge === undefined ? "" : `, ${badge.label}`}`}
+        accessibilityHint={onPress ? (pressHint ?? "고른 이유와 장소 정보를 봅니다") : undefined}
         style={({ pressed }) => [styles.row, pressed && { opacity: pressedOpacity }]}
       >
-        <AppText variant="numeric" tone="muted" style={styles.time}>
-          {time}
-        </AppText>
-        <PlaceSticker kind={kind} size={STICKER} />
+        {time !== undefined && (
+          <AppText variant="numeric" tone="muted" style={styles.time}>
+            {time}
+          </AppText>
+        )}
+        <View style={struck && styles.faded}>
+          <PlaceSticker kind={kind} size={STICKER} />
+        </View>
         <View style={styles.body}>
-          <AppText variant="bodyStrong" numberOfLines={1}>
+          <AppText variant="bodyStrong" tone={struck ? "muted" : "default"} numberOfLines={1} style={struck && styles.struck}>
             {title}
           </AppText>
           <View style={styles.sub}>
@@ -76,9 +95,23 @@ export default function ScheduleItem({
               {costLabel === undefined ? category : `${category} · ${costLabel}`}
             </AppText>
             {!verified && <StatusPill label="지도 확인 필요" tone="warning" />}
+            {badge !== undefined && <StatusPill label={badge.label} tone={badge.tone} />}
           </View>
         </View>
         <AvatarStack people={forMembers} size="xs" />
+        {onMore !== undefined && (
+          <Pressable
+            onPress={onMore}
+            accessibilityRole="button"
+            accessibilityLabel={moreLabel ?? `${title} 고치기`}
+            hitSlop={{ top: spacing.xs, bottom: spacing.xs }}
+            style={({ pressed }) => [moreLabel === undefined ? styles.more : styles.moreText, pressed && { opacity: pressedOpacity }]}
+          >
+            <AppText variant={moreLabel === undefined ? "heading" : "smallStrong"} tone={moreLabel === undefined ? "muted" : "accent"}>
+              {moreLabel ?? "⋯"}
+            </AppText>
+          </Pressable>
+        )}
       </Pressable>
     </View>
   );
@@ -116,5 +149,24 @@ const createStyles = (_t: Theme) =>
     },
     subText: {
       flexShrink: 1,
+    },
+    // 보이는 글자는 작아도 눌리는 영역은 hitSize(48) 높이
+    more: {
+      width: 40,
+      minHeight: 40,
+      alignItems: "center",
+      justifyContent: "center",
+      marginRight: -spacing.sm,
+    },
+    moreText: {
+      minHeight: 40,
+      justifyContent: "center",
+      paddingHorizontal: spacing.xs,
+    },
+    struck: {
+      textDecorationLine: "line-through",
+    },
+    faded: {
+      opacity: 0.4,
     },
   });
