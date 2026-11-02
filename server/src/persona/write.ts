@@ -75,6 +75,8 @@ const flatRules = (m: CardDraft['mustKeep']): RuleDraft[] => {
   ];
 };
 
+// 11/2 검증02 짝 비교(같은 200명, 지금 · 장소 줄만 · 장소 줄 + 먹는 것은 taste로, persona_fix/ab2): 가고 싶은 곳이 있는 사람의 15번 장소 글 → include place 63 → 87/95,
+// 싫어요 기타 칸의 먹는 것이 바람에 남음 19 → 6/50, 15번 틀림 37 → 15 (예시 말은 시험 글과 겹치지 않게 '기름진 음식·고수')
 const SYSTEM = `너는 단체 여행 앱 J-ourney의 '여행 캐릭터 카드' 작가다.
 입력 JSON은 한 사람의 설문 결과다.
 - traits: 코드가 계산한 여행 성향. label이 '상관없음'이면 그 성향은 이 사람에게 중요하지 않다.
@@ -86,7 +88,7 @@ const SYSTEM = `너는 단체 여행 앱 J-ourney의 '여행 캐릭터 카드' �
 - catchphrase: 이 캐릭터가 회의에서 할 법한 한마디, ${LIMITS.catchphrase}자 이내, 친근한 말투
 - tmi: 캐릭터 설정처럼 쓰는 재미있는 한 줄, ${LIMITS.tmi}자 이내. 실제 사람에 대한 사실처럼 단정하지 않는다. 건강·종교·정치처럼 민감한 내용은 쓰지 않는다.
 - mustKeep: mustKeepText에서 일정으로 지킬 수 있는 조건만 모두 합쳐 최대 ${LIMITS.rules}개 뽑아 아래 칸에 나눠 담는다. 해당 없는 칸은 빈 배열이다.
-  '${OWN_LABEL.want}' 줄에 쉼표로 나열된 곳은 빠짐없이 하나씩 각각 include로 담는다 (quote는 그곳 이름만). '${OWN_LABEL.likes}'·'${OWN_LABEL.dislikes}' 줄은 꼭 지킬 조건이 아니라 취향이므로 include·avoid로 바꾸지 않고 wishes에만 담는다.
+  '${OWN_LABEL.want}' 줄에 쉼표로 나열된 곳은 빠짐없이 하나씩 각각 include로 담는다 (quote는 그곳 이름만). '${OWN_LABEL.extra}' 줄에 나온 특정 장소의 이름은 '${OWN_LABEL.want}' 줄이 따로 있어도 include place로 담는다 (wishes로 돌리지 않는다). '${OWN_LABEL.likes}'·'${OWN_LABEL.dislikes}' 줄은 꼭 지킬 조건이 아니라 취향이므로 place·food·category·area 규칙으로 바꾸지 않고 wishes에 담는다. 단 그 줄의 먹는 것 입맛·제약(예: 기름진 음식, 고수)은 wishes에 넣지 않고 avoid의 target ${TASTE_TARGET}로만 적는다.
   include(꼭 넣을 것) / avoid(피할 것): 항목마다 target을 고르고 keyword에 그 말을 쓴다.
     target "category": 사람이 장소·음식점의 종류를 직접 말했을 때만 (예: 온천, 카페, 시장, 바다, 호텔, 일식집) → codes에 맨 아래 분류표에서 맞는 코드를 최대 ${LIMITS.codes}개
       분위기·인기·가격·줄·사진처럼 종류가 아닌 말(예: 현지인만 아는 곳, 유명하지 않은 곳, 저렴한 곳, 오래 기다리는 곳, 사진 찍기 좋은 곳)은 종류로 바꾸지 않고 wishes에 넣는다
