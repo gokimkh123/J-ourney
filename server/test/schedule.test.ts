@@ -333,6 +333,35 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     expect([...ids(B)].filter((id) => ids(A).has(id))).toEqual([`plc_${top.id}`]); // A와 같이 쓰는 곳은 A의 1순위뿐
   });
 
+  it('항공편 (v2.4): 첫날은 도착 + 60분부터·마지막 날은 출발 − 120분까지 — 늦게 도착한 날은 점심이 없고 관광지가 적으며, 일찍 떠나는 날은 저녁·야경이 없음 (시각이 없으면 모든 날이 같음)', async () => {
+    const db = await testDb();
+    const tower = near('밤 전망대', 1, { code: 'VE010200', open: { open: 600, close: 1320 } });
+    const cands = [tower, ...Array.from({ length: 14 }, (_, i) => near(`관광지${i}`, i + 2))];
+    await db.insert(places).values([
+      restaurant('r1', '식당1', 35.158, 129.1, { opentimefood: '10:00~22:00' }),
+      restaurant('r2', '식당2', 35.166, 129.11, { opentimefood: '10:00~22:00' }),
+      restaurant('r3', '식당3', 35.16, 129.12, { opentimefood: '10:00~22:00' }),
+      restaurant('r4', '식당4', 35.152, 129.115, { opentimefood: '10:00~22:00' }),
+    ]);
+    const members = [member('mem_1', { placesPerDay: [4, 4] }, ['like_night']), member('mem_2', { placesPerDay: [4, 4] })];
+    const base: ScheduleInput = { meetingId: 'mtg_test1', pool: poolOf(cands, ['2026-11-07', '2026-11-08'], [near('호텔', 2, { type: 32, code: 'AC010100' })]), board: boardOf(cands), members, decision: null, moveMode: 'transit' };
+    const { router } = fakeRouter();
+    const meals = (plan: PlanProposal, day: number) => plan.route[day].stops.filter((x) => x.kind === 'food').map((x) => x.meal);
+    const [N] = (await schedulePlans(db, router, base)).plans;
+    expect([sights(N, 0).length, sights(N, 1).length]).toEqual([4, 4]);
+    expect([meals(N, 0), meals(N, 1)]).toEqual([['lunch', 'dinner'], ['lunch', 'dinner']]);
+    // 하루 09:30–23:00(810분) · 14:00 도착 → 15:00부터(480분: 점심 없음, 관광지 4 × 480/810 → 2곳) · 15:00 출발 → 13:00까지(210분: 저녁 없음, 1곳)
+    const [F] = (await schedulePlans(db, router, { ...base, arrivalTime: '14:00', departureTime: '15:00' })).plans;
+    expect([sights(F, 0).length, sights(F, 1).length]).toEqual([2, 1]);
+    expect([meals(F, 0), meals(F, 1)]).toEqual([['dinner'], ['lunch']]);
+    expect(F.route[1].stops.some((x) => x.night)).toBe(false);
+    expect(F.route[0].stops.at(-1)).toMatchObject({ kind: 'lodging' }); // 1일째는 숙소로 끝남
+    // 밤늦게 도착하면 첫날은 숙소만 (관광지·끼니 없음)
+    const [L] = (await schedulePlans(db, router, { ...base, arrivalTime: '22:30' })).plans;
+    expect(L.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
+    expect(sights(L, 1).length).toBe(4);
+  });
+
   it('시작 시각이 모두 저녁 뒤인 곳(밤 행사·야시장)은 저녁 뒤에 두고, 하루가 저녁 전에 끝나면 넣지 않음', async () => {
     const db = await testDb();
     const show = near('드론쇼', 1, { id: 'ev1', type: 15, code: 'EV030400', open: null });
@@ -682,6 +711,20 @@ describe('6단계 회의 조건·인원', () => {
     const bad = await call(app, 'PUT', `/trips/${tripId}/conditions`, { ...base, moveMode: 'bike' }, token);
     expect(bad.status).toBe(400);
     expect(bad.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('방장 질문 (v2.4): 도착·출발 시각(HH:MM)·예약한 숙소·장소(3곳까지)를 받고, 없으면 null·빈 목록 · 당일치기는 도착이 출발보다 앞', async () => {
+    const { app, token, tripId } = await hostOnly();
+    const put = (body: object) => call(app, 'PUT', `/trips/${tripId}/conditions`, body, token);
+    const base = { destination: '부산', startDate: '2099-11-07', endDate: '2099-11-08' };
+    expect((await put(base)).body.conditions).toMatchObject({ arrivalTime: null, departureTime: null, bookedLodging: null, bookedPlaces: [] });
+    const full = await put({ ...base, arrivalTime: '09:40', departureTime: '18:30', bookedLodging: ' 광안호텔 ', bookedPlaces: ['스카이라인 루지', '해운대 요트'] });
+    expect(full.body.conditions).toMatchObject({ arrivalTime: '09:40', departureTime: '18:30', bookedLodging: '광안호텔', bookedPlaces: ['스카이라인 루지', '해운대 요트'] });
+    for (const bad of [{ arrivalTime: '9:40' }, { departureTime: '24:00' }, { bookedPlaces: ['가', '나', '다', '라'] }, { bookedPlaces: [''] }, { bookedLodging: '가'.repeat(41) }])
+      expect((await put({ ...base, ...bad })).body.error.code).toBe('VALIDATION_ERROR');
+    const sameDay = { ...base, endDate: '2099-11-07' };
+    expect((await put({ ...sameDay, arrivalTime: '18:00', departureTime: '10:00' })).body.error.message).toContain('도착 시각');
+    expect((await put({ ...sameDay, arrivalTime: '10:00', departureTime: '18:00' })).status).toBe(200);
   });
 
   it('방장 혼자면(성향을 마쳐도) 회의를 시작하지 않음 (NOT_ENOUGH_MEMBERS, 실행 횟수 안 씀)', async () => {

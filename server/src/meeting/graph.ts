@@ -14,6 +14,7 @@ import { type AiReaction, REACT, reactBoard } from './react.js';
 import { acceptReactions, reactRequest } from './react-ai.js';
 import { type Candidate, type MemberInput, type RetrieveResult, retrieveCandidates } from './retrieve.js';
 import { applyReview, reviewRequestOf } from './review.js';
+import { bookedRules } from './rules.js';
 import { ROUTE, type RouteClient, type RouteMeter, cachedRouter, newRouteMeter } from './route.js';
 import { type PlanProposal, type PlanStates, SCHEDULE, type ScheduleInput, revisePlans, schedulePlans } from './schedule.js';
 import { type MeetingEventDraft, type MeetingLimits, agentIdOf, reserveMeetingLlm } from './runs.js';
@@ -141,7 +142,8 @@ async function prepare(deps: MeetingDeps, state: MeetingStateType): Promise<Part
       title: persona.title,
       likes: persona.answers.likes,
       dislikes: persona.answers.dislikes,
-      mustKeep: persona.mustKeep,
+      // 방장이 이미 예약한 곳·숙소는 방장의 꼭 지킬 것으로 붙임 (v2.4, 2단계가 모두의 꼭 지킬 곳으로 표시)
+      mustKeep: member.isHost ? [...persona.mustKeep, ...bookedRules(trip.conditions)] : persona.mustKeep,
       profile: persona.profile,
       wishes: persona.wishes,
       chips: persona.chips.map((c) => c.label),
@@ -279,6 +281,8 @@ const scheduleInput = (state: MeetingStateType): ScheduleInput => ({
   members: state.members,
   decision: state.reviewDecision ?? null,
   moveMode: state.conditions?.moveMode ?? 'transit',
+  arrivalTime: state.conditions?.arrivalTime ?? null,
+  departureTime: state.conditions?.departureTime ?? null,
 });
 /** 7단계 표에 쓰는 후보: 2단계 후보 + 두 안에 들어간 DB 보충 식당 */
 const evalPool = (state: MeetingStateType) => {

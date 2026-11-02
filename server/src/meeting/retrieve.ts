@@ -259,7 +259,8 @@ export async function retrieveCandidates(
     isNameRule(r) || isAreaRule(r)
       ? (v: RulePlace) => (!!v.id && !!named.get(r)?.has(v.id)) || (!!v.districtCode && !!areaPicked.get(r)?.has(v.districtCode))
       : ruleMatcher(r);
-  const includes = new Map(members.map((m) => [m.memberId, m.mustKeep.filter((r) => r.type === 'include' && !isLegacyRule(r)).map((r) => ({ rule: r, matches: matcherOf(r) }))]));
+  // 예약한 숙소(방장 질문, v2.4)는 넣기 규칙이 아니라 아래에서 숙소 목록으로 따로 찾음
+  const includes = new Map(members.map((m) => [m.memberId, m.mustKeep.filter((r) => r.type === 'include' && !isLegacyRule(r) && r.booked !== 'lodging').map((r) => ({ rule: r, matches: matcherOf(r) }))]));
   const avoidRules = members.flatMap((m) => m.mustKeep.filter((r) => r.type === 'avoid' && !isLegacyRule(r) && !isDietAvoid(r)).map((r) => ({ memberId: m.memberId, rule: r, matches: matcherOf(r) })));
   const avoids = avoidRules.map((a) => a.matches);
   const viewOf = (p: Row): RulePlace => ({
@@ -272,8 +273,9 @@ export async function retrieveCandidates(
   });
 
   // 장소 이름 규칙은 숙소·가게가 아닌 곳으로 맞을 때만 그 지역에서 지킨 것으로 봄 (이름에 같은 낱말이 든 펜션·가게만 있으면 여행지 밖·이름 맞추기에서 더 찾음)
+  // 방장이 예약한 곳(v2.4)은 식당·가게여도 그곳이 맞음
   const metIn = (views: readonly RulePlace[], k: { rule: MustKeepRule; matches: (v: RulePlace) => boolean }) =>
-    views.some((v) => k.matches(v) && (k.rule.target !== 'place' || !isBusiness(v.code)));
+    views.some((v) => k.matches(v) && (k.rule.target !== 'place' || !!k.rule.booked || !isBusiness(v.code)));
   const notDestination = (code: string | null) => !!code && RETRIEVE.notDestinationCodes.some((c) => code.startsWith(c));
   // 제외 분류라도 누군가 꼭 지킬 것으로 고른 곳은 넣음 (장소 이름 규칙은 숙소·가게가 아닌 곳일 때만: 이름에 같은 낱말이 든 매장은 넣지 않음)
   // 구·군을 고른 지역 규칙은 장소 종류를 정하지 않으므로 제외 시설을 끌어들이지 않음 (10/28 점검: '해운대' 지역 규칙으로 사후면세점·대형마트·도서관이 꼭 지킬 곳이 됨). 장소를 고른 지역 규칙은 그 장소만
@@ -289,12 +291,12 @@ export async function retrieveCandidates(
   const districtName = new Map(regionDistricts.map((r) => [r.districtCode, r.districtName]));
   const toMatchable = (p: Row) => ({ contentId: p.id, title: p.title, districtCode: p.districtCode });
   const titleOf = new Map<string, string>();
-  /** LLM에게 보여 줄 장소 목록 (거르기 전, 숙소·가게는 빼고 음식점은 남김) */
-  const listOf = async (from: readonly Row[]): Promise<NamePlace[]> => {
-    const listed = from.filter((p) => p.type !== RETRIEVE.lodgingType);
+  /** LLM에게 보여 줄 장소 목록 (거르기 전, 숙소·가게는 빼고 음식점은 남김). lodgingOnly면 숙소만 (예약한 숙소 찾기, v2.4) */
+  const listOf = async (from: readonly Row[], lodgingOnly = false): Promise<NamePlace[]> => {
+    const listed = from.filter((p) => (p.type === RETRIEVE.lodgingType) === lodgingOnly);
     const listPop = await popularity(db, { regionCode: destination.regionCode, tripMonth, places: listed.map(toMatchable), regionWords });
     const out = listed
-      .filter((p) => !isBusiness(p.lcls3) || p.type === RETRIEVE.foodType)
+      .filter((p) => lodgingOnly || !isBusiness(p.lcls3) || p.type === RETRIEVE.foodType)
       .map((p) => {
         const v = viewOf(p);
         return { id: p.id, title: p.title, category: (p.lcls3 && codeNames.get(p.lcls3)) ?? null, district: (p.districtCode && districtName.get(p.districtCode)) ?? null, isFood: v.isFood, menu: v.menu, summary: strip(p.overview) || null, popularity: listPop.scores.get(p.id) ?? null };
@@ -312,6 +314,8 @@ export async function retrieveCandidates(
     ...members.flatMap((m) => (includes.get(m.memberId) ?? []).filter((k) => isAreaRule(k.rule)).map((k) => ({ memberId: m.memberId, rule: k.rule }))),
     ...avoidRules.filter((a) => isAreaRule(a.rule)).map((a) => ({ memberId: a.memberId, rule: a.rule })),
   ];
+  /** 방장이 예약한 숙소 규칙 (v2.4, 방장 것 하나) */
+  const lodgingRule = members.flatMap((m) => m.mustKeep.filter((r) => r.type === 'include' && r.booked === 'lodging').map((rule) => ({ memberId: m.memberId, rule })))[0] ?? null;
   /** LLM이 답한 이름·지역 규칙 (답이 없던 규칙은 'AI로 맞추지 못함' 메모) */
   const answered = new Set<MustKeepRule>();
   const askNames = async (list: readonly { memberId: string; rule: MustKeepRule }[], namePlaces: readonly NamePlace[]) => {
@@ -410,7 +414,7 @@ export async function retrieveCandidates(
   // 장소 이름 규칙: 이름이 같은 곳 중 숙소·가게가 아닌 곳이 있으면 숙소·가게는 꼭 지킬 곳으로 보지 않음 (10/27 사용자 결정, 이름 맞추기로 찾은 곳 포함)
   for (const list of includes.values())
     for (const k of list) {
-      if (k.rule.target !== 'place' || !metIn(inRegionViews, k)) continue;
+      if (k.rule.target !== 'place' || k.rule.booked || !metIn(inRegionViews, k)) continue;
       const base = k.matches;
       k.matches = (v) => base(v) && !isBusiness(v.code);
     }
@@ -432,6 +436,8 @@ export async function retrieveCandidates(
   const outsideIds = new Set(outsideFound.map((p) => p.id));
 
   // ② 사람별 점수 (좋아요·싫어요·꼭 지킬 것 모두 코드로 맞춤, 장소 이름·소개글의 글자로 종류를 추측하지 않음)
+  // 방장이 예약한 곳(v2.4)은 모두의 꼭 지킬 곳으로 표시함 (4단계에서 누구의 ⚠로도 안건이 되지 않고 6단계 A·B에 모두 들어감)
+  const bookedIncludes = [...includes.values()].flat().filter((k) => k.rule.booked === 'place');
   const viewById = new Map<string, RulePlace>();
   const toCandidate = (p: Row): Candidate => {
     const view = viewOf(p);
@@ -453,7 +459,8 @@ export async function retrieveCandidates(
         why.push(`좋아요: ${liked.map(likeText).join('·')}`);
         mark.push({ kind: 'like', label: liked.map(likeText).join('·') });
       }
-      for (const k of includes.get(m.memberId) ?? []) {
+      const own = includes.get(m.memberId) ?? [];
+      for (const k of [...own, ...bookedIncludes.filter((b) => !own.includes(b))]) {
         if (k.matches(view)) {
           s += RETRIEVE.mustKeepPoint;
           why.push(`꼭 지킬 것: ${k.rule.label}`);
@@ -635,11 +642,28 @@ export async function retrieveCandidates(
   }
 
   const candidates = [...chosen.values(), ...outsideSpots.values()].sort((a, b) => b.total - a.total || a.id.localeCompare(b.id));
-  // 숙소 후보 (1박 이상): 누군가의 꼭 지킬 것에 맞는 곳 먼저 → 4명 합계 → 인기도 순
-  const lodgings = [...lodgingScored]
-    .sort((a, b) => Number(isMust(b)) - Number(isMust(a)) || b.total - a.total || (b.popularity ?? -1) - (a.popularity ?? -1) || a.id.localeCompare(b.id))
-    .slice(0, RETRIEVE.lodgingPoolSize)
-    .concat([...outsideLodgings.values()]);
+  // 방장이 예약한 숙소 (v2.4): 시·도의 숙소 목록에서 AI가 고름 (구 단위 여행이어도 다른 구·군 숙소일 수 있음, 거르기 없이). 1박 이상일 때만
+  const bookedLodging = await (async () => {
+    if (!lodgingRule || nights === 0 || !opts.matchNames) return null;
+    const all = await db
+      .select(fields)
+      .from(places)
+      .where(and(eq(places.visible, true), eq(places.regionCode, destination.regionCode), eq(places.contentTypeId, RETRIEVE.lodgingType)));
+    await askNames([{ memberId: lodgingRule.memberId, rule: lodgingRule.rule }], await listOf(all, true));
+    const id = [...(named.get(lodgingRule.rule) ?? [])][0];
+    const row = all.find((p) => p.id === id);
+    if (!row) return null;
+    const c = toCandidate(row);
+    for (const m of members) c.marks[m.memberId] = [...(c.marks[m.memberId] ?? []), { kind: 'must', label: lodgingRule.rule.label }];
+    return c;
+  })();
+  // 숙소 후보 (1박 이상): 예약한 숙소가 있으면 그곳만, 없으면 누군가의 꼭 지킬 것에 맞는 곳 먼저 → 4명 합계 → 인기도 순
+  const lodgings = bookedLodging
+    ? [bookedLodging]
+    : [...lodgingScored]
+        .sort((a, b) => Number(isMust(b)) - Number(isMust(a)) || b.total - a.total || (b.popularity ?? -1) - (a.popularity ?? -1) || a.id.localeCompare(b.id))
+        .slice(0, RETRIEVE.lodgingPoolSize)
+        .concat([...outsideLodgings.values()]);
 
   // 꼭 지킬 것(넣기)이 후보에 하나도 없으면 표시 없이 빠지지 않게 까닭과 함께 남김 (4단계 안건 메모). 여행지 밖 메모가 있는 규칙은 거기서 이미 알림
   // 여행지 전체를 가리켜 쓰지 않은 지역 규칙, 여행지 어디에도 맞는 곳이 없어 아무것도 거르지 않은 피하기 규칙도 메모로 알림 (조용히 효과가 없지 않게)
@@ -665,6 +689,12 @@ export async function retrieveCandidates(
       });
     }
   }
+  // 예약한 숙소를 쓰지 못한 까닭 (v2.4)
+  if (lodgingRule && !bookedLodging) {
+    const reason = nights === 0 ? '당일치기라 숙소를 쓰지 않음' : answered.has(lodgingRule.rule) ? '숙소 목록에서 찾지 못함' : NO_NAME_ANSWER;
+    missingRules.push({ memberId: lodgingRule.memberId, label: lodgingRule.rule.label, reason });
+  }
+  if (lodgingRule && bookedLodging) nameMatches.push({ memberId: lodgingRule.memberId, type: 'include', label: lodgingRule.rule.label, keyword: lodgingRule.rule.keyword!.trim(), places: [bookedLodging.name], ids: [bookedLodging.id] });
   const sources = ['tour_api'];
   if (pop.matched) sources.push('tour_rank');
   if (crw.scores.size) sources.push('tour_crowd');

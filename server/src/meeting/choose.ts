@@ -77,7 +77,16 @@ export function planService({ db, graph, router, publisher }: { db: Db; graph: M
     const v = (await graph.getState({ configurable: { thread_id: meetingId } })).values as Partial<MeetingStateType>;
     if (!v?.pool || !v.board || !v.members) throw new ApiError('PLAN_LOCKED', '이 회의의 단계 기록이 없어 고칠 수 없음 (오래된 회의)');
     return {
-      input: { meetingId, pool: v.pool, board: v.board, members: v.members, decision: v.reviewDecision ?? null, moveMode: v.conditions?.moveMode ?? 'transit' },
+      input: {
+        meetingId,
+        pool: v.pool,
+        board: v.board,
+        members: v.members,
+        decision: v.reviewDecision ?? null,
+        moveMode: v.conditions?.moveMode ?? 'transit',
+        arrivalTime: v.conditions?.arrivalTime ?? null,
+        departureTime: v.conditions?.departureTime ?? null,
+      },
       failed: v.plans?.failedRoutes ?? [],
     };
   }

@@ -1,5 +1,6 @@
 import { DISLIKE_OPTIONS, LIKE_OPTIONS } from '../persona/questions.js';
 import type { MustKeepRule } from '../persona/types.js';
+import type { TripConditions } from './types.js';
 
 /**
  * 좋아요·싫어요·꼭 지킬 것을 장소에 맞추는 규칙 (모든 지역에 같은 규칙)
@@ -62,4 +63,16 @@ export function ruleMatcher(rule: MustKeepRule): (p: RulePlace) => boolean {
     return (p) => inCodes(p.code, codes);
   }
   return () => false;
+}
+
+/** 방장이 이미 예약한 곳의 규칙 이름 앞말 (코드가 붙이는 표시, v2.4 방장 질문) */
+export const BOOKED_LABEL = { place: '예약한 곳', lodging: '예약한 숙소' } as const;
+
+/**
+ * 방장이 이미 예약한 숙소·장소 → 방장의 넣기 규칙 (회의 준비 때 붙임, v2.4). 사람이 쓴 이름은 2단계 이름 맞추기 AI가 목록에서 고름 (코드는 글자로 맞추지 않음)
+ * 예약한 곳은 2단계가 모두의 꼭 지킬 곳으로 표시하고, 예약한 숙소는 숙소 목록에서 찾아 숙소 후보를 그곳 하나로 둠
+ */
+export function bookedRules(c: Pick<TripConditions, 'bookedPlaces' | 'bookedLodging'>): MustKeepRule[] {
+  const rule = (name: string, booked: 'place' | 'lodging'): MustKeepRule => ({ type: 'include', label: `${BOOKED_LABEL[booked]}: ${name}`, quote: name, keyword: name, target: 'place', codes: [], start: null, end: null, amount: null, booked });
+  return [...(c.bookedPlaces ?? []).map((name) => rule(name, 'place')), ...(c.bookedLodging ? [rule(c.bookedLodging, 'lodging')] : [])];
 }

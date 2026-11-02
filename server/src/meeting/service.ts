@@ -137,11 +137,12 @@ export function meetingService({ db, graph, limits, publisher, replay = false, l
    * 조건이 지금과 같은 회의만 봄 → 사람마다 AI가 고른 결과(source llm) 중 가장 최근 것, 그 회의 뒤에 성향을 바꾼 사람은 빼서 규칙으로 고름
    * 이름 맞추기는 이름표·낱말이 같은 규칙에만 다시 씀. 체크포인트는 회의가 끝난 뒤 MEETING_KEEP_DAYS일 동안 남음
    */
-  // 현지 이동 수단(moveMode)은 6단계에만 쓰여 AI 고르기와 상관없으므로 비교에서 뺌 (v1.8 전에 저장한 조건에는 없음)
+  // 현지 이동 수단(moveMode)·도착·출발 시각은 6단계에만 쓰여 AI 고르기와 상관없으므로 비교에서 뺌 (v1.8·v2.4 전에 저장한 조건에는 없음)
+  // 예약한 숙소·장소는 후보를 바꾸므로 비교하되, 비어 있으면 그 칸이 없던 예전 조건과 같게 봄
   const pickConditions = (c: TripConditions | null | undefined) => {
     if (!c) return stableJson(c ?? null);
-    const { moveMode: _moveMode, ...rest } = c;
-    return stableJson(rest);
+    const { moveMode: _moveMode, arrivalTime: _arrival, departureTime: _departure, bookedLodging, bookedPlaces, ...rest } = c;
+    return stableJson({ ...rest, ...(bookedLodging ? { bookedLodging } : {}), ...(bookedPlaces?.length ? { bookedPlaces } : {}) });
   };
   async function savedResults(tripId: string): Promise<SavedResults> {
     const [trip] = await db.select({ conditions: trips.conditions }).from(trips).where(eq(trips.id, tripId));

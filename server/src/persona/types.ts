@@ -41,6 +41,8 @@ export interface MustKeepRule {
   start: string | null;
   end: string | null;
   amount: number | null;
+  /** 방장이 이미 예약한 곳 (v2.4 방장 질문, 회의 준비 때 코드가 붙임): 모두의 꼭 지킬 곳 · 숙소는 숙소 목록에서 찾음 */
+  booked?: 'place' | 'lodging';
 }
 
 /** 화면에 보이지 않는 회의용 값 (일정 배치·만족도 계산에 씀) */

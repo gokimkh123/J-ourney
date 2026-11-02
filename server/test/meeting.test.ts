@@ -19,7 +19,7 @@ import { AREA_MATCH, type AreaAnswer, type AreaMatcher, type AreaRule, areaInput
 import { withSubDistricts } from '../src/meeting/regions.js';
 import { NAME_MATCH, type NameMatcher, type NamePlace, type NameRule, SYSTEM, decodeNames, nameInput, nameMatcher, savedNameMatcher } from '../src/meeting/names.js';
 import { type MemberInput, NO_NAME_ANSWER, RETRIEVE, retrieveCandidates } from '../src/meeting/retrieve.js';
-import { isAreaRule, isNameRule, ruleMatcher } from '../src/meeting/rules.js';
+import { bookedRules, isAreaRule, isNameRule, ruleMatcher } from '../src/meeting/rules.js';
 import type { PersonaProfile } from '../src/persona/types.js';
 import type { TourClient } from '../src/tour/client.js';
 import { meetings, tripPlans, trips } from '../src/db/schema.js';
@@ -405,6 +405,35 @@ describe('지역 맞추기 (2단계, 10/29: 지역 조건은 LLM이 구·군 목
     expect(r.nameMatches).toContainEqual(expect.objectContaining({ type: 'include', keyword: '태종대온천찜질방', places: ['태종대온천찜질방'] }));
     const none = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [spa], crowdClient: null, matchNames: textNames, today: '2026-11-01' });
     expect(none.missingRules).toEqual([{ memberId: 'm7', label: '태종대온천찜질방에서 쉬기', reason: NO_NAME_ANSWER }]);
+  });
+});
+
+describe('방장이 예약한 곳·숙소 (v2.4, 2단계)', () => {
+  it('예약한 곳은 AI 이름 맞추기로 찾아 모두의 꼭 지킬 곳(식당이어도), 예약한 숙소는 시·도 숙소 목록에서 찾아 숙소 후보를 그곳 하나로 · 당일치기·못 찾으면 메모', async () => {
+    const { db } = await createTestApp();
+    await seedDb(db);
+    const asked: string[] = [];
+    const names: NameMatcher = async (rules, list) => {
+      asked.push(...rules.map((r) => `${r.keyword}:${list.every((p) => p.category === '호텔' || p.category === '게스트하우스') ? '숙소 목록' : '장소 목록'}`));
+      return textNames(rules, list);
+    };
+    const host = { ...MEMBERS[0], mustKeep: bookedRules({ bookedPlaces: ['신창국밥'], bookedLodging: '해운대게스트하우스' }) };
+    const members = [host, ...MEMBERS.slice(1)];
+    const twoDays = { ...CONDITIONS, endDate: '2026-11-08' };
+    const r = await retrieveCandidates(db, { conditions: twoDays, destination: DEST, members, crowdClient: null, matchNames: names, matchAreas: textAreas, today: '2026-11-01' });
+    expect(asked).toEqual(['신창국밥:장소 목록', '돼지국밥:장소 목록', '해운대게스트하우스:숙소 목록']);
+    const soup = r.candidates.find((c) => c.name === '신창국밥 본점')!;
+    for (const m of members) expect(soup.marks[m.memberId]).toContainEqual({ kind: 'must', label: '예약한 곳: 신창국밥' });
+    expect(r.lodgings.map((c) => c.name)).toEqual(['해운대게스트하우스']);
+    for (const m of members) expect(r.lodgings[0].marks[m.memberId]).toContainEqual({ kind: 'must', label: '예약한 숙소: 해운대게스트하우스' });
+    expect(r.nameMatches).toContainEqual(expect.objectContaining({ memberId: 'm1', label: '예약한 숙소: 해운대게스트하우스', places: ['해운대게스트하우스'] }));
+    // 당일치기는 숙소를 쓰지 않음 · 숙소 목록에 없으면 메모하고 숙소 후보는 평소대로
+    const day = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members, crowdClient: null, matchNames: textNames, matchAreas: textAreas, today: '2026-11-01' });
+    expect(day.missingRules).toContainEqual({ memberId: 'm1', label: '예약한 숙소: 해운대게스트하우스', reason: '당일치기라 숙소를 쓰지 않음' });
+    const lost = [{ ...host, mustKeep: bookedRules({ bookedLodging: '없는호텔' }) }, ...MEMBERS.slice(1)];
+    const none = await retrieveCandidates(db, { conditions: twoDays, destination: DEST, members: lost, crowdClient: null, matchNames: textNames, matchAreas: textAreas, today: '2026-11-01' });
+    expect(none.missingRules).toContainEqual({ memberId: 'm1', label: '예약한 숙소: 없는호텔', reason: '숙소 목록에서 찾지 못함' });
+    expect(none.lodgings.length).toBe(2);
   });
 });
 

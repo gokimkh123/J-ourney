@@ -11,6 +11,11 @@ export interface TripConditions {
   /** v1.8에서 생김: 그 전에 저장한 조건에는 없으며 없으면 대중교통 */
   moveMode?: MoveMode;
   rules: { aiMinSatisfaction: number; maxRounds: number };
+  /** 방장 질문 (v2.4, 11/2 새 설문): 첫날 도착·마지막 날 출발 시각(HH:MM, 항공편·열차) · 이미 예약한 숙소·장소 (사람이 쓴 이름, 2단계 AI가 목록에서 고름). 그 전에 저장한 조건에는 없음 */
+  arrivalTime?: string | null;
+  departureTime?: string | null;
+  bookedLodging?: string | null;
+  bookedPlaces?: string[];
 }
 
 /** 목적지를 코드로 바꾼 결과 (districtCodes가 비면 시·도 전체) */

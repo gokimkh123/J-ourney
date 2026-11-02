@@ -42,6 +42,10 @@ const TRANSPORT_MAX = 40;
 const BUDGET_MAX = 10_000_000;
 /** 한 번의 회의로 짜는 여행 일수 상한 */
 export const MAX_TRIP_DAYS = 3;
+/** 방장 질문 입력 상한 (v2.4): 이미 예약한 장소 수(사람마다 가고 싶은 곳과 같은 3곳) · 이름 글자 수 */
+const BOOKED = { places: 3, nameMax: 40 } as const;
+const hhmm = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, '시각은 HH:MM (00:00–23:59) 형식이어야 함');
+const bookedName = z.string().trim().min(1, '이름을 입력해야 함').max(BOOKED.nameMax, `이름은 ${BOOKED.nameMax}자 이하여야 함`);
 const R = MEETING_RULES;
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '날짜는 YYYY-MM-DD 형식이어야 함');
 const realDay = (d: string) => new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
@@ -59,10 +63,16 @@ const conditionsBody = z
         maxRounds: z.number().int().min(R.maxRounds.min).max(R.maxRounds.max).default(R.maxRounds.default),
       })
       .default({ aiMinSatisfaction: R.aiMinSatisfaction.default, maxRounds: R.maxRounds.default }),
+    // 방장 질문 (v2.4): 항공편·열차 도착·출발 시각, 이미 예약한 숙소·장소
+    arrivalTime: hhmm.nullable().default(null),
+    departureTime: hhmm.nullable().default(null),
+    bookedLodging: bookedName.nullable().default(null),
+    bookedPlaces: z.array(bookedName).max(BOOKED.places, `이미 예약한 장소는 ${BOOKED.places}곳까지`).default([]),
   })
   .refine((b) => realDay(b.startDate) && realDay(b.endDate), { message: '없는 날짜임' })
   .refine((b) => b.endDate >= b.startDate, { message: '끝나는 날은 시작하는 날과 같거나 뒤여야 함' })
-  .refine((b) => (Date.parse(b.endDate) - Date.parse(b.startDate)) / DAY_MS + 1 <= MAX_TRIP_DAYS, { message: `여행은 ${MAX_TRIP_DAYS}일 이하여야 함` });
+  .refine((b) => (Date.parse(b.endDate) - Date.parse(b.startDate)) / DAY_MS + 1 <= MAX_TRIP_DAYS, { message: `여행은 ${MAX_TRIP_DAYS}일 이하여야 함` })
+  .refine((b) => b.startDate !== b.endDate || !b.arrivalTime || !b.departureTime || b.arrivalTime < b.departureTime, { message: '당일치기는 도착 시각이 출발 시각보다 앞이어야 함' });
 
 /**
  * 여행지 확인에 쓰는 LLM (10/29: 방장이 쓴 여행지 글은 LLM이 공식 지역 목록에서 고름, destination.ts)

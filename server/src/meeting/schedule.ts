@@ -51,6 +51,13 @@ export const SCHEDULE = {
   minutesPerKm: 1,
 } as const;
 
+/**
+ * 항공편·열차 시각 (v2.4 방장 질문 '첫날 도착·마지막 날 출발 시각'): 첫날은 도착 + arrivalBufferMinutes부터, 마지막 날은 출발 − departureBufferMinutes까지 다님
+ * - 출발 120분 = 공항 도착 60분 전 (아시아나항공 국내선 안내 '출발 최소 1시간 전 공항 도착' · 대한항공 국내선 탑승 수속 마감 출발 30분 전) + 마지막 장소에서 공항까지 60분 (어림, 근거 자료 없음)
+ * - 도착 60분 = 내려서 짐 찾고 시내로 가는 시간 (어림, 근거 자료 없음)
+ */
+export const FLIGHT = { arrivalBufferMinutes: 60, departureBufferMinutes: 120 } as const;
+
 /** 구간 이동 수단 (명세서 moveFromPrev.mode, v1.8에서 car 추가) */
 export type LegMode = 'walk' | 'bus' | 'subway' | 'train' | 'taxi' | 'car';
 
@@ -139,19 +146,24 @@ interface Ctx {
   meals: Spot[];
   everywhere: Spot[];
   lodging: Spot | null;
-  perDay: number;
-  lunch: boolean;
-  dinner: boolean;
   dusks: (number | null)[];
   nightLovers: number;
   /** 가장 엄격한 한 번 이동 상한(분, 싫어요 '오래 이동'). 없으면 null */
   moveLimit: number | null;
-  spanMinutes: number;
   center: Point | null;
   moveMode: MoveMode;
   router: RouteClient;
   /** 5단계에서 사람이 남긴 곳 (원래 id): 이동 상한 고치기도 빼지 않음 */
   kept: Set<string>;
+  /** 날마다 다니는 범위: 끼니(점심·저녁)·하루 관광지 수·다니는 시간 (v2.4: 첫날 도착·마지막 날 출발 시각이 있으면 그날만 짧아짐, 없으면 모든 날이 같음) */
+  days: DaySpan[];
+}
+
+interface DaySpan {
+  lunch: boolean;
+  dinner: boolean;
+  perDay: number;
+  spanMinutes: number;
 }
 
 interface PlanState {
@@ -405,11 +417,12 @@ function pickSets(ctx: Ctx, avoid: ReadonlySet<string>, required: readonly Spot[
   const D = ctx.dates.length;
   const sets: Spot[][] = Array.from({ length: D }, () => []);
   const attrCount = (d: number) => sets[d].filter((q) => !q.meal).length;
-  const mealsPerDay = Number(ctx.lunch) + Number(ctx.dinner);
-  const openOn = (p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed';
+  const mealsOn = (d: number) => Number(ctx.days[d].lunch) + Number(ctx.days[d].dinner);
+  // 그날 쉬는 곳·그날 저녁이 없는데 저녁 뒤에 가는 곳(밤 행사·야시장)은 그날에 넣지 않음 (저녁이 없는 날은 마지막 날 이른 출발 등, v2.4)
+  const openOn = (p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed' && (!p.evening || ctx.days[d].dinner);
   for (const p of byPrio(required)) {
     const open = Array.from({ length: D }, (_, d) => d).filter((d) => openOn(p, d));
-    const full = (d: number) => (p.meal ? sets[d].filter((q) => q.meal).length >= mealsPerDay : attrCount(d) >= ctx.perDay + SCHEDULE.mustOverflow);
+    const full = (d: number) => (p.meal ? sets[d].filter((q) => q.meal).length >= mealsOn(d) : attrCount(d) >= ctx.days[d].perDay + SCHEDULE.mustOverflow);
     const near = (d: number) => {
       const c = centerOf(sets[d]);
       return c ? distanceKm(c, p) : 0;
@@ -446,18 +459,20 @@ function pickSets(ctx: Ctx, avoid: ReadonlySet<string>, required: readonly Spot[
     return out;
   };
   for (let d = 0; d < D; d++) {
+    // 다닐 시간이 없는 날(늦은 도착·이른 출발)은 꼭 지킬 곳 말고는 넣지 않음
+    if (ctx.days[d].perDay === 0) continue;
     if (!sets[d].length) {
       // 빈 날: 점수 상위 몇 곳을 하나씩 가운데로 놓아 보고 묶음 값이 가장 큰 것
       const anchors = byPrio(fresh.filter((p) => !used.has(p.id) && openOn(p, d))).slice(0, SCHEDULE.anchors);
       let best: { set: Spot[]; v: number } | null = null;
       for (const a of anchors) {
-        const set = grow([a], ctx.perDay, d);
+        const set = grow([a], ctx.days[d].perDay, d);
         const c = centerOf([...set, ...home]);
         const v = set.reduce((acc, p) => acc + value(p, c, [...sets.flat(), ...set]), 0);
         if (!best || v > best.v) best = { set, v };
       }
-      sets[d] = best?.set ?? grow([], ctx.perDay, d);
-    } else sets[d] = grow(sets[d], ctx.perDay, d);
+      sets[d] = best?.set ?? grow([], ctx.days[d].perDay, d);
+    } else sets[d] = grow(sets[d], ctx.days[d].perDay, d);
     sets[d].forEach((p) => used.add(p.id));
   }
   for (const m of ctx.members) {
@@ -473,7 +488,7 @@ function pickSets(ctx: Ctx, avoid: ReadonlySet<string>, required: readonly Spot[
     const d = days.sort((a, b) => a.v - b.v || a.i - b.i)[0].i;
     const fans = (q: Spot) => ctx.members.filter((o) => marksOf(q, o).some((k) => k.kind === 'like')).length;
     const out = sets[d].filter((q) => !q.meal && !q.must).sort((a, b) => fans(a) - fans(b) || a.prio - b.prio || a.id.localeCompare(b.id))[0];
-    if (out && sets[d].filter((q) => !q.meal).length >= ctx.perDay) sets[d] = sets[d].filter((q) => q.id !== out.id);
+    if (out && sets[d].filter((q) => !q.meal).length >= ctx.days[d].perDay) sets[d] = sets[d].filter((q) => q.id !== out.id);
     sets[d].push(cand);
     used.add(cand.id);
   }
@@ -668,7 +683,9 @@ async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = st.frozen.
   const attrs = set.filter((p) => !p.meal);
   const reqMeals = byPrio(set.filter((p) => p.meal));
   const dusk = ctx.dusks[i];
-  const night = ctx.nightLovers > 0 && dusk !== null ? (byPrio(attrs.filter((p) => isNightSpot(p, dusk)))[0] ?? null) : null;
+  const span = ctx.days[i];
+  // 야경은 저녁이 있는 날만 (마지막 날 이른 출발이면 밤까지 있지 않음, v2.4)
+  const night = ctx.nightLovers > 0 && dusk !== null && span.dinner ? (byPrio(attrs.filter((p) => isNightSpot(p, dusk)))[0] ?? null) : null;
   const from = i > 0 ? ctx.lodging : null;
   const to = i < ctx.dates.length - 1 ? ctx.lodging : null;
   // 사람이 순서를 정한 날(14단계)은 그 순서 그대로, 정하지 않은 날은 자동차 길찾기로 가장 짧은 순서
@@ -684,8 +701,8 @@ async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = st.frozen.
   const cut = Math.floor(daytime.length * SCHEDULE.lunchAt);
   const seq: (Spot | Slot)[] =
     pinned && pinned.some((x) => x === MEAL_MARK.lunch || x === MEAL_MARK.dinner)
-      ? pinnedDay(pinned, daytime, ctx.lunch, ctx.dinner, tail)
-      : [...daytime.slice(0, cut), ...(ctx.lunch ? (['lunch'] as const) : []), ...daytime.slice(cut), ...(ctx.dinner ? (['dinner'] as const) : []), ...tail];
+      ? pinnedDay(pinned, daytime, span.lunch, span.dinner, tail)
+      : [...daytime.slice(0, cut), ...(span.lunch ? (['lunch'] as const) : []), ...daytime.slice(cut), ...(span.dinner ? (['dinner'] as const) : []), ...tail];
   const around = (k: number) => {
     let prev: Spot | null = from;
     for (let j = k - 1; j >= 0; j--) if (typeof seq[j] !== 'string') { prev = seq[j] as Spot; break; }
@@ -793,8 +810,8 @@ async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = st.frozen.
     summary: {
       moveMinutes,
       unknownLegs: known.filter((l) => l.minutes === null).length,
-      spanMinutes: ctx.spanMinutes,
-      heavy: moveMinutes > ctx.spanMinutes * SCHEDULE.heavyMoveShare,
+      spanMinutes: span.spanMinutes,
+      heavy: moveMinutes > span.spanMinutes * SCHEDULE.heavyMoveShare,
     },
   };
 }
@@ -826,6 +843,9 @@ export interface ScheduleInput {
   members: readonly MemberInput[];
   decision: ReviewDecision | null;
   moveMode: MoveMode;
+  /** 첫날 도착·마지막 날 출발 시각 (HH:MM, v2.4 방장 질문, 없으면 null) */
+  arrivalTime?: string | null;
+  departureTime?: string | null;
 }
 
 /**
@@ -869,6 +889,22 @@ async function contextOf(db: Db, router: RouteClient, input: ScheduleInput): Pro
   const perDay = Math.max(lo, Math.min(hi, Math.round(pace.reduce((a, b) => a + b, 0) / Math.max(1, pace.length))));
   const center = centerOf(attractions);
   const limits = members.map((m) => m.profile.maxMoveMinutes).filter((v): v is number => v !== null);
+  const lunch = start < toMinutes(SCHEDULE.meals.lunch[1]);
+  // 첫날은 도착 뒤·마지막 날은 출발 전까지만 (v2.4): 그날의 끼니는 그 시간 안에 끼니 시간이 걸치면, 관광지 수는 하루 시간에 비례 (줄이기만 함)
+  const arrive = input.arrivalTime ? toMinutes(input.arrivalTime) + FLIGHT.arrivalBufferMinutes : null;
+  const leave = input.departureTime ? toMinutes(input.departureTime) - FLIGHT.departureBufferMinutes : null;
+  const days: DaySpan[] = pool.dates.map((_, d) => {
+    const s = d === 0 && arrive !== null ? Math.max(start, arrive) : start;
+    const e = d === pool.dates.length - 1 && leave !== null ? Math.min(end, leave) : end;
+    if (s === start && e === end) return { lunch, dinner, perDay, spanMinutes: end - start };
+    const span = Math.max(0, e - s);
+    return {
+      lunch: span > 0 && s < toMinutes(SCHEDULE.meals.lunch[1]) && e > toMinutes(SCHEDULE.meals.lunch[0]),
+      dinner: span > 0 && e > DINNER_START && s < toMinutes(SCHEDULE.meals.dinner[1]),
+      perDay: Math.min(perDay, Math.round((perDay * span) / (end - start))),
+      spanMinutes: span,
+    };
+  });
   const ctx: Ctx = {
     members,
     dates: pool.dates,
@@ -876,17 +912,14 @@ async function contextOf(db: Db, router: RouteClient, input: ScheduleInput): Pro
     meals,
     everywhere: [...spots, ...extras],
     lodging,
-    perDay,
-    lunch: start < toMinutes(SCHEDULE.meals.lunch[1]),
-    dinner,
     dusks: pool.dates.map((d) => (center ? duskKst(center, d, SCHEDULE.night.zenith) : null)),
     nightLovers: members.filter((m) => m.likes.includes(SCHEDULE.night.like)).length,
     moveLimit: limits.length ? Math.min(...limits) : null,
-    spanMinutes: end - start,
     center,
     moveMode: input.moveMode,
     router,
     kept: new Set((input.decision?.kept ?? []).map((id) => id.replace(/^plc_/, ''))),
+    days,
   };
   return { ctx, extras };
 }
@@ -1045,9 +1078,9 @@ export async function revisePlans(
       notes: [],
     };
   }
-  const mealsPerDay = Number(ctx.lunch) + Number(ctx.dinner);
+  const mealsOn = (d: number) => Number(ctx.days[d].lunch) + Number(ctx.days[d].dinner);
   const home = ctx.lodging ? [ctx.lodging] : [];
-  const openOn = (p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed';
+  const openOn = (p: Spot, d: number) => closedOn(p.rest, ctx.dates[d]) !== 'closed' && (!p.evening || ctx.days[d].dinner);
   const fans = (q: Spot) => ctx.members.filter((m) => marksOf(q, m).some((k) => k.kind === 'like')).length;
   const mustKeys = (p: Spot) => Object.entries(p.marks).flatMap(([memberId, ks]) => ks.filter((k) => k.kind === 'must').map((k) => `${memberId}\n${k.label}`));
   const dayIn = (w: Work, id: string) => w.sets.findIndex((x) => x.some((p) => p.id === id));
@@ -1068,12 +1101,12 @@ export async function revisePlans(
       .sort((a, b) => a.km - b.km || a.d - b.d)
       .map((x) => x.d);
   const insert = (w: Work, p: Spot, prefer: number | null): { day: number; dropped: Spot | null } | keyof typeof SKIP => {
-    if (p.meal && mealsPerDay === 0) return 'noMeal';
+    if (p.meal && ctx.days.every((_, d) => mealsOn(d) === 0)) return 'noMeal';
     const near = nearDays(w, p);
     if (!near.length) return 'closed';
     for (const d of prefer !== null && near.includes(prefer) ? [prefer, ...near.filter((x) => x !== prefer)] : near) {
       const same = w.sets[d].filter((q) => q.meal === p.meal);
-      if (same.length < (p.meal ? mealsPerDay : ctx.perDay)) {
+      if (same.length < (p.meal ? mealsOn(d) : ctx.days[d].perDay)) {
         w.sets[d] = [...w.sets[d], p];
         return { day: d, dropped: null };
       }
@@ -1182,7 +1215,7 @@ export async function revisePlans(
         done(`${d + 1}일째 ${p.name} 대신 다른 식당`, [d], p);
         continue;
       }
-      const inn = attractionsOn(w, d) < ctx.perDay ? refill(e.plan, d) : null;
+      const inn = attractionsOn(w, d) < ctx.days[d].perDay ? refill(e.plan, d) : null;
       if (inn) w.sets[d] = [...w.sets[d], inn];
       if (shrinks(d, before)) undo('minimum');
       else done(`${d + 1}일째 ${p.name} 뺌${inn ? ` → ${inn.name}` : ''}`, [d], p, inn);
