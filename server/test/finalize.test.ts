@@ -5,18 +5,31 @@ import type { PlanProposal } from '../src/meeting/schedule.js';
 import { fakeLlm } from './helpers.js';
 
 /** 13단계 이름 짓기 시험용 두 안 (날짜별 들르는 곳만 씀) */
-const plan = (label: 'A' | 'B', names: string[]) =>
+const plan = (label: 'A' | 'B', names: string[], shared: string[] = []) =>
   ({
     label,
-    route: [{ day: 1, stops: names.map((name, i) => ({ kind: i === 1 ? 'food' : 'sight', name, night: i === names.length - 1 })) }],
+    moveMode: 'transit',
+    route: [
+      {
+        day: 1,
+        stops: names.map((name, i) => ({ placeId: shared.includes(name) ? `plc_${name}` : `plc_${label}${i}`, kind: i === 1 ? 'food' : 'sight', name, category: i === 1 ? '한식' : null, night: i === names.length - 1 })),
+      },
+    ],
   }) as unknown as PlanProposal;
-const PLANS = [plan('A', ['광안리해수욕장', '수변최고돼지국밥', '광안대교']), plan('B', ['국제시장', '신창국밥 본점', '용두산공원'])];
-const answer = (a: string, b: string) => ({ a: { name: a, desc: `${a} 하루` }, b: { name: b, desc: `${b} 하루` } });
+const PLANS = [plan('A', ['광안리해수욕장', '수변최고돼지국밥', '광안대교'], ['광안대교']), plan('B', ['국제시장', '신창국밥 본점', '광안대교'], ['광안대교'])];
+const answer = (a: string, b: string, desc = (x: string) => `${x} 하루`) => ({ a: { pick: ['A1', 'A3'], name: a, desc: desc(a) }, b: { pick: ['B1'], name: b, desc: desc(b) } });
 const always = async () => true;
 
 describe('13단계 마무리: 두 안의 이름·설명 (AI 1회, 못 쓰면 A안·B안)', () => {
-  it('입력은 코드가 만든 날짜별 표 (식당 🍚·야경 🌃 표시)', () => {
-    expect(namesRequest(PLANS).input).toEqual({ plans: { A: '1일째: 광안리해수욕장 → 🍚수변최고돼지국밥 → 🌃광안대교', B: '1일째: 국제시장 → 🍚신창국밥 본점 → 🌃용두산공원' } });
+  it('입력은 코드가 만든 표 (번호=들르는 순서·종류·공식 분류) + 날 수·이동 수단 + 한쪽에만 있는 곳, 답은 그 안의 번호만 고름', () => {
+    const req = namesRequest(PLANS);
+    expect(req.input).toEqual({
+      trip: { days: 1, move: '대중교통·택시' },
+      plans: ['번호|날|종류|장소|분류', 'A1|1|관광|광안리해수욕장|-', 'A2|1|식당|수변최고돼지국밥|한식', 'A3|1|야경|광안대교|-', 'B1|1|관광|국제시장|-', 'B2|1|식당|신창국밥 본점|한식', 'B3|1|야경|광안대교|-'].join('\n'),
+      only: { A: ['A1', 'A2'], B: ['B1', 'B2'] },
+    });
+    expect(req.schema.safeParse(answer('바다', '시장')).success).toBe(true);
+    expect(req.schema.safeParse({ ...answer('바다', '시장'), b: { pick: ['A1'], name: '시장', desc: '시장 하루' } }).success).toBe(false); // B안은 B 번호만
   });
 
   it('AI 답을 그대로 보여 줌 · 두 이름이 같으면 B만 기본값 · 길이를 넘거나 칸 이름이 나오면 그 안만 기본값', async () => {
@@ -26,6 +39,9 @@ describe('13단계 마무리: 두 안의 이름·설명 (AI 1회, 못 쓰면 A�
     expect(same).toMatchObject({ A: { title: '부산 한 바퀴', source: 'llm' }, B: { title: 'B안', summary: '', source: 'rule' } });
     const long = await namePlans(PLANS, { llm: fakeLlm(() => answer('가'.repeat(FINALIZE.titleHardMax + 1), 'plans 요약')), reserve: always });
     expect(long).toMatchObject({ A: { title: 'A안', source: 'rule' }, B: { title: 'B안', source: 'rule' } });
+    // 표 번호(A1·B2)가 글에 나오면 그 칸만 기본값
+    const ids = await namePlans(PLANS, { llm: fakeLlm(() => answer('A1 코스', '시장 코스', (x) => (x === '시장 코스' ? 'B1과 B3을 둘러보는 일정' : '해변 일정'))), reserve: always });
+    expect(ids).toMatchObject({ A: { title: 'A안', source: 'rule' }, B: { title: '시장 코스', summary: '', source: 'llm' } });
   });
 
   it('AI가 두 번 실패하면 A안·B안 (2회) · 회의 AI 상한이면 부르지 않음', async () => {

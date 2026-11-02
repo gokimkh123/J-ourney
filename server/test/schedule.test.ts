@@ -563,7 +563,8 @@ describe('6단계 길찾기 저장·카카오 호출기', () => {
     await expect(cachedRouter(db, capped.router, full).walk(a, b)).rejects.toBeInstanceOf(RouteUnavailable);
     expect(capped.calls.walk).toBe(0);
     await expect(cachedRouter(db, null, newRouteMeter()).walk(b, c)).rejects.toBeInstanceOf(RouteUnavailable);
-    expect(await cachedRouter(db, null, newRouteMeter()).transit(a, b)).not.toBeNull();
+    // 10/23에 저장한 구간을 저장 기간 안의 날짜로 읽음 (오늘 날짜로 읽으면 7일이 지나 시험이 날짜에 따라 깨짐, 11/2 발견)
+    expect(await cachedRouter(db, null, newRouteMeter(), () => new Date('2026-10-24T00:00:00Z')).transit(a, b)).not.toBeNull();
     expect((await db.select().from(routeCache)).length).toBeGreaterThan(0);
   });
 
