@@ -32,10 +32,13 @@ export const COMMUNITY = {
   pickCacheMs: 60_000,
 } as const;
 
-const listQuery = z.object({
-  regionCode: z.string().regex(/^\d{2}$/, '시·도 코드 2자리').optional(),
-  districtCode: z.string().regex(/^\d{3,5}$/, '시·군·구 코드').optional(),
-});
+// 시·군·구 코드는 시·도 안에서만 하나라 regionCode와 함께 받음 (11/2 점검: districtCode만 보내면 다른 시·도의 같은 번호 구·군이 섞임)
+const listQuery = z
+  .object({
+    regionCode: z.string().regex(/^\d{2}$/, '시·도 코드 2자리').optional(),
+    districtCode: z.string().regex(/^\d{3,5}$/, '시·군·구 코드').optional(),
+  })
+  .refine((q) => !q.districtCode || !!q.regionCode, { path: ['districtCode'], message: 'regionCode와 함께 보내야 함' });
 const reviewBody = z.object({
   rating: z.number().int().min(1).max(5),
   text: z.string().max(COMMUNITY.textMax).optional(),
@@ -197,7 +200,7 @@ export function communityRoutes(db: Db) {
   // 장소 하나: 카드 + 소개글(관광공사) + 리뷰 (인증 불필요, 토큰을 보내면 내 리뷰에 mine)
   r.get('/community/places/:placeId', async (c) => {
     const cid = contentIdOf(c.req.param('placeId'));
-    const [p] = await rows(and(eq(places.contentId, cid)), await pickCounts());
+    const [p] = await rows(and(eq(places.contentId, cid), eq(places.visible, true)), await pickCounts());
     if (!p) throw new ApiError('NOT_FOUND', '장소를 찾을 수 없음');
     const [extra] = await db.select({ introRaw: places.introRaw, overview: places.overview }).from(places).where(eq(places.contentId, cid));
     const viewer = await viewerOf(c.req.header('Authorization'));
@@ -210,7 +213,7 @@ export function communityRoutes(db: Db) {
     const me = c.get('member');
     const cid = contentIdOf(c.req.param('placeId'));
     const body = await parseBody(c, reviewBody);
-    const [place] = await db.select({ cid: places.contentId }).from(places).where(eq(places.contentId, cid)).limit(1);
+    const [place] = await db.select({ cid: places.contentId }).from(places).where(and(eq(places.contentId, cid), eq(places.visible, true))).limit(1);
     if (!place) throw new ApiError('NOT_FOUND', '장소를 찾을 수 없음');
     // 리뷰 글은 뜻을 읽지 않고, 다른 사람에게 보이므로 연락처·식별번호만 가려 저장함 (성향 15번 글과 같은 규칙, 11/2 사용자 결정)
     const text = maskPersonal((body.text ?? '').trim());

@@ -3,7 +3,7 @@ import { asc, eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { MIN_MEMBERS, meetings, members, personas, regions, trips } from '../db/schema.js';
 import { ApiError } from '../lib/errors.js';
-import type { LlmClient } from '../llm/client.js';
+import { isFormatError, type LlmClient } from '../llm/client.js';
 import type { LlmRecorder } from '../llm/record.js';
 import { memberColor } from '../routes/views.js';
 import type { TourClient } from '../tour/client.js';
@@ -153,7 +153,7 @@ async function prepare(deps: MeetingDeps, state: MeetingStateType): Promise<Part
 }
 
 /**
- * 2단계 후보 찾기 (코드). 꼭 지킬 것·꼭 피할 것의 장소·음식 이름이 있으면 이름 맞추기 LLM 1–3회 (규칙 6개씩 + 구 단위 여행의 여행지 밖 1회),
+ * 2단계 후보 찾기 (코드). 꼭 지킬 것·꼭 피할 것의 장소·음식 이름이 있으면 이름 맞추기 LLM 1–5회 (규칙 6개씩 + 구 단위 여행의 여행지 밖 1회) + 예약한 숙소 1회,
  * 지역 조건이 있으면 지역 맞추기 LLM 1–2회 (회의 실행 상한·하루 상한 안에서, 실행 중일 때만)
  * 2단계만 보는 시험 경로(upTo 'retrieve', 회의 id 없음)는 LLM을 부르지 않음. LLM_REPLAY면 지난 회의에서 맞춘 이름·지역을 다시 씀
  */
@@ -337,6 +337,8 @@ async function evaluateOne(deps: MeetingDeps, state: MeetingStateType, m: Member
       return { ...acceptEval(m, plans, table, facts, value), llmCalls: calls };
     } catch (err) {
       console.warn(`7단계 평가 LLM ${attempt}번째 실패:`, err instanceof Error ? err.message.slice(0, 200) : err);
+      // 형식이 틀린 답만 1번 더 (시간 초과·공급자 오류는 다시 불러도 같기 쉬워 바로 규칙 평가)
+      if (!isFormatError(err)) break;
     }
   }
   const fixes: MemberEval['fixes'] = [

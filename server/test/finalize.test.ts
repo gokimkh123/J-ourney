@@ -45,15 +45,17 @@ describe('13단계 마무리: 두 안의 이름·설명 (AI 1회, 못 쓰면 A�
     expect(ids).toMatchObject({ A: { title: 'A안', source: 'rule' }, B: { title: '시장 코스', summary: '', source: 'llm' } });
   });
 
-  it('AI가 두 번 실패하면 A안·B안 (2회) · 회의 AI 상한이면 부르지 않음', async () => {
-    const broken = fakeLlm(() => {
-      throw new Error('시험: 답 없음');
-    });
-    expect(await namePlans(PLANS, { llm: broken, reserve: always })).toEqual({
+  it('AI 답의 형식이 두 번 틀리면 A안·B안 (2회) · 시간 초과·공급자 오류는 다시 부르지 않음 (1회, 11/2 점검) · 회의 AI 상한이면 부르지 않음', async () => {
+    const malformed = fakeLlm(() => ({ 틀린: '형식' }));
+    expect(await namePlans(PLANS, { llm: malformed, reserve: always })).toEqual({
       A: { title: 'A안', summary: '', source: 'rule' },
       B: { title: 'B안', summary: '', source: 'rule' },
       llmCalls: FINALIZE.tries,
     });
+    const down = fakeLlm(() => {
+      throw new Error('시험: 시간 초과');
+    });
+    expect(await namePlans(PLANS, { llm: down, reserve: always })).toMatchObject({ A: { title: 'A안' }, B: { title: 'B안' }, llmCalls: 1 });
     const capped = fakeLlm(() => answer('바다', '시장'));
     expect(await namePlans(PLANS, { llm: capped, reserve: async () => false })).toMatchObject({ A: { title: 'A안' }, llmCalls: 0 });
     expect(capped.calls).toBe(0);

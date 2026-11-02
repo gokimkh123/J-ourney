@@ -160,6 +160,7 @@ export const PUBLIC_QUESTIONS = [
     text: '추가로 고려하고 싶은 사항이 있나요?',
     required: false,
     maxLength: MUST_KEEP_MAX_LENGTH,
-    placeholder: '예: 밤 9시 전엔 숙소에 들어가요, 해산물은 꼭 먹고 싶어요',
+    // 예시는 일정으로 지킬 수 있는 조건만 (11/2 점검: '해산물은 꼭 먹고 싶어요'는 10/27 결정으로 받지 않는 먹는 것 조건이라 보고 쓴 글이 버려짐)
+    placeholder: '예: 밤 9시 전엔 숙소에 들어가요, 한 번 이동은 30분 안이면 좋겠어요',
   },
 ];

@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { serve } from '@hono/node-server';
 import { MemorySaver } from '@langchain/langgraph';
 import { eq } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { llmRecorder } from '../src/llm/record.js';
 import { EVAL } from '../src/meeting/evaluate.js';
@@ -23,7 +23,7 @@ import { bookedRules, isAreaRule, isNameRule, ruleMatcher } from '../src/meeting
 import type { PersonaProfile } from '../src/persona/types.js';
 import type { TourClient } from '../src/tour/client.js';
 import { meetings, tripPlans, trips } from '../src/db/schema.js';
-import { EventHub, LIVE, liveSocketServer } from '../src/meeting/live.js';
+import { CLOSE, EventHub, LIVE, liveSocketServer, watchSocket } from '../src/meeting/live.js';
 import { PICK, type PickResult, ensureOwnLimits, ownConflictIds, pickTables, savedPickFor } from '../src/meeting/pick.js';
 import { REACT, agendaOf, overlapMinutes, reactBoard, reactionOf, reactionScore } from '../src/meeting/react.js';
 import { eventsAfter, failInterruptedMeetings, pendingEventLanes, pruneMeetingCheckpoints, reopenTrip } from '../src/meeting/runs.js';
@@ -408,7 +408,8 @@ describe('지역 맞추기 (2단계, 10/29: 지역 조건은 LLM이 구·군 목
   });
 });
 
-describe('방장이 예약한 곳·숙소 (v2.4, 2단계)', () => {
+// 2단계를 여러 번 돌려(이름 규칙 25개 포함) 로컬 약 1.7초 — 느린 CI에서 5초를 넘지 않게 이 묶음만 20초
+describe('방장이 예약한 곳·숙소 (v2.4, 2단계)', { timeout: 20_000 }, () => {
   it('예약한 곳은 AI 이름 맞추기로 찾아 모두의 꼭 지킬 곳(식당이어도), 예약한 숙소는 시·도 숙소 목록에서 찾아 숙소 후보를 그곳 하나로 · 당일치기·못 찾으면 메모', async () => {
     const { db } = await createTestApp();
     await seedDb(db);
@@ -442,6 +443,30 @@ describe('방장이 예약한 곳·숙소 (v2.4, 2단계)', () => {
     const none = await retrieveCandidates(db, { conditions: twoDays, destination: DEST, members: lost, crowdClient: null, matchNames: textNames, matchAreas: textAreas, today: '2026-11-01' });
     expect(none.missingRules).toContainEqual({ memberId: 'm1', label: '예약한 숙소: 없는호텔', reason: '숙소 목록에서 찾지 못함' });
     expect(none.lodgings.length).toBe(2);
+  });
+
+  it('예약한 곳은 다른 사람의 꼭 피할 것에 걸려도·여행지 밖 편도 상한을 넘어도 넣고, 예약한 숙소는 이름 규칙이 많아도 따로 남긴 AI 1번으로 찾음 (11/2 점검)', async () => {
+    const { db } = await createTestApp();
+    await seedDb(db);
+    // ① 현우의 꼭 피할 것(시장 분류)에 걸리는 국제시장도 방장이 예약했으면 후보 (예약하지 않은 시장은 그대로 빠짐)
+    const host = { ...MEMBERS[0], mustKeep: bookedRules({ bookedPlaces: ['국제시장'] }) };
+    const r = await retrieveCandidates(db, { conditions: CONDITIONS, destination: DEST, members: [host, ...MEMBERS.slice(1)], crowdClient: null, matchNames: textNames, matchAreas: textAreas, today: '2026-11-01' });
+    expect(r.candidates.find((c) => c.name === '국제시장')?.booked).toBe(true);
+    expect(r.candidates.some((c) => c.name === '온천시장')).toBe(false);
+    // ② 수영구 여행 + 영도구의 먼 곳(편도 상한 넘음)을 예약 → 여행지 밖으로 넣음 (예약하지 않았으면 메모만)
+    await db.insert(places).values({ contentId: 'far1', contentTypeId: 28, title: '먼체험장', regionCode: '26', districtCode: '200', lcls1: 'LS', lcls3: null, lat: 34.95, lng: 128.85, visible: true, listRaw: {}, overview: '체험', introRaw: { restdateleports: '연중무휴' }, detailSyncedAt: new Date() });
+    const suyeong = { regionCode: '26', regionName: '부산광역시', districtCodes: ['500'], label: '부산 수영구' };
+    const far = await retrieveCandidates(db, { conditions: CONDITIONS, destination: suyeong, members: [{ ...MEMBERS[0], mustKeep: bookedRules({ bookedPlaces: ['먼체험장'] }) }, MEMBERS[1]], crowdClient: null, matchNames: textNames, matchAreas: textAreas, today: '2026-11-01' });
+    const farSpot = far.candidates.find((c) => c.name === '먼체험장');
+    expect(farSpot?.booked).toBe(true);
+    expect(farSpot?.outsideMinutes).toBeGreaterThan(RETRIEVE.outsideMaxMinutes);
+    // ③ 4명 × 이름 규칙 6개 + 예약한 곳 1곳 = 25규칙 → 이름 맞추기 maxCalls(5번)를 다 써도 예약한 숙소는 1번 더 물음
+    const llm = fakeLlm((input) => nameAnswer(input));
+    const six = (p: string) => Array.from({ length: 6 }, (_, i) => rule('include', `${p}곳${i}`, `${p}가고싶은곳${i}`, 'place'));
+    const crowded = MEMBERS.map((m, i) => ({ ...m, mustKeep: [...six(`m${i}`), ...(i === 0 ? bookedRules({ bookedPlaces: ['신창국밥'], bookedLodging: '해운대게스트하우스' }) : [])] }));
+    const two = await retrieveCandidates(db, { conditions: { ...CONDITIONS, endDate: '2026-11-08' }, destination: DEST, members: crowded, crowdClient: null, matchNames: nameMatcher(llm, async () => true), matchAreas: textAreas, today: '2026-11-01' });
+    expect(llm.calls).toBe(NAME_MATCH.maxCalls + NAME_MATCH.bookedLodgingCalls);
+    expect(two.lodgings.map((c) => `${c.name}:${c.booked}`)).toEqual(['해운대게스트하우스:true']);
   });
 });
 
@@ -2180,9 +2205,13 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
       await until(() => a.got, (g) => g.some((e) => e.type === 'review.requested'), '놓친 이벤트');
       const replayed = a.got.filter((e) => e.type !== 'ping');
       expect(replayed.map((e) => e.seq)).toEqual(replayed.map((_, i) => i + 3));
+      // afterSeq가 마지막 번호보다 크면(지운 여행의 번호 등) 지난 것은 보내지 않고 새 이벤트부터 받음 (11/2 점검: 그 번호를 넘을 때까지 아무것도 받지 못함)
+      const stale = await connect(`token=${token}&afterSeq=999999`);
       const keepAll = waiting.review.items.map((i: { placeId: string }) => ({ placeId: i.placeId, keep: true }));
       await call(app, 'POST', `/meetings/${id}/review`, { choices: keepAll }, token);
       const cast = await until(() => a.got, (g) => g.some((e) => e.type === 'review.cast'), '새 이벤트');
+      await until(() => stale.got, (g) => g.some((e) => e.type === 'review.cast'), '큰 afterSeq에도 새 이벤트');
+      expect(stale.got.some((e) => e.type === 'review.requested')).toBe(false);
       expect(cast.find((e) => e.type === 'review.cast')!.seq).toBe(replayed.at(-1)!.seq! + 1);
       await until(() => a.got, (g) => g.some((e) => e.type === 'ping'), 'ping');
       expect(a.got.find((e) => e.type === 'ping')).toMatchObject({ tripId });
@@ -2555,6 +2584,70 @@ describe('매일 정리 · 체크포인트 연결 풀', () => {
     } finally {
       console.warn = warn;
       await pool.end();
+    }
+  });
+});
+
+describe('실시간 연결 확인 (11/2 점검: 끊긴 연결·읽지 않는 연결 정리)', () => {
+  /** ping·pong·쌓인 글을 시험에서 정하는 가짜 ws 소켓 */
+  const fakeSocket = () => {
+    const handlers = new Map<string, () => void>();
+    const s = {
+      bufferedAmount: 0,
+      pings: 0,
+      terminated: false,
+      closedWith: null as null | number,
+      on: (ev: string, fn: () => void) => (handlers.set(ev, fn), s),
+      off: (ev: string) => (handlers.delete(ev), s),
+      ping: () => void s.pings++,
+      terminate: () => void (s.terminated = true),
+      close: (code: number) => void (s.closedWith = code),
+      pong: () => handlers.get('pong')?.(),
+    };
+    return s;
+  };
+  const watch = (s: ReturnType<typeof fakeSocket>) => watchSocket(s as unknown as Parameters<typeof watchSocket>[0], 1000);
+
+  it('pong을 보내던 연결이 연속 답이 없으면 끊고, pong을 한 번도 못 받은 연결(터널이 pong을 넘기지 않음)은 그대로 둠', () => {
+    vi.useFakeTimers();
+    try {
+      const alive = fakeSocket();
+      const silent = fakeSocket();
+      const dead = fakeSocket();
+      const stops = [watch(alive), watch(silent), watch(dead)];
+      for (let i = 0; i < 6; i++) {
+        vi.advanceTimersByTime(1000);
+        alive.pong();
+        if (i === 0) dead.pong();
+      }
+      expect([alive.terminated, silent.terminated, dead.terminated]).toEqual([false, false, true]);
+      expect(silent.pings).toBe(6);
+      // 멈추면 더 확인하지 않음
+      for (const stop of stops) stop();
+      vi.advanceTimersByTime(5000);
+      expect(silent.pings).toBe(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('쌓인 글이 상한을 넘은 채 줄지 않으면 1013으로 닫고, 줄어드는 중(큰 기록을 받는 중)이면 두지 않음', () => {
+    vi.useFakeTimers();
+    try {
+      const stuck = fakeSocket();
+      const draining = fakeSocket();
+      watch(stuck);
+      watch(draining);
+      stuck.bufferedAmount = draining.bufferedAmount = LIVE.maxBufferedBytes * 3;
+      vi.advanceTimersByTime(1000); // 처음 넘은 것만으로는 닫지 않음
+      expect([stuck.closedWith, draining.closedWith]).toEqual([null, null]);
+      draining.bufferedAmount = LIVE.maxBufferedBytes * 2;
+      vi.advanceTimersByTime(1000);
+      expect([stuck.closedWith, draining.closedWith]).toEqual([CLOSE.slow[0], null]);
+      vi.advanceTimersByTime(1000); // 더 줄지 않으면 닫음
+      expect(draining.closedWith).toBe(CLOSE.slow[0]);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

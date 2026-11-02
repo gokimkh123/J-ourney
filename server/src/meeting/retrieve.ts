@@ -320,7 +320,7 @@ export async function retrieveCandidates(
   const lodgingRule = members.flatMap((m) => m.mustKeep.filter((r) => r.type === 'include' && r.booked === 'lodging').map((rule) => ({ memberId: m.memberId, rule })))[0] ?? null;
   /** LLM이 답한 이름·지역 규칙 (답이 없던 규칙은 'AI로 맞추지 못함' 메모) */
   const answered = new Set<MustKeepRule>();
-  const askNames = async (list: readonly { memberId: string; rule: MustKeepRule }[], namePlaces: readonly NamePlace[]) => {
+  const askNames = async (list: readonly { memberId: string; rule: MustKeepRule }[], namePlaces: readonly NamePlace[], bookedLodging = false) => {
     if (!list.length || !opts.matchNames) return;
     // 보여 줄 장소가 없으면 묻지 않고 '맞는 곳 없음'으로 둠 (AI를 못 쓴 것과 구분)
     if (!namePlaces.length) {
@@ -328,7 +328,7 @@ export async function retrieveCandidates(
       return;
     }
     const asked: NameRule[] = list.map((x, i) => ({ key: String(i), type: x.rule.type === 'avoid' ? 'avoid' : 'include', label: x.rule.label, keyword: x.rule.keyword!.trim(), target: x.rule.target === 'food' ? 'food' : 'place' }));
-    const found = await opts.matchNames(asked, namePlaces);
+    const found = await opts.matchNames(asked, namePlaces, { bookedLodging });
     for (const [i, x] of list.entries()) {
       const ids = found.get(String(i));
       if (!ids) continue;
@@ -365,6 +365,7 @@ export async function retrieveCandidates(
   const drop = (reason: string, title: string) => excluded.set(reason, [...(excluded.get(reason) ?? []), title]);
   const startYmd = dates[0].replaceAll('-', '');
   const endYmd = dates[dates.length - 1].replaceAll('-', '');
+  const bookedHere = (p: Row) => [...includes.values()].some((list) => list.some((k) => k.rule.booked === 'place' && k.matches(viewOf(p))));
   const rejectReason = (p: Row): string | null => {
     if (p.type === RETRIEVE.festivalType) {
       const s = intro(p.introRaw, 'eventstartdate');
@@ -372,7 +373,8 @@ export async function retrieveCandidates(
       if (!s || !e || s > endYmd || e < startYmd) return '축제가 여행 날짜에 열리지 않음';
     }
     if (dates.every((d) => closedOn(intro(p.introRaw, ...REST_KEYS), d) === 'closed')) return '여행 날짜가 휴무일';
-    if (avoids.some((matches) => matches(viewOf(p)))) return '누군가 꼭 피할 것에 걸림';
+    // 방장이 예약한 곳(v2.4)은 다른 사람의 꼭 피할 것에 걸려도 남김 (A·B 모두에 넣는 곳)
+    if (avoids.some((matches) => matches(viewOf(p))) && !bookedHere(p)) return '누군가 꼭 피할 것에 걸림';
     if (notDestination(p.lcls3) && !wanted(p)) return '여행지로 가는 곳이 아닌 시설';
     return null;
   };
@@ -620,7 +622,8 @@ export async function retrieveCandidates(
   const home = centerOf(kept);
   const minutesOf = (p: { lat: number | null; lng: number | null }) => (home && p.lat !== null && p.lng !== null ? oneWayMinutes(home, { lat: p.lat, lng: p.lng }) : null);
   for (const u of outsideMatches) {
-    const near = u.rows.filter((p) => (minutesOf(p) ?? Infinity) <= RETRIEVE.outsideMaxMinutes);
+    // 편도 상한은 넣을지 정할 곳에만: 방장이 예약한 곳(v2.4)은 멀어도 넣음 (편도 시간은 안건 메모에 그대로 보임)
+    const near = u.rows.filter((p) => !!u.rule.booked || (minutesOf(p) ?? Infinity) <= RETRIEVE.outsideMaxMinutes);
     if (u.rows.length && !near.length) {
       // 맞는 곳이 모두 편도 상한보다 멀면 넣지 않고 가장 가까운 곳의 시간만 안건 메모로 남김
       const closest = u.rows.map((p) => ({ p, m: minutesOf(p) })).filter((x) => x.m !== null).sort((a, b) => a.m! - b.m!)[0];
@@ -653,7 +656,7 @@ export async function retrieveCandidates(
       .select(fields)
       .from(places)
       .where(and(eq(places.visible, true), eq(places.regionCode, destination.regionCode), eq(places.contentTypeId, RETRIEVE.lodgingType)));
-    await askNames([{ memberId: lodgingRule.memberId, rule: lodgingRule.rule }], await listOf(all, true));
+    await askNames([{ memberId: lodgingRule.memberId, rule: lodgingRule.rule }], await listOf(all, true), true);
     const id = [...(named.get(lodgingRule.rule) ?? [])][0];
     const row = all.find((p) => p.id === id);
     if (!row) return null;

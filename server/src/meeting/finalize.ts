@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { LlmClient } from '../llm/client.js';
+import { isFormatError, type LlmClient } from '../llm/client.js';
 import type { LlmRecorder } from '../llm/record.js';
 import type { PlanLabel, Stance } from './evaluate.js';
 import { FIELD_NAMES } from './pick.js';
@@ -167,6 +167,8 @@ export async function namePlans(
         return value;
       } catch (err) {
         console.warn(`13단계 이름 짓기 LLM ${attempt}번째 실패:`, err instanceof Error ? err.message.slice(0, 200) : err);
+        // 형식이 틀린 답만 1번 더 (시간 초과·공급자 오류는 바로 기본 이름)
+        if (!isFormatError(err)) break;
       }
     }
     return null;
