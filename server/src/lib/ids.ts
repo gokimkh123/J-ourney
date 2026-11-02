@@ -11,12 +11,12 @@ function pick(alphabet: string, length: number): string {
 }
 
 /** 접두사가 붙은 ID (명세서 3장: trp_ 여행, mem_ 구성원, mtg_ 회의, rvw_ 커뮤니티 리뷰) */
-export const newId = (prefix: 'trp' | 'mem' | 'mtg' | 'rvw') => `${prefix}_${pick(ID_ALPHABET, 10)}`;
+export const newId = (prefix: 'trp' | 'mem' | 'mtg' | 'rvw' | 'usr') => `${prefix}_${pick(ID_ALPHABET, 10)}`;
 
 /** 6자리 초대 코드 (예: BSN482) */
 export const newInviteCode = () => pick(INVITE_ALPHABET, 6);
 
 /** 인증 토큰: 응답으로 한 번만 돌려주고 DB에는 해시만 저장함 */
-export const newToken = () => `tok_${randomBytes(24).toString('base64url')}`;
+export const newToken = (prefix: 'tok' | 'usr' = 'tok') => `${prefix}_${randomBytes(24).toString('base64url')}`;
 
 export const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');

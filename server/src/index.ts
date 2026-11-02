@@ -106,6 +106,7 @@ const server = serve({ fetch: app.fetch, port: config.port, websocket: { server:
   if (config.llmReplay === 'only') console.log('LLM_REPLAY 켜짐: LLM을 부르지 않고 녹화된 답·지난 결과(지난 회의의 AI 고르기, 같은 응답의 AI 카드)만 씀');
   if (config.llmReplay === 'fill') console.log('LLM_REPLAY=fill: 녹화된 답·지난 결과는 다시 쓰고, 없는 요청만 LLM을 불러 녹화함');
   // 키 이름·횟수만 적음 (키·해시는 로그에 넣지 않음)
+  console.log(`카카오 로그인: ${config.kakaoAppId ? '켬' : '꺼짐 (KAKAO_APP_ID 없음)'} · 로그인 필수: ${config.loginRequired ? '켬 (바깥 요청은 로그인해야 여행 만들기·참여)' : '꺼짐'}`);
   if (config.accessKeys.length) console.log(`접근 키 ${config.accessKeys.map((k) => `${k.label}(${k.quota}회)`).join(', ')}: 터널 요청은 키를 낸 경우만 회의·AI 카드 (키 LLM: ${config.accessReplay})`);
   if (config.devUi) console.log(`백엔드 시험 화면: http://localhost:${info.port}/dev/ · 회의 엔진: http://localhost:${info.port}/dev/meeting`);
   if (config.devUi && config.devUiTunnel && !config.accessKeys.length) console.warn('DEV_UI_TUNNEL=true인데 ACCESS_KEYS가 없어 터널 요청의 시험 경로는 열지 않음');

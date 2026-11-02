@@ -127,6 +127,13 @@
       "when": 1793591399693,
       "tag": "0017_place_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793610770546,
+      "tag": "0018_kakao_login",
+      "breakpoints": true
     }
   ]
 }
