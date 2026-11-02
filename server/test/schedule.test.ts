@@ -430,6 +430,9 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     const [L, LB] = (await schedulePlans(db, router, { ...base, arrivalTime: '22:30' })).plans;
     expect(L.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
     expect(LB.route[0].stops.map((x) => x.kind)).toEqual(['lodging']);
+    // 15:00 도착·19:30 출발 당일치기 → 16:00–17:30(90분): 반올림하면 0곳이지만 다닐 시간이 있으면 1곳 (11/2 검증02)
+    const [S] = (await schedulePlans(db, router, { ...base, pool: poolOf(cands, ['2026-11-07']), arrivalTime: '15:00', departureTime: '19:30' })).plans;
+    expect(sights(S, 0)).toHaveLength(1);
     expect(sights(L, 1).length).toBe(4);
   });
 

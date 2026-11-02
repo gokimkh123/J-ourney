@@ -952,7 +952,8 @@ async function contextOf(db: Db, router: RouteClient, input: ScheduleInput): Pro
       end: e,
       lunch: span > 0 && s < toMinutes(SCHEDULE.meals.lunch[1]) && e > toMinutes(SCHEDULE.meals.lunch[0]),
       dinner: span > 0 && e > DINNER_START && s < toMinutes(SCHEDULE.meals.dinner[1]),
-      perDay: Math.min(perDay, Math.round((perDay * span) / (end - start))),
+      // 다닐 시간이 조금이라도 있으면 1곳은 (11/2 검증02: 15:00 도착·19:30 출발 당일치기(90분)가 반올림으로 0곳이 되어 빈 일정)
+      perDay: span > 0 ? Math.max(1, Math.min(perDay, Math.round((perDay * span) / (end - start)))) : 0,
       spanMinutes: span,
     };
   });
