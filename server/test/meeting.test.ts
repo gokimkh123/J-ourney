@@ -424,6 +424,14 @@ describe('방장이 예약한 곳·숙소 (v2.4, 2단계)', () => {
     expect(asked).toEqual(['신창국밥:장소 목록', '돼지국밥:장소 목록', '해운대게스트하우스:숙소 목록']);
     const soup = r.candidates.find((c) => c.name === '신창국밥 본점')!;
     for (const m of members) expect(soup.marks[m.memberId]).toContainEqual({ kind: 'must', label: '예약한 곳: 신창국밥' });
+    expect(soup.booked).toBe(true);
+    expect(r.lodgings[0].booked).toBe(true);
+    // 예약한 곳은 누군가 ⚠를 달아도 사람 확인 안건(투표로 뺄 수 있음)에 올리지 않음 (예약 표시가 없으면 안건)
+    const board = { candidates: [{ placeId: 'plc_p4', name: '신창국밥 본점', lat: null, lng: null, proposedBy: ['agt_m1'], reactions: [] }], agenda: [] };
+    const ai = new Map([['agt_m2', [{ placeId: 'plc_p4', kind: 'warn' as const, reason: '시끄러울 것 같아요' }]]]);
+    expect(reactBoard(board, r, members, ai).agenda.filter((a) => a.placeId === 'plc_p4')).toEqual([]);
+    const unbooked = { ...r, candidates: r.candidates.map(({ booked: _booked, ...c }) => c) };
+    expect(reactBoard(board, unbooked, members, ai).agenda.map((a) => a.placeId)).toContain('plc_p4');
     expect(r.lodgings.map((c) => c.name)).toEqual(['해운대게스트하우스']);
     for (const m of members) expect(r.lodgings[0].marks[m.memberId]).toContainEqual({ kind: 'must', label: '예약한 숙소: 해운대게스트하우스' });
     expect(r.nameMatches).toContainEqual(expect.objectContaining({ memberId: 'm1', label: '예약한 숙소: 해운대게스트하우스', places: ['해운대게스트하우스'] }));

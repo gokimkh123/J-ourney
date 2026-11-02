@@ -216,7 +216,7 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     }
   });
 
-  it('✕가 붙은 곳은 빼되 5단계에서 사람이 남기기로 한 곳은 넣고, 사람이 뺀 곳은 다시 넣지 않음', async () => {
+  it('✕가 붙은 곳은 빼되 5단계에서 사람이 남기기로 한 곳·방장이 예약한 곳은 넣고, 사람이 뺀 곳은 다시 넣지 않음', async () => {
     const db = await testDb();
     const cands = Array.from({ length: 6 }, (_, i) => near(`관광지${i}`, i));
     const [x, y] = cands;
@@ -233,6 +233,10 @@ describe('6단계 동선 짜기 (가짜 길찾기, LLM 0 · 카카오 0)', { tim
     const [A2, B2] = await run(db, fakeRouter().router, pool, { ...board, candidates: board.candidates.filter((c) => c.placeId !== `plc_${y.id}`) }, members, { decision });
     expect(ids(A2).has(`plc_${x.id}`)).toBe(true);
     expect(ids(A2).has(`plc_${y.id}`) || ids(B2).has(`plc_${y.id}`)).toBe(false);
+    // 방장이 예약한 곳(v2.4)은 ✕가 붙어도 사람 확인 없이 넣음
+    const bookedPool = poolOf(cands.map((c) => (c.id === x.id ? { ...c, booked: true as const } : c)), ['2026-11-07']);
+    const [A3] = await run(db, fakeRouter().router, bookedPool, board, members);
+    expect(ids(A3).has(`plc_${x.id}`)).toBe(true);
   });
 
   it('야경 좋아요가 있으면 해가 12° 지는 때(항해박명 끝)에 여는 전망대를 저녁 뒤 마지막에 두고, 18시에 닫는 전망대는 야경 자리에 두지 않음', async () => {

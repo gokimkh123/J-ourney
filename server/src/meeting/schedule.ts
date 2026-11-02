@@ -366,7 +366,8 @@ function spotsOf(
       blocked = rs.some((r) => r?.kind === 'block');
       score = rs.filter((r) => r?.kind === 'like').length * REACT.score.like + rs.filter((r) => r?.kind === 'warn').length * REACT.score.warn - SCHEDULE.poolPenalty;
     }
-    if (blocked && !kept.has(placeId)) return null;
+    // ✕가 붙은 곳은 빼되 5단계에서 사람이 남긴 곳·방장이 예약한 곳(v2.4)은 넣음
+    if (blocked && !kept.has(placeId) && !c.booked) return null;
     const code = c.code !== undefined ? c.code : (filled.get(c.id)?.code ?? null);
     return {
       id: c.id,

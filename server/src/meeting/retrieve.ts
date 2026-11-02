@@ -143,6 +143,8 @@ export interface Candidate {
   outside?: string;
   /** 여행지 밖이면 여행지 가운데에서 편도 어림 (분) */
   outsideMinutes?: number;
+  /** 방장이 이미 예약한 곳·숙소 (v2.4): 4단계 안건(사람 확인 투표)에 올리지 않고 ✕가 붙어도 6단계에서 빼지 않음 */
+  booked?: true;
 }
 
 export interface RetrieveResult {
@@ -493,7 +495,9 @@ export async function retrieveCandidates(
       reasons[m.memberId] = why;
       marks[m.memberId] = mark;
     }
+    const booked = bookedIncludes.some((k) => k.matches(view));
     return {
+      ...(booked ? { booked: true as const } : {}),
       id: p.id,
       name: p.title,
       type: p.type,
@@ -655,7 +659,7 @@ export async function retrieveCandidates(
     if (!row) return null;
     const c = toCandidate(row);
     for (const m of members) c.marks[m.memberId] = [...(c.marks[m.memberId] ?? []), { kind: 'must', label: lodgingRule.rule.label }];
-    return c;
+    return { ...c, booked: true as const };
   })();
   // 숙소 후보 (1박 이상): 예약한 숙소가 있으면 그곳만, 없으면 누군가의 꼭 지킬 것에 맞는 곳 먼저 → 4명 합계 → 인기도 순
   const lodgings = bookedLodging
