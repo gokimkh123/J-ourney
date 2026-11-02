@@ -5,15 +5,17 @@ import { Alert, ScrollView, StyleSheet, View } from "react-native";
 
 import { AppText, Banner, Button, Card, SegmentedTabs } from "../components/index.ts";
 import { api } from "../lib/api/index.ts";
+import { ApiError } from "../lib/api/errors.ts";
 import { checkHealth } from "../lib/api/health.ts";
 import { config } from "../lib/config/index.ts";
 import { leaveDeps } from "../lib/session/leaveDeps.ts";
-import { leaveParty } from "../lib/session/leaveParty.ts";
+import { deleteParty, leaveParty } from "../lib/session/leaveParty.ts";
 import { partyInfo } from "../lib/session/partyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { themeMode } from "../lib/settings/index.ts";
 import { useThemeMode } from "../lib/settings/useThemeMode.ts";
 import type { ThemeMode } from "../lib/settings/themeMode.ts";
+import { describeError } from "../lib/ui/format.ts";
 import { spacing, useStyles, type Theme } from "../theme/index.ts";
 
 const MODE_OPTIONS: { key: ThemeMode; label: string }[] = [
@@ -58,6 +60,30 @@ export default function SettingsScreen() {
     router.replace("/");
   };
 
+  const isHost = me !== null && partyInfo.get()[me.tripId]?.members.find((m) => m.id === me.memberId)?.isHost === true;
+
+  // 방장은 나갈 수 없고 파티를 없앤다(v2.4). 회의가 도는 중이면 서버가 막는다.
+  const onDelete = () => {
+    if (me === null) return;
+    Alert.alert("파티를 없앨까요?", "모든 구성원의 휴대폰에서 이 파티가 사라져요. 되돌릴 수 없어요.", [
+      { text: "취소", style: "cancel" },
+      {
+        text: "없애기",
+        style: "destructive",
+        onPress: () => {
+          deleteParty(leaveDeps, me.tripId)
+            .then(() => router.replace("/"))
+            .catch((e: unknown) =>
+              Alert.alert(
+                "파티를 없애지 못했어요",
+                e instanceof ApiError && e.status === 409 ? "AI 회의가 진행 중이에요. 회의가 끝난 뒤 다시 해 주세요." : describeError(e),
+              ),
+            );
+        },
+      },
+    ]);
+  };
+
   const onLeave = () => {
     Alert.alert("파티에서 나갈까요?", "이 휴대폰에서 이 파티 정보가 지워져요. 같은 초대 코드로 다시 들어오면 새 구성원으로 참여해요.", [
       { text: "취소", style: "cancel" },
@@ -92,7 +118,7 @@ export default function SettingsScreen() {
           <>
             <InfoRow label="닉네임" value={me.nickname} />
             <InfoRow label="초대 코드" value={me.inviteCode} />
-            <Button label="파티에서 나가기" variant="secondary" onPress={onLeave} block />
+            <Button label={isHost ? "파티 없애기" : "파티에서 나가기"} variant="secondary" onPress={isHost ? onDelete : onLeave} block />
           </>
         )}
       </Card>

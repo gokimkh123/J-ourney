@@ -20,14 +20,15 @@ import { CharacterSvg } from "../components/character/Bean.tsx";
 import type { CharacterProps } from "../components/character/props.ts";
 import { endpoints } from "../lib/api/index.ts";
 import { ApiError } from "../lib/api/errors.ts";
+import { config } from "../lib/config/index.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { profileChips } from "../lib/persona/profile.ts";
 import { useProfile } from "../lib/persona/profileStore.ts";
 import type { InviteInfo, SessionResponse } from "../lib/persona/types.ts";
 import { partyActions, session } from "../lib/session/index.ts";
 import { leaveDeps } from "../lib/session/leaveDeps.ts";
-import { dropDeletedParty, leaveParty } from "../lib/session/leaveParty.ts";
-import { putPartyInfo } from "../lib/session/partyInfo.ts";
+import { deleteParty, dropDeletedParty, leaveParty } from "../lib/session/leaveParty.ts";
+import { partyInfo, putPartyInfo } from "../lib/session/partyInfo.ts";
 import { fromSessionResponse } from "../lib/session/session.ts";
 import { useParties } from "../lib/session/useParties.ts";
 import { usePartyInfos, useRefreshParty } from "../lib/session/usePartyInfo.ts";
@@ -75,7 +76,11 @@ function PartyList() {
   // 목록에 있는 파티들의 이름·상태를 계속 새로 받는다.
   const ids = list.map((p) => p.tripId).join(",");
   const refreshAll = useCallback(async () => {
-    await Promise.all(list.map((p) => refreshOne(p)));
+    const results = await Promise.all(list.map(async (p) => ({ p, gone: (await refreshOne(p)) === "gone" })));
+    // 방장이 없앤 파티(초대 조회 404, v2.4)는 목록에서 뺀다. 가짜 서버는 앱을 다시 켜면 비어서 404가 나므로 실서버만.
+    const gone = config.useMock ? [] : results.filter((r) => r.gone).map((r) => r.p);
+    for (const p of gone) void dropDeletedParty(leaveDeps, p.tripId);
+    if (gone.length > 0) Alert.alert(`방장이 ${gone.map((p) => partyInfo.get()[p.tripId]?.trip.title ?? "파티").join(", ")}를 없앴어요`);
   }, [list, refreshOne]);
   usePolling(refreshAll, POLL_MS * 2, list.length > 0, ids);
 
@@ -332,7 +337,7 @@ function TripHome() {
     } catch (e) {
       if (session.getSession()?.inviteCode !== code) return;
       // 초대 코드가 없어졌으면 방장이 파티를 없앤 것(v2.4). 이 폰에서도 빼고 처음 화면으로.
-      if (e instanceof ApiError && e.status === 404) {
+      if (!config.useMock && e instanceof ApiError && e.status === 404) {
         void dropDeletedParty(leaveDeps, me.tripId);
         Alert.alert("방장이 파티를 없앴어요");
         return;
@@ -390,6 +395,7 @@ function TripHome() {
 
   const members = info?.members ?? [];
 
+  const isHost = info?.members.find((m) => m.id === me.memberId)?.isHost === true;
   const onLeave = () => {
     Alert.alert(
       `${info?.trip.title ?? "이 파티"}에서 나갈까요?`,
@@ -400,7 +406,6 @@ function TripHome() {
           text: "나가기",
           style: "destructive",
           onPress: () => {
-            const isHost = info?.members.find((m) => m.id === me.memberId)?.isHost === true;
             void leaveParty(leaveDeps, me.tripId, isHost);
           },
         },
@@ -408,10 +413,33 @@ function TripHome() {
     );
   };
 
-  // ⋯ 메뉴: 지금은 파티 나가기 하나(홈 아래쪽 버튼에서 옮겨 왔다).
+  // 방장 파티 없애기(v2.4): 모두의 파티가 사라지고 되돌릴 수 없다. 회의가 도는 중이면 서버가 막는다(409).
+  const onDelete = () => {
+    Alert.alert(
+      `${info?.trip.title ?? "이 파티"}를 없앨까요?`,
+      "모든 구성원의 휴대폰에서 이 파티가 사라져요. 되돌릴 수 없어요.",
+      [
+        { text: "취소", style: "cancel" },
+        {
+          text: "없애기",
+          style: "destructive",
+          onPress: () => {
+            deleteParty(leaveDeps, me.tripId).catch((e: unknown) => {
+              Alert.alert(
+                "파티를 없애지 못했어요",
+                e instanceof ApiError && e.status === 409 ? "AI 회의가 진행 중이에요. 회의가 끝난 뒤 다시 해 주세요." : describeError(e),
+              );
+            });
+          },
+        },
+      ],
+    );
+  };
+
+  // ⋯ 메뉴: 파티원은 파티 나가기, 방장은 파티 없애기(방장은 나갈 수 없음, v2.4)
   const onMore = () => {
     Alert.alert(info?.trip.title ?? "이 파티", undefined, [
-      { text: "파티 나가기", style: "destructive", onPress: onLeave },
+      isHost ? { text: "파티 없애기", style: "destructive", onPress: onDelete } : { text: "파티 나가기", style: "destructive", onPress: onLeave },
       { text: "취소", style: "cancel" },
     ]);
   };

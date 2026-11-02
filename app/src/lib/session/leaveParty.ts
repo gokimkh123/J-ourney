@@ -22,3 +22,15 @@ export async function dropDeletedParty(deps: LeavePartyDeps, tripId: string): Pr
   deps.forgetInfo(tripId);
   await deps.leaveLocal(tripId);
 }
+
+export type DeletePartyDeps = LeavePartyDeps & {
+  /** 서버에서 파티 없애기(v2.4 DELETE /trips/{id}, 방장) */
+  deleteTrip(tripId: string): Promise<void>;
+};
+
+/** 방장 파티 없애기. 서버가 막으면(회의 도는 중 409 등) 던지고 이 폰에서도 그대로 둔다. 없앴으면 이 폰에서 뺀다. */
+export async function deleteParty(deps: DeletePartyDeps, tripId: string): Promise<void> {
+  await deps.deleteTrip(tripId);
+  deps.forgetInfo(tripId);
+  await deps.leaveLocal(tripId);
+}

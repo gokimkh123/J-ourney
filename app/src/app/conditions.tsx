@@ -1,4 +1,4 @@
-import { useFocusEffect, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
@@ -21,6 +21,8 @@ import {
 import { endpoints } from "../lib/api/index.ts";
 import { config } from "../lib/config/index.ts";
 import type { InviteInfo } from "../lib/persona/types.ts";
+import { session } from "../lib/session/index.ts";
+import { putPartyInfo } from "../lib/session/partyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { DEFAULT_BUDGET } from "../lib/trip/budget.ts";
 import {
@@ -37,7 +39,11 @@ import { chosenPlanStore } from "../lib/plan/chosenPlan.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { addDays, dateLabel, nextSaturday, todayISO } from "../lib/trip/dateRange.ts";
 import { describeError, formatWon, nightsLabel } from "../lib/ui/format.ts";
+import { usePolling } from "../lib/ui/usePolling.ts";
 import { hitSize, pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
+
+// 구성원 준비 상태를 다시 받는 간격(홈과 같음)
+const INFO_POLL_MS = 3000;
 
 // 11/2: 도보는 뺐다(여행 이동으로는 맞지 않음).
 const TRANSPORTS = [
@@ -126,25 +132,20 @@ export default function ConditionsScreen() {
   const [infoError, setInfoError] = useState<string | null>(null);
   const inviteCode = me?.inviteCode ?? null;
 
-  useFocusEffect(
-    useCallback(() => {
-      if (inviteCode === null) return;
-      let alive = true;
-      endpoints
-        .getInvite(inviteCode)
-        .then((next) => {
-          if (!alive) return;
-          setInfo(next);
-          setInfoError(null);
-        })
-        .catch((error: unknown) => {
-          if (alive) setInfoError(describeError(error));
-        });
-      return () => {
-        alive = false;
-      };
-    }, [inviteCode]),
-  );
+  // 구성원 준비 상태를 계속 새로 받는다(파티원이 나가거나 성향 검사를 마치면 "N명 모두 준비됐어요"가 바로 바뀐다).
+  const refreshInfo = useCallback(async () => {
+    if (inviteCode === null) return;
+    try {
+      const next = await endpoints.getInvite(inviteCode);
+      if (session.getSession()?.inviteCode !== inviteCode) return;
+      setInfo(next);
+      putPartyInfo(next);
+      setInfoError(null);
+    } catch (error) {
+      if (session.getSession()?.inviteCode === inviteCode) setInfoError(describeError(error));
+    }
+  }, [inviteCode]);
+  usePolling(refreshInfo, INFO_POLL_MS, inviteCode !== null, inviteCode);
 
   const members = info?.members ?? [];
   const waiting = members.filter((m) => !m.personaReady);
