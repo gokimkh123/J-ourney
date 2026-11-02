@@ -30,6 +30,7 @@ describe('13단계 마무리: 두 안의 이름·설명 (AI 1회, 못 쓰면 A�
     });
     expect(req.schema.safeParse(answer('바다', '시장')).success).toBe(true);
     expect(req.schema.safeParse({ ...answer('바다', '시장'), b: { pick: ['A1'], name: '시장', desc: '시장 하루' } }).success).toBe(false); // B안은 B 번호만
+    expect(req.schema.safeParse({ ...answer('바다', '시장'), b: { pick: ['A3', 'B1'], name: '시장', desc: '시장 하루' } }).success).toBe(true); // 두 안에 모두 있는 곳(광안대교)은 A 번호로 골라도 받음
   });
 
   it('AI 답을 그대로 보여 줌 · 두 이름이 같으면 B만 기본값 · 길이를 넘거나 칸 이름이 나오면 그 안만 기본값', async () => {

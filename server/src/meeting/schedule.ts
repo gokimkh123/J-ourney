@@ -659,7 +659,12 @@ function pinnedDay(pinned: readonly string[], daytime: readonly Spot[], lunch: b
   const at = items.indexOf('dinner');
   if (at < 0) items.push(...rest);
   else items.splice(at, 0, ...rest);
-  if (lunch && !items.includes('lunch')) items.splice(Math.floor(items.length * SCHEDULE.lunchAt), 0, 'lunch');
+  // 사람이 적지 않은 점심(그때 식당이 없던 끼니)은 가운데에 넣되 저녁 앞 (11/2 시뮬레이션: 저녁만 정한 날에 점심이 저녁 뒤로 들어감)
+  if (lunch && !items.includes('lunch')) {
+    const at = Math.floor(items.length * SCHEDULE.lunchAt);
+    const d = items.indexOf('dinner');
+    items.splice(d >= 0 ? Math.min(at, d) : at, 0, 'lunch');
+  }
   if (dinner && !items.includes('dinner')) items.push('dinner');
   return [...items, ...tail];
 }
@@ -731,7 +736,11 @@ async function buildDay(ctx: Ctx, st: PlanState, i: number, retried = st.frozen.
   }
   // 나머지 끼니: 그날 쉬지 않고 끼니 시간대에 여는 식당 중 동선에서 덜 벗어나고 점수가 큰 곳 (이 안에서 쓴 식당은 다시 쓰지 않음, B안은 A안의 식당을 되도록 피함)
   // 다른 날에 꼭 지킬 식당으로 넣어 둔 곳도 쓰지 않음 (10/28 점검: 1일째 점심과 2일째 저녁에 같은 식당이 들어감)
-  const elsewhere = new Set(st.sets.flatMap((x, d) => (d === i ? [] : x.filter((p) => p.meal).map((p) => p.id))));
+  // 다른 날에 사람이 고른 끼니 식당(14단계)도 쓰지 않음 (11/2 시뮬레이션: 뒤 날에 고른 식당을 앞 날을 다시 짤 때 먼저 써서 두 날에 들어감)
+  const elsewhere = new Set([
+    ...st.sets.flatMap((x, d) => (d === i ? [] : x.filter((p) => p.meal).map((p) => p.id))),
+    ...st.mealPins.flatMap((x, d) => (d === i ? [] : Object.values(x).filter((id): id is string => !!id))),
+  ]);
   for (const k of slotsLeft()) {
     const slot = seq[k] as Slot;
     const [w0, w1] = SCHEDULE.meals[slot].map(toMinutes);
@@ -925,6 +934,11 @@ async function contextOf(db: Db, router: RouteClient, input: ScheduleInput): Pro
   return { ctx, extras };
 }
 
+/** 꼭 지킬 곳(예약한 곳 포함)인데 여행 날짜·시간에 갈 수 있는 날이 없어 넣지 못한 곳을 메모로 남김 (예: 저녁에 여는 곳인데 하루가 저녁 전에 끝남, 11/2 시뮬레이션) */
+function unplacedNotes(st: PlanState, required: readonly Spot[]): void {
+  for (const p of required) if (!st.sets.some((d) => d.includes(p))) st.notes.push(`${p.name} — 꼭 지킬 곳이지만 여행 날짜·시간에 갈 수 있는 날이 없어 넣지 못함`);
+}
+
 const planIdOf = (meetingId: string | null, label: 'A' | 'B') => `${meetingId ? meetingId.replace(/^mtg_/, 'pln_') : 'pln'}_${label.toLowerCase()}`;
 const rawId = (placeId: string) => placeId.replace(/^plc_/, '');
 const stopIds = (plan: PlanProposal, kind?: PlanStop['kind']) => plan.route.flatMap((d) => d.stops.filter((s) => !kind || s.kind === kind).map((s) => rawId(s.placeId)));
@@ -987,6 +1001,7 @@ export async function schedulePlans(db: Db, router: RouteClient, input: Schedule
   const { ctx, extras } = await contextOf(db, router, input);
   const required = requiredPlaces(ctx, new Set());
   const stA = fresh('A', pickSets(ctx, new Set(), required));
+  unplacedNotes(stA, required);
   const A = await buildPlan(ctx, stA, planIdOf(input.meetingId, 'A'));
   const aStops = A.route.flatMap((d) => d.stops);
   const byId = new Map(ctx.everywhere.map((p) => [p.id, p]));
@@ -995,6 +1010,7 @@ export async function schedulePlans(db: Db, router: RouteClient, input: Schedule
   const sharedIds = new Set(shared.map((p) => p.id));
   const avoid = new Set(aStops.map((s) => rawId(s.placeId)).filter((id) => !sharedIds.has(id)));
   const stB = fresh('B', pickSets(ctx, avoid, shared));
+  unplacedNotes(stB, shared);
   stB.softMeals = new Set(stopIds(A, 'food').filter((id) => !sharedIds.has(id)));
   const B = await buildPlan(ctx, stB, planIdOf(input.meetingId, 'B'));
   return { plans: [A, B], extras: extrasIn([A, B], extras, input.pool), states: { A: setsOf(stA, []), B: setsOf(stB, [...sharedIds]) } };

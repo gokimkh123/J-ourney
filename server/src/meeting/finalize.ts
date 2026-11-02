@@ -87,7 +87,10 @@ export function namesRequest(plans: readonly PlanProposal[]) {
   const placesOf = (l: string) => new Set((rows[l] ?? []).map((r) => r.placeId));
   const only = Object.fromEntries(plans.map((p) => [p.label, rows[p.label].filter((r) => r.kind !== 'lodging' && !placesOf(p.label === 'A' ? 'B' : 'A').has(r.placeId)).map((r) => r.id)]));
   const side = (l: PlanLabel) => {
-    const ids = (rows[l] ?? []).filter((r) => r.kind !== 'lodging').map((r) => r.id);
+    // 그 안의 곳 번호만 받되, 두 안에 모두 있는 곳은 다른 안의 번호로 골라도 받음 (11/2: B안에서 같이 있는 곳을 A 번호로 골라 형식 실패 → 예비 모델로 넘어감)
+    const mine = placesOf(l);
+    const shared = (rows[l === 'A' ? 'B' : 'A'] ?? []).filter((r) => mine.has(r.placeId));
+    const ids = [...(rows[l] ?? []), ...shared].filter((r) => r.kind !== 'lodging').map((r) => r.id);
     return z.object({
       pick: (ids.length ? z.array(z.enum(ids as [string, ...string[]])) : z.array(z.string()).max(0))
         .max(FINALIZE.pickHardMax)

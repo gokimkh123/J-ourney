@@ -1886,6 +1886,10 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
     expect(out.results).toEqual([{ plan: 'A', applied: true, note: `1일째 ${first.name} 뺌` }]);
     expect(out.plan).toMatchObject({ planId: A.planId, version: A.version + 1, changes: [`1일째 ${first.name} 뺌`] });
     expect(out.edits.at(-1)).toMatchObject({ version: A.version + 1, by: hyunwoo.id });
+    // 카카오 횟수는 고친 기록에 남겨 다음 고치기가 이어 셈 (일정 표 전체에 회의당 상한, 11/2 보안 점검) · API의 고친 기록에는 내보내지 않음
+    expect(out.edits.at(-1).kakao).toBeUndefined();
+    const [stored] = await db.select({ edits: tripPlans.edits }).from(tripPlans).where(eq(tripPlans.tripId, tripId));
+    expect(stored.edits.at(-1)?.kakao).toEqual({ transit: expect.any(Number), walk: expect.any(Number), car: expect.any(Number) });
     // 옛 버전을 보고 보낸 고치기는 409 (baseVersion, v2.4): 다른 사람이 먼저 고쳐 지금은 한 버전 위
     const stale = await edits({ baseVersion: A.version, edits: [{ type: 'remove', itemId: sightsOf(out.plan)[0].itemId }] });
     expect(stale.status).toBe(409);

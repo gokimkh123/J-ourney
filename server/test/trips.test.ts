@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { meetings, members, trips } from '../src/db/schema.js';
 import { hashToken } from '../src/lib/ids.js';
 import { EventHub } from '../src/meeting/live.js';
+import { ipBucket } from '../src/lib/rate-limit.js';
 import { call, createTestApp } from './helpers.js';
 
 let t: Awaited<ReturnType<typeof createTestApp>>;
@@ -119,6 +120,21 @@ describe('초대·참여: 회의 시작 뒤 · 코드 맞추기', () => {
     // 막힌 IP는 맞는 코드·참여도 그 1분 동안 막히고, 다른 IP는 그대로
     expect((await call(fresh.app, 'POST', `/invites/${code}/join`, { nickname: '지은' }, undefined, { 'cf-connecting-ip': '198.51.100.7' })).status).toBe(429);
     expect((await call(fresh.app, 'POST', `/invites/${code}/join`, { nickname: '지은' }, undefined, { 'cf-connecting-ip': '198.51.100.8' })).status).toBe(201);
+  });
+});
+
+describe('IP 제한 묶음 (11/2 보안 점검)', () => {
+  it('IPv6는 앞 64비트로 묶어 주소를 바꿔 가며 틀린 초대 코드를 보내도 1분 20번에서 막힘 · IPv4·IPv4를 품은 IPv6는 주소 그대로', async () => {
+    expect(ipBucket('2001:db8:1:2:aaaa::1')).toBe('2001:db8:1:2::/64');
+    expect(ipBucket('2001:0db8:0001:0002:bbbb:cccc:dddd:eeee')).toBe('2001:db8:1:2::/64');
+    expect(ipBucket('2001:db8::1')).toBe('2001:db8:0:0::/64');
+    expect(ipBucket('::ffff:198.51.100.7')).toBe('198.51.100.7');
+    expect(ipBucket('198.51.100.7')).toBe('198.51.100.7');
+    const fresh = await createTestApp();
+    const miss = (ip: string) => call(fresh.app, 'GET', '/invites/ZZZZZZ', undefined, undefined, { 'cf-connecting-ip': ip });
+    for (let i = 0; i < 20; i++) expect((await miss(`2001:db8:1:2:${i.toString(16)}::1`)).status).toBe(404);
+    expect((await miss('2001:db8:1:2:ffff::9')).status).toBe(429);
+    expect((await miss('2001:db8:1:3::1')).status).toBe(404); // 다른 /64는 따로
   });
 });
 

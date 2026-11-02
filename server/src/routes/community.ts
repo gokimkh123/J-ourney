@@ -28,6 +28,8 @@ export const COMMUNITY = {
   otherGroup: '기타',
   /** 사진 출처 표시 (관광공사 사진은 공공누리: imageCopyright Type1 출처 표시 · Type3 출처 표시·변경 금지) */
   imageCredit: '한국관광공사',
+  /** AI가 고른 수를 다시 세는 간격 (회의 기록 전체를 세므로 1분 동안은 같은 값을 씀, 11/2 보안 점검: 조회마다 세면 여러 사람이 동시에 열 때 DB가 막힘) */
+  pickCacheMs: 60_000,
 } as const;
 
 const listQuery = z.object({
@@ -65,26 +67,37 @@ export function communityRoutes(db: Db) {
   const r = new Hono<AuthEnv>();
   const auth = requireMember(db);
 
-  // AI가 고른 수: 회의 이벤트(3단계 고른 곳 알림)에서 셈
-  const picks = db.$with('picks').as(
-    db
-      .select({
-        pid: sql<string>`${meetingEvents.data}->>'placeId'`.as('pid'),
-        n: sql<number>`count(distinct (${meetingEvents.meetingId}, ${meetingEvents.data}->>'agentId'))::int`.as('n'),
-      })
-      .from(meetingEvents)
-      .where(and(eq(meetingEvents.type, 'research.progress'), sql`${meetingEvents.data}->>'stage' = 'picking'`, sql`${meetingEvents.data}->>'placeId' is not null`))
-      .groupBy(sql`1`),
-  );
+  // AI가 고른 수: 회의 이벤트(3단계 고른 곳 알림)에서 셈 — 1분 동안 메모리에 두고, 동시에 여러 요청이 와도 한 번만 셈
+  let pickCache: { at: number; counts: Promise<Map<string, number>> } | null = null;
+  const pickCounts = (now = Date.now()) => {
+    if (!pickCache || now - pickCache.at >= COMMUNITY.pickCacheMs) {
+      const counts = db
+        .select({
+          pid: sql<string>`${meetingEvents.data}->>'placeId'`,
+          n: sql<number>`count(distinct (${meetingEvents.meetingId}, ${meetingEvents.data}->>'agentId'))::int`,
+        })
+        .from(meetingEvents)
+        .where(and(eq(meetingEvents.type, 'research.progress'), sql`${meetingEvents.data}->>'stage' = 'picking'`, sql`${meetingEvents.data}->>'placeId' is not null`))
+        .groupBy(sql`1`)
+        .then((list) => new Map(list.map((x) => [x.pid.replace(/^plc_/, ''), x.n])));
+      pickCache = { at: now, counts };
+      // 실패하면 다음 요청이 다시 셈
+      counts.catch(() => {
+        if (pickCache?.counts === counts) pickCache = null;
+      });
+    }
+    return pickCache.counts;
+  };
   const rated = db.$with('rated').as(
     db
       .select({ cid: placeReviews.placeId, avg: sql<number>`avg(${placeReviews.rating})::float`.as('avg'), cnt: sql<number>`count(*)::int`.as('cnt') })
       .from(placeReviews)
       .groupBy(placeReviews.placeId),
   );
-  const rows = (where: ReturnType<typeof and>) =>
-    db
-      .with(picks, rated)
+  /** 장소 행 + 평점 (AI가 고른 수는 picks로 붙이고 그 순서로 정렬) */
+  const rows = async (where: ReturnType<typeof and>, picks: ReadonlyMap<string, number>) => {
+    const found = await db
+      .with(rated)
       .select({
         cid: places.contentId,
         name: places.title,
@@ -95,16 +108,17 @@ export function communityRoutes(db: Db) {
         imageCopyright: places.imageCopyright,
         group: categories.name1,
         category: categories.name3,
-        picks: sql<number>`coalesce(${picks.n}, 0)`,
         avg: rated.avg,
         cnt: sql<number>`coalesce(${rated.cnt}, 0)`,
       })
       .from(places)
-      .leftJoin(picks, sql`${picks.pid} = 'plc_' || ${places.contentId}`)
       .leftJoin(rated, eq(rated.cid, places.contentId))
       .leftJoin(categories, eq(categories.code, places.lcls3))
-      .where(where)
-      .orderBy(sql`coalesce(${picks.n}, 0) desc`, sql`coalesce(${rated.cnt}, 0) desc`, places.contentId);
+      .where(where);
+    return found
+      .map((p) => ({ ...p, picks: picks.get(p.cid) ?? 0 }))
+      .sort((a, b) => b.picks - a.picks || b.cnt - a.cnt || a.cid.localeCompare(b.cid));
+  };
   type Row = Awaited<ReturnType<typeof rows>>[number];
   const cardOf = (p: Row, introRaw: Record<string, string> | null, now: Date) => {
     const month = Number(todayKst(now).slice(5, 7));
@@ -147,14 +161,21 @@ export function communityRoutes(db: Db) {
     const q = listQuery.safeParse({ regionCode: c.req.query('regionCode'), districtCode: c.req.query('districtCode') });
     if (!q.success) throw new ApiError('VALIDATION_ERROR', `${q.error.issues[0]?.path.join('.')}: ${q.error.issues[0]?.message}`);
     const { regionCode, districtCode } = q.data;
-    const found = await rows(
-      and(
-        sql`(${picks.n} is not null or ${rated.cnt} is not null)`,
-        eq(places.visible, true),
-        regionCode ? eq(places.regionCode, regionCode) : undefined,
-        districtCode ? eq(places.districtCode, districtCode) : undefined,
-      ),
-    );
+    // AI가 고른 곳 + 리뷰가 있는 곳
+    const picks = await pickCounts();
+    const reviewed = (await db.selectDistinct({ cid: placeReviews.placeId }).from(placeReviews)).map((x) => x.cid);
+    const ids = [...new Set([...picks.keys(), ...reviewed])];
+    const found = ids.length
+      ? await rows(
+          and(
+            inArray(places.contentId, ids),
+            eq(places.visible, true),
+            regionCode ? eq(places.regionCode, regionCode) : undefined,
+            districtCode ? eq(places.districtCode, districtCode) : undefined,
+          ),
+          picks,
+        )
+      : [];
     const groups = new Map<string, Row[]>();
     for (const p of found) {
       const key = p.group ?? COMMUNITY.otherGroup;
@@ -176,7 +197,7 @@ export function communityRoutes(db: Db) {
   // 장소 하나: 카드 + 소개글(관광공사) + 리뷰 (인증 불필요, 토큰을 보내면 내 리뷰에 mine)
   r.get('/community/places/:placeId', async (c) => {
     const cid = contentIdOf(c.req.param('placeId'));
-    const [p] = await rows(eq(places.contentId, cid));
+    const [p] = await rows(and(eq(places.contentId, cid)), await pickCounts());
     if (!p) throw new ApiError('NOT_FOUND', '장소를 찾을 수 없음');
     const [extra] = await db.select({ introRaw: places.introRaw, overview: places.overview }).from(places).where(eq(places.contentId, cid));
     const viewer = await viewerOf(c.req.header('Authorization'));

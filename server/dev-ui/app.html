@@ -720,8 +720,9 @@ function drawPin(p) {
   const rx = p.rx ?? { like: 0, warn: 0, block: 0 };
   const mark = { ask: '⚔', kept: '✔', dropped: '✕' }[p.state] ?? (rx.block ? '✕' : p.lodging ? '🏨' : n > 1 ? `★${n}` : '📍');
   const tag = p.result ?? [['👍', rx.like], ['⚠', rx.warn], ['✕', rx.block]].filter(([, k]) => k).map(([e, k]) => `${e}${k}`).join(' ');
+  // 꼬리표(고른 사람 ↔ 걸리는 사람 닉네임)도 이스케이프 (11/2 보안 점검)
   p.marker.setIcon(L.divIcon({ className: '', iconSize: [26, 26], iconAnchor: [13, 26],
-    html: `<div class="pinw ${p.drawn ? 'static' : ''} ${rx.block ? 'blocked' : ''} ${p.state ?? ''}" style="--c:${n > 1 ? '#6D3FD8' : p.color}"><div class="pin"><span>${mark}</span></div><span class="plabel">${esc(p.label)}${tag ? ' · ' + tag : ''}</span></div>` }));
+    html: `<div class="pinw ${p.drawn ? 'static' : ''} ${rx.block ? 'blocked' : ''} ${p.state ?? ''}" style="--c:${n > 1 ? '#6D3FD8' : p.color}"><div class="pin"><span>${mark}</span></div><span class="plabel">${esc(p.label)}${tag ? ' · ' + esc(tag) : ''}</span></div>` }));
   p.drawn = true;
 }
 function dropPin(placeId, ll, a, label) {

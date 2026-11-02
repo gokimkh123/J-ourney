@@ -68,4 +68,18 @@ describe('관리자 디버깅 화면 (/dev/monitor, 10/29)', () => {
     expect(data.perMinute.at(-1).routes['GET /api/v1/invites/:code']).toBe(2);
     expect(data).toMatchObject({ llmToday: 0, meetings: [] });
   });
+
+  it('아무 주소나 많이·길게 보내도 분당 묶음과 기록 길이가 늘지 않음 (없는 주소는 한 묶음, 묶음 상한, 주소 200자) — 11/2 보안 점검', async () => {
+    const { app } = await createTestApp({ devUi: true });
+    const long = 'x'.repeat(4000);
+    for (let i = 0; i < 300; i++) await app.request(`/api/v1/nope/${i}/${long}`, { headers: tunnel });
+    for (let i = 0; i < 30; i++) await app.request(`/api/v1/persona/questions?v=${i}`, { headers: tunnel });
+    const data = await (await app.request('/dev/monitor/data')).json();
+    const routes = data.perMinute.at(-1).routes as Record<string, number>;
+    expect(Object.keys(routes).length).toBeLessThanOrEqual(MONITOR.routesPerMinute + 1);
+    expect(routes['(그 밖)']).toBeGreaterThanOrEqual(300);
+    expect(routes['GET /api/v1/persona/questions']).toBe(30); // 있는 주소는 따로 셈 (물음표 뒤는 묶음에 넣지 않음)
+    expect(routeOf('/api/v1/community/places/plc_126081/review')).toBe('/api/v1/community/places/:placeId/review');
+    expect(Math.max(...data.requests.map((r: { path: string }) => r.path.length))).toBeLessThanOrEqual(MONITOR.pathChars);
+  });
 });
