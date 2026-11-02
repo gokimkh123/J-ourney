@@ -1,12 +1,13 @@
 import { and, asc, eq } from 'drizzle-orm';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import { MAX_MEMBERS, meetings, members, personas, tripPlans, trips } from '../db/schema.js';
 import { type AuthEnv, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { hashToken, newId, newInviteCode, newToken } from '../lib/ids.js';
-import { failureLimit } from '../lib/rate-limit.js';
+import { failureLimit, tunnelIp } from '../lib/rate-limit.js';
+import { userOfToken, userTokenOf } from '../lib/user.js';
 import { parseBody } from '../lib/validate.js';
 import { CLOSE, type EventHub } from '../meeting/live.js';
 import { activeMeetingOf } from '../meeting/runs.js';
@@ -91,6 +92,8 @@ export interface TripDeps {
   hub?: EventHub;
   /** 여행 삭제 때 그 여행 회의들의 단계 기록(체크포인트)을 지움 (v2.4) */
   forgetMeetings?: (meetingIds: readonly string[]) => Promise<void>;
+  /** true이면 바깥(터널) 요청은 카카오 로그인 토큰을 내야 여행 만들기·참여 (LOGIN_REQUIRED, 11/2) */
+  loginRequired?: boolean;
 }
 
 /** 1번 묶음: 여행 생성·초대·참여·상세 (명세서 4.2) */
@@ -119,8 +122,18 @@ export function tripRoutes(db: Db, deps: TripDeps) {
     throw new Error('초대 코드 생성 실패');
   }
 
+  // 카카오 로그인 (11/2): 로그인 토큰(usr_)을 내면 그 계정에 자리를 묶음(내 여행 되찾기). LOGIN_REQUIRED면 바깥(터널) 요청은 로그인해야 만들기·참여 (서버 안 요청은 예전처럼)
+  const loginOf = async (c: Context) => {
+    const token = userTokenOf(c);
+    const user = token ? await userOfToken(db, token) : null;
+    if (token && !user) throw new ApiError('UNAUTHORIZED', '로그인이 만료되었거나 유효하지 않음');
+    if (!user && deps.loginRequired && tunnelIp(c) !== null) throw new ApiError('LOGIN_REQUIRED', '카카오 로그인이 필요함');
+    return user;
+  };
+
   // 여행 생성: 만든 사람이 방장(1번 자리)이 됨
   r.post('/trips', async (c) => {
+    const user = await loginOf(c);
     const body = await parseBody(c, createTripBody);
     const inviteCode = await unusedInviteCode();
     const token = newToken();
@@ -131,7 +144,7 @@ export function tripRoutes(db: Db, deps: TripDeps) {
         .returning();
       const [member] = await tx
         .insert(members)
-        .values({ id: newId('mem'), tripId: trip.id, nickname: body.nickname, seat: 1, isHost: true, tokenHash: hashToken(token) })
+        .values({ id: newId('mem'), tripId: trip.id, userId: user?.id ?? null, nickname: body.nickname, seat: 1, isHost: true, tokenHash: hashToken(token) })
         .returning();
       // 시연 모드: 페르소나를 마친 가상 구성원 3명이 자동 참여함 (토큰은 만들기만 하고 버림)
       if (body.demoMode) {
@@ -164,16 +177,26 @@ export function tripRoutes(db: Db, deps: TripDeps) {
   // 여행 참여 (인증 불필요): 방장 포함 최대 4명, 회의를 시작하기 전까지만
   r.post('/invites/:inviteCode/join', async (c) => {
     inviteMisses.check(c);
+    const user = await loginOf(c);
     const body = await parseBody(c, joinBody);
     const token = newToken();
-    const { trip, member } = await db.transaction(async (tx) => {
+    const { trip, member, again } = await db.transaction(async (tx) => {
       // 동시에 참여해도 인원 상한을 넘지 않도록 여행 행을 잠근 뒤 인원을 셈 (회의 시작도 같은 행을 잠가 차례로 돎)
       const [trip] = await tx
         .select()
         .from(trips)
         .where(eq(trips.inviteCode, c.req.param('inviteCode').toUpperCase()))
         .for('update');
-      if (!trip) return { trip: null, member: null };
+      if (!trip) return { trip: null, member: null, again: false };
+      // 이미 이 여행에 자리가 있는 계정은 새 자리 대신 그 자리를 다시 줌 (토큰은 새로, 예전 토큰은 더 쓰지 못함)
+      if (user) {
+        const [again] = await tx
+          .update(members)
+          .set({ tokenHash: hashToken(token) })
+          .where(and(eq(members.tripId, trip.id), eq(members.userId, user.id)))
+          .returning();
+        if (again) return { trip, member: again, again: true };
+      }
       // 회의를 시작한 뒤 들어온 사람은 회의·사람 확인(인원수)에 들어가지 않으므로 받지 않음 (시험 경로 회의는 여행 상태를 바꾸지 않아 진행 중인 회의도 봄)
       if (trip.status !== 'preparing' || (await activeMeetingOf(tx, trip.id))) throw new ApiError('MEETING_IN_PROGRESS', '회의가 시작된 여행에는 참여할 수 없음');
       // 회의가 끝나 일정 표(14·15단계)가 열린 여행도 받지 않음: 고르기·확정 투표의 인원수가 바뀜 (시험 경로 여행은 상태가 preparing으로 남음)
@@ -188,13 +211,18 @@ export function tripRoutes(db: Db, deps: TripDeps) {
       const seat = Array.from({ length: MAX_MEMBERS }, (_, i) => i + 1).find((n) => !taken.has(n))!;
       const [member] = await tx
         .insert(members)
-        .values({ id: newId('mem'), tripId: trip.id, nickname: body.nickname, seat, tokenHash: hashToken(token) })
+        .values({ id: newId('mem'), tripId: trip.id, userId: user?.id ?? null, nickname: body.nickname, seat, tokenHash: hashToken(token) })
         .returning();
-      return { trip, member };
+      return { trip, member, again: false };
     });
     if (!trip || !member) {
       inviteMisses.fail(c);
       throw new ApiError('NOT_FOUND', '초대 코드를 찾을 수 없음');
+    }
+    if (again) {
+      deps.hub?.closeMember(member.id, CLOSE.replaced);
+      const [persona] = await db.select({ title: personas.title }).from(personas).where(eq(personas.memberId, member.id)).limit(1);
+      return c.json({ trip: tripView(trip), member: memberView(member, persona?.title ?? null), token }, 200);
     }
     return c.json({ trip: tripView(trip), member: memberView(member, null), token }, 201);
   });

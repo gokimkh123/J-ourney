@@ -25,6 +25,8 @@ import { planService } from './meeting/choose.js';
 import { personaRoutes } from './routes/persona.js';
 import type { TourClient } from './tour/client.js';
 import { tripRoutes } from './routes/trips.js';
+import { authRoutes } from './routes/auth.js';
+import { type KakaoAuth, kakaoAuthClient } from './lib/user.js';
 
 export { nowKst } from './lib/time.js';
 
@@ -64,6 +66,12 @@ export interface AppOptions {
   accessKeys?: readonly AccessKey[];
   /** 키를 낸 요청의 LLM 다시 쓰기 (ACCESS_LLM_REPLAY, 기본 fill). LLM_REPLAY=true여도 이 모드로 LLM을 부름 */
   accessReplay?: ReplayMode;
+  /** 카카오 로그인 토큰 확인기 (11/2). 기본: KAKAO_APP_ID가 있으면 카카오 API, 없으면 로그인을 받지 않음 */
+  kakaoAuth?: KakaoAuth | null;
+  /** 우리 앱의 카카오 앱 ID (KAKAO_APP_ID) */
+  kakaoAppId?: string | null;
+  /** true이면 바깥(터널) 요청은 로그인해야 여행 만들기·참여 (LOGIN_REQUIRED) */
+  loginRequired?: boolean;
 }
 
 /** 시험 화면 접근 키 입력 화면 (터널로 시험 화면을 쓸 때만) */
@@ -106,6 +114,9 @@ export function createApp({
   routeClient = null,
   accessKeys = config.accessKeys,
   accessReplay = config.accessReplay,
+  kakaoAppId = config.kakaoAppId,
+  kakaoAuth = kakaoAppId ? kakaoAuthClient({ apiBase: config.kakaoApiBase, timeoutMs: config.kakaoTimeoutMs }) : null,
+  loginRequired = config.loginRequired,
 }: AppOptions) {
   // 터널로 시험 경로를 여는데(DEV_UI_TUNNEL) 접근 키가 하나도 없으면 열지 않음 (키를 빠뜨려 바깥에 실제 API가 열리지 않게, 서버 시작 로그에 경고)
   const tunnelDev = devUiTunnel && accessKeys.length > 0;
@@ -139,7 +150,8 @@ export function createApp({
     const forgetMeetings = async (ids: readonly string[]) => {
       for (const id of ids) await checkpointer.deleteThread(id);
     };
-    api.route('/', tripRoutes(db, { llm: tripLlm, recorder, live, llmDailyLimit, accessKeys, hub, forgetMeetings }));
+    api.route('/', authRoutes(db, { kakao: kakaoAuth, kakaoAppId, hub }));
+    api.route('/', tripRoutes(db, { llm: tripLlm, recorder, live, llmDailyLimit, accessKeys, hub, forgetMeetings, loginRequired }));
     api.route('/', personaRoutes({ db, llm: mode === 'only' ? null : llm, recorder, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret, accessKeys, live }));
     // 회의 그래프와 실행기는 서버가 켜질 때 한 번만 만들고 공식 경로·시험 경로가 함께 씀
     const limits = { runsPerTrip: meetingRunsPerTrip, llmCallsPerRun: meetingLlmCallsPerRun, llmDailyLimit };
