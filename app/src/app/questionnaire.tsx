@@ -28,6 +28,7 @@ import {
 } from "../lib/persona/profile.ts";
 import { profile, useProfile } from "../lib/persona/profileStore.ts";
 import { canMoveOn, isReadyToSubmit } from "../lib/persona/skip.ts";
+import { markPersonaReady } from "../lib/session/partyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import type {
   AnswerState,
@@ -241,7 +242,8 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
   const router = useRouter();
   // 파티 밖(초기 화면)에서는 내 성향(1~12번)만 묻고 폰에 저장한다.
   // 파티 안에서는 저장된 성향이 있으면 13번부터만 묻는다. retake=1이면 1~12번도 다시 묻는다.
-  const inParty = useSession() !== null;
+  const me = useSession();
+  const inParty = me !== null;
   const saved = useProfile();
   const { retake } = useLocalSearchParams<{ retake?: string }>();
   const [allQuestions, setQuestions] = useState<Question[] | null>(null);
@@ -347,11 +349,13 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      if (!inParty) {
+      if (me === null) {
         await profile.save(extractProfile(allQuestions, answers));
       } else {
         const merged = mergeProfile(reuseSaved ? saved : null, answers);
         await endpoints.submitPersona(buildSubmitBody(allQuestions, merged).answers);
+        // 받아 둔 파티 정보에서도 나를 준비됨으로 바로 바꾼다. 내 캐릭터 탭에 가자마자 회의 시작하기(방장)·기다림 카드가 뜬다(11/4).
+        markPersonaReady(me.tripId, me.memberId);
         // 처음 하거나 다시 한 1~12번은 폰에 남겨 다음 파티에서 쓴다. 저장이 안 돼도 이번 제출은 성공이다.
         if (!reuseSaved) await profile.save(extractProfile(allQuestions, merged)).catch(() => undefined);
       }

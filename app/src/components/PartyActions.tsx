@@ -40,13 +40,15 @@ export default function PartyActions() {
     hasResult: result !== null,
     tripStatus: info?.trip.status,
   });
-  // 버튼 묶음이 보일 수 있는 동안(아직 못 받았거나 기다림·조건 단계)만 새로 받는다. 회의가 시작된 뒤에는 그리지 않으니 받지 않는다(11/3).
+  // 버튼 묶음은 아직 못 받았거나 기다림·조건 단계에서만 그린다.
   const showable = info === null || view.step === "waiting" || view.step === "conditions";
 
   const refresh = useCallback(async () => {
     if (me !== null) await refreshOne(me);
   }, [me, refreshOne]);
-  usePolling(refresh, POLL_MS, me !== null && showable, me?.inviteCode);
+  // 새로 받기는 내 성향 검사 전(persona)에도 한다. 받아 둔 정보가 '아직 안 함'에 머문 채 멈추면, 질문을 끝내고 와도
+  // 다른 화면이 새로 받기 전까지 회의 시작하기가 안 떴다(11/4). 회의가 시작된 뒤에는 그리지 않으니 받지 않는다(11/3).
+  usePolling(refresh, POLL_MS, me !== null && (showable || view.step === "persona"), me?.inviteCode);
 
   if (me === null || info === null || !showable) return null;
   const actions = homeActions(info.members, me.memberId, view.step);
