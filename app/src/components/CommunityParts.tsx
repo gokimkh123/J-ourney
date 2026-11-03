@@ -36,8 +36,8 @@ export function Star({ size, filled }: { size: number; filled: boolean }) {
     <Svg width={size} height={size} viewBox="0 0 24 24">
       <Path
         d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"
-        fill={filled ? colors.accent : "none"}
-        stroke={filled ? colors.accent : colors.iconFaint}
+        fill={filled ? colors.star : "none"}
+        stroke={filled ? colors.star : colors.iconFaint}
         strokeWidth={filled ? 0 : 1.6}
         strokeLinejoin="round"
       />

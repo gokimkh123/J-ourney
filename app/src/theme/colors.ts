@@ -46,6 +46,8 @@ export type ThemeColors = {
   warningText: string;
   dangerSurface: string;
   dangerBorder: string;
+  /** 별점의 채운 별. 메인 색이 아니라 흔히 쓰는 노란 별 */
+  star: string;
 
   // 말풍선(지도 위)
   bubble: string;
@@ -95,6 +97,7 @@ export const lightColors: ThemeColors = {
   warningText: '#734C00',
   dangerSurface: '#FDECEC',
   dangerBorder: '#F2B8BD',
+  star: '#F5A300',
 
   bubble: '#FFFFFF',
   onBubble: '#211D18',
@@ -140,6 +143,7 @@ export const darkColors: ThemeColors = {
   warningText: '#FFE3A3',
   dangerSurface: '#3D1D25',
   dangerBorder: '#6E2E3B',
+  star: '#FFC94D',
 
   bubble: '#282B37',
   onBubble: '#F1F0EC',

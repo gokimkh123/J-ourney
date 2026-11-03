@@ -37,6 +37,8 @@ export type ScheduleItemProps = {
   badge?: { label: string; tone: "accent" | "warning" | "danger" };
   /** 뺀 곳: 이름에 줄을 긋고 흐리게 */
   struck?: boolean;
+  /** 있으면 시각을 눌러 바꿀 수 있다(메인 색 글자). 일정 탭의 시작 시각 바꾸기 */
+  onTimePress?: () => void;
 };
 
 /** C1 합의 일정 한 줄: (이동) → 시간 | 스티커 | 이름·부가줄 | 대상 구성원. 누르면 C2 근거 보기. */
@@ -55,6 +57,7 @@ export default function ScheduleItem({
   moreLabel,
   badge,
   struck = false,
+  onTimePress,
 }: ScheduleItemProps) {
   const { colors } = useTheme();
   const styles = useStyles(createStyles);
@@ -78,11 +81,26 @@ export default function ScheduleItem({
         accessibilityHint={onPress ? (pressHint ?? "고른 이유와 장소 정보를 봅니다") : undefined}
         style={({ pressed }) => [styles.row, pressed && { opacity: pressedOpacity }]}
       >
-        {time !== undefined && (
-          <AppText variant="numeric" tone="muted" style={styles.time}>
-            {time}
-          </AppText>
-        )}
+        {time !== undefined &&
+          (onTimePress !== undefined ? (
+            // 줄 전체 누르기와 따로, 시각만 눌러 시작 시각을 바꾼다. 보이는 글자는 작아도 눌리는 높이는 hitSize 근처까지 넓힌다.
+            <Pressable
+              onPress={onTimePress}
+              accessibilityRole="button"
+              accessibilityLabel={`${title} 시작 시각 ${time}`}
+              accessibilityHint="시작 시각을 바꿉니다"
+              hitSlop={{ top: spacing.sm, bottom: spacing.sm }}
+              style={({ pressed }) => [styles.time, pressed && { opacity: pressedOpacity }]}
+            >
+              <AppText variant="numeric" tone="accent">
+                {time}
+              </AppText>
+            </Pressable>
+          ) : (
+            <AppText variant="numeric" tone="muted" style={styles.time}>
+              {time}
+            </AppText>
+          ))}
         <View style={struck && styles.faded}>
           <PlaceSticker kind={kind} size={STICKER} />
         </View>

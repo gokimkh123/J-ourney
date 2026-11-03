@@ -13,8 +13,9 @@ import StatusPill from "./StatusPill.tsx";
 // 파스텔 위에 올리는 글자는 어느 모드에서든 어두워야 읽힌다.
 const ON_PASTEL = lightColors.text;
 
-function joinItems(items: { text: string; emoji: string }[]): string {
-  return items.map((item) => `${item.emoji} ${item.text}`).join(" · ");
+// 내 캐릭터 탭은 이모지 없이 글자만 보여 준다(탭바에서 이모지를 뺀 것과 같은 방향).
+function joinItems(items: { text: string }[]): string {
+  return items.map((item) => item.text).join(" · ");
 }
 
 /** A3 캐릭터 카드. props는 이전과 같다(persona 하나). */
@@ -64,7 +65,7 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
         {persona.chips.length > 0 && (
           <View style={styles.chips}>
             {persona.chips.map((chip) => (
-              <Chip key={chip.label} label={chip.label} emoji={chip.emoji} size="sm" />
+              <Chip key={chip.label} label={chip.label} size="sm" />
             ))}
           </View>
         )}
@@ -136,7 +137,6 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
                     {trait.name}
                   </AppText>
                   <AppText variant="smallStrong" tone={neutral ? "muted" : "default"}>
-                    {trait.emoji === "" ? "" : `${trait.emoji} `}
                     {label}
                   </AppText>
                 </View>
