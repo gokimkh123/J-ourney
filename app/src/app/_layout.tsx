@@ -7,7 +7,6 @@ import * as WebBrowser from "expo-web-browser";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Appearance, BackHandler, Pressable, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { useReducedMotion } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
 
 import LoginScreen from "../components/LoginScreen.tsx";
@@ -203,7 +202,6 @@ function usePartyBack() {
 
 function ThemedTabs() {
   const { scheme, colors } = useTheme();
-  const reduceMotion = useReducedMotion();
   const hasTrip = useSession() !== null;
   const tripTab = (title: string) => ({ title, href: hasTrip ? undefined : null, header: () => <AppTopBar /> });
   usePartyBack();
@@ -230,8 +228,11 @@ function ThemedTabs() {
           headerTitleStyle: { fontWeight: "700" },
           headerShadowVisible: false,
           sceneStyle: { backgroundColor: colors.background },
-          // 탭을 옮길 때 살짝 흐려졌다 나타난다(11/3 결정: 밀림 대신 페이드). 동작 줄이기를 켠 사람은 바로 바뀐다.
-          animation: reduceMotion ? "none" : "fade",
+          // 탭은 애니메이션 없이 바로 바뀐다(11/3). 페이드를 켜면 지금 탭보다 앞 순서(왼쪽)의 탭이 안 보여도 폰 화면에서
+          // 떼어지지 않아, 회의가 끝난 뒤 일정·내 캐릭터 탭 뒤에 회의 지도·대화가 통째로 붙어 있다가 탭을 옮길 때마다 다시
+          // 그려져 끊겼다. 여는 탭에만 페이드를 걸면 새 탭이 투명한 채로 붙고 앞 탭은 바로 떼어져서, 페이드가 늦게 시작하면
+          // 화면이 비어 보였다(내 캐릭터). 안 보이는 탭은 바로 떼어지고 내용과 상태는 그대로 남는다.
+          animation: "none",
         }}
       >
         <Tabs.Screen name="community" options={{ title: "커뮤니티", href: hasTrip ? null : undefined, header: () => <PageTopBar title="커뮤니티" /> }} />

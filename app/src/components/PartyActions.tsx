@@ -30,21 +30,25 @@ export default function PartyActions() {
   const conditions = useSyncExternalStore(conditionsStore.subscribe, conditionsStore.get, conditionsStore.get);
   const result = useSyncExternalStore(meetingResultStore.subscribe, meetingResultStore.get, meetingResultStore.get);
 
+  const info = me === null ? null : (infos[me.tripId] ?? null);
+  // 홈과 같이 서버 여행 상태도 본다. 조건은 방장 폰에만 있어서, 이것이 없으면 다른 사람 폰은 회의가 끝난 뒤에도 "방장이 시작할 차례예요"에 머문다.
+  const view = homeStep({
+    members: info?.members ?? null,
+    myMemberId: me?.memberId ?? "",
+    hasConditions: conditions !== null,
+    hasResult: result !== null,
+    tripStatus: info?.trip.status,
+  });
+  // 버튼 묶음이 보일 수 있는 동안(아직 못 받았거나 기다림·조건 단계)만 새로 받는다. 회의가 시작된 뒤에는 그리지 않으니 받지 않는다(11/3).
+  const showable = info === null || view.step === "waiting" || view.step === "conditions";
+
   const refresh = useCallback(async () => {
     if (me !== null) await refreshOne(me);
   }, [me, refreshOne]);
-  usePolling(refresh, POLL_MS, me !== null, me?.inviteCode);
+  usePolling(refresh, POLL_MS, me !== null && showable, me?.inviteCode);
 
-  if (me === null) return null;
-  const info = infos[me.tripId] ?? null;
-  const view = homeStep({
-    members: info?.members ?? null,
-    myMemberId: me.memberId,
-    hasConditions: conditions !== null,
-    hasResult: result !== null,
-  });
-  const actions = homeActions(info?.members ?? null, me.memberId, view.step);
-  if (info === null || (view.step !== "waiting" && view.step !== "conditions")) return null;
+  if (me === null || info === null || !showable) return null;
+  const actions = homeActions(info.members, me.memberId, view.step);
 
   const onShare = async () => {
     try {
