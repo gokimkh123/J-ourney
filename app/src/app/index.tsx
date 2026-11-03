@@ -39,7 +39,7 @@ import { homeBubble, waitingTitle } from "../lib/trip/homeBubble.ts";
 import { homeStep, type HomeStep } from "../lib/trip/homeStep.ts";
 import { memberChips } from "../lib/trip/memberChips.ts";
 import { partyStatus } from "../lib/trip/partyStatus.ts";
-import { describeError, normalizeInviteCode } from "../lib/ui/format.ts";
+import { describeError, extractInviteCode, inviteShareText } from "../lib/ui/format.ts";
 import { showToast } from "../lib/ui/toast.ts";
 import { usePolling } from "../lib/ui/usePolling.ts";
 import { hitSize, memberColors, outline, pastel, pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
@@ -168,7 +168,7 @@ function PartyList() {
       <FormSheet visible={sheet === "join"} title="초대 코드" onClose={close}>
         <CodeInput
           value={code}
-          onChangeText={(text) => setCode(normalizeInviteCode(text))}
+          onChangeText={(text) => setCode(extractInviteCode(text, CODE_LENGTH))}
           length={CODE_LENGTH}
           editable={!submitting}
           autoFocus={code === ""}
@@ -204,7 +204,7 @@ function PartyList() {
           </AppText>
         ) : (
           <AppText variant="caption" tone="muted">
-            친구에게 받은 {CODE_LENGTH}자리 코드를 넣어 주세요.
+            친구에게 받은 {CODE_LENGTH}자리 코드를 넣어 주세요. 초대 메시지를 통째로 붙여 넣어도 돼요.
           </AppText>
         )}
         {already === undefined && (
@@ -364,9 +364,8 @@ function TripHome() {
   };
 
   const onShare = async () => {
-    const prefix = info !== null ? `${info.trip.title} ` : "";
     try {
-      await Share.share({ message: `${prefix}여행에 초대해요! 여행회의 앱에서 초대 코드 ${code}를 넣어 주세요.` });
+      await Share.share({ message: inviteShareText(info?.trip.title ?? null, code) });
     } catch {
       // 공유 창을 열지 못해도 화면은 그대로 둔다.
     }

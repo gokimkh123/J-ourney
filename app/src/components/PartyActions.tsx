@@ -8,6 +8,7 @@ import { usePartyInfos, useRefreshParty } from "../lib/session/usePartyInfo.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { homeActions } from "../lib/trip/homeActions.ts";
 import { homeStep } from "../lib/trip/homeStep.ts";
+import { inviteShareText } from "../lib/ui/format.ts";
 import { usePolling } from "../lib/ui/usePolling.ts";
 import { spacing, useStyles, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
@@ -52,7 +53,7 @@ export default function PartyActions() {
 
   const onShare = async () => {
     try {
-      await Share.share({ message: `${info.trip.title} 여행에 초대해요! 여행회의 앱에서 초대 코드 ${me.inviteCode}를 넣어 주세요.` });
+      await Share.share({ message: inviteShareText(info.trip.title, me.inviteCode) });
     } catch {
       // 공유 창을 열지 못해도 화면은 그대로 둔다.
     }

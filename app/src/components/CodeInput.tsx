@@ -17,6 +17,7 @@ export type CodeInputProps = {
 /**
  * 한 글자씩 칸으로 보이는 코드 입력. 실제 입력은 칸 위에 겹친 투명한 입력칸 하나가 받는다
  * (칸마다 입력칸을 두면 지우기·붙여 넣기 때 칸 사이를 옮겨 다니는 처리가 필요하다).
+ * 입력칸은 칸 수로 자르지 않는다: 초대 메시지를 통째로 붙여 넣으면 앞 글자만 남지 않게, 부르는 쪽이 코드를 골라 칸 수만큼 넘긴다(11/3).
  */
 export default function CodeInput({ value, onChangeText, length, editable = true, autoFocus = false, accessibilityLabel }: CodeInputProps) {
   const styles = useStyles(createStyles);
@@ -37,7 +38,6 @@ export default function CodeInput({ value, onChangeText, length, editable = true
         ref={input}
         value={value}
         onChangeText={onChangeText}
-        maxLength={length}
         editable={editable}
         autoFocus={autoFocus}
         autoCapitalize="characters"

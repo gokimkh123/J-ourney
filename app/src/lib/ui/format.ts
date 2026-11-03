@@ -8,6 +8,24 @@ export function normalizeInviteCode(input: string): string {
   return input.replace(/\s+/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+/**
+ * 붙여 넣은 글에서 초대 코드를 고른다(11/3: 받는 사람이 메시지에서 코드만 골라 복사하기 어려움).
+ * 초대 메시지를 통째로 붙여 넣어도 따로 떨어진 코드(서버 글자: 헷갈리는 0·O·1·I는 없음)를 찾고, 여럿이면 맨 뒤 것(공유 글은 끝에 코드를 둠).
+ * 찾지 못하면 공백·기호를 빼고 대문자로 바꿔 길이만큼 자른다(손으로 넣는 중이거나 "bsn-482"처럼 적은 것).
+ */
+export function extractInviteCode(input: string, length: number): string {
+  const standalone = new RegExp(`(?:^|[^A-Za-z0-9])([A-HJ-NP-Z2-9]{${length}})(?=[^A-Za-z0-9]|$)`, 'g');
+  let last: string | null = null;
+  for (const m of input.matchAll(standalone)) last = m[1] ?? last;
+  return last ?? normalizeInviteCode(input).slice(0, length);
+}
+
+/** 초대 공유 글. 코드는 맨 끝 줄에 따로 두어 눈에 잘 띄고, 통째로 붙여 넣어도 앱이 코드만 고른다(extractInviteCode). */
+export function inviteShareText(title: string | null, code: string): string {
+  const head = title === null || title === '' ? '여행에 초대해요!' : `${title} 여행에 초대해요!`;
+  return `${head}\n여행회의 앱의 '코드로 참여'에 아래 초대 코드를 넣어 주세요. 이 메시지를 통째로 붙여 넣어도 돼요.\n\n${code}`;
+}
+
 const UNKNOWN_ERROR = '알 수 없는 오류가 발생했어요';
 
 /** 같은 오류 코드라도 어디서 났는지에 따라 문구가 달라지는 경우: 참여할 때, 회의 조건·시작할 때 */
