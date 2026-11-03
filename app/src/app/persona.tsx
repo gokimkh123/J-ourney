@@ -92,7 +92,7 @@ function MyProfile() {
         캐릭터 이름과 한마디는 파티에 들어가 여행 질문 3개에 답하면 AI가 만들어 줘요.
       </AppText>
       <View style={styles.links}>
-        <Button label="12문항 다시 하기" variant="ghost" onPress={() => router.navigate(QUESTIONNAIRE_ROUTE)} style={styles.link} />
+        <Button label="12문항 다시 하기" variant="ghostMuted" onPress={() => router.navigate(QUESTIONNAIRE_ROUTE)} style={styles.link} />
       </View>
     </ScrollView>
   );
@@ -141,8 +141,9 @@ function PartyPersona() {
         <PartyActions />
         <PersonaCard persona={view.persona} />
         <View style={styles.links}>
-          <Button label={saved === null ? "다시 검사하기" : "이번 여행 질문 다시 답하기"} variant="ghost" onPress={() => router.navigate(QUESTIONNAIRE_ROUTE)} style={styles.link} />
-          {saved !== null && <Button label="내 성향(1~12번)부터 다시 하기" variant="ghost" size="sm" onPress={() => router.navigate(RETAKE_ROUTE)} style={styles.link} />}
+          {/* 다시 하기는 보조 동작이라 회색 글자(11/3) */}
+          <Button label={saved === null ? "다시 검사하기" : "이번 여행 질문 다시 답하기"} variant="ghostMuted" onPress={() => router.navigate(QUESTIONNAIRE_ROUTE)} style={styles.link} />
+          {saved !== null && <Button label="내 성향(1~12번)부터 다시 하기" variant="ghostMuted" size="sm" onPress={() => router.navigate(RETAKE_ROUTE)} style={styles.link} />}
         </View>
       </ScrollView>
     );
