@@ -23,6 +23,7 @@ import AppText from "./AppText.tsx";
 import Avatar, { fullAvatarSize, type AvatarChip } from "./Avatar.tsx";
 import PlaceSticker, { type PlaceKind } from "./PlaceSticker.tsx";
 import Flag, { FLAG_FOOT, FLAG_H, FLAG_W } from "./map/Flag.tsx";
+import { routeBox } from "./map/routeBox.ts";
 import { spreadPoints } from "./map/spreadPoints.ts";
 import { walkMs } from "./map/walk.ts";
 import { ART_H, ART_W, VIEW_W, cameraXY, computeArtViewport, pathMidArrows, projectGeo, smoothPath, type ArtPoint } from "./map/regionArt.ts";
@@ -95,6 +96,11 @@ export type MeetingMapProps = {
   onFollow?: () => void;
   /** 바뀌면 사람이 옮긴 것을 잊고 자동 카메라로 돌아간다(회의 단계가 바뀔 때) */
   followKey?: unknown;
+  /**
+   * 화면이 안 보일 때(다른 탭) 캐릭터의 끝없이 도는 움직임(통통 튀기·찾는 중 물결)을 멈춘다.
+   * 탭 화면은 떠 있어서 그대로 두면 다른 탭에서도 화면 쪽 스레드가 매 프레임 일한다(11/3: 일정 탭 끊김).
+   */
+  paused?: boolean;
   accessibilityLabel?: string;
 };
 
@@ -186,6 +192,7 @@ function AgentMarker({
   screen,
   active,
   dim = false,
+  paused = false,
   bubble,
 }: {
   agent: MapAgent;
@@ -197,6 +204,8 @@ function AgentMarker({
   screen: { x: number; y: number };
   active: boolean;
   dim?: boolean;
+  /** 화면이 안 보이면 끝없이 도는 움직임을 멈춘다 */
+  paused?: boolean;
   bubble?: AgentBubble;
 }) {
   const styles = useStyles(createStyles);
@@ -207,14 +216,15 @@ function AgentMarker({
   const pulse = useSharedValue(0);
   const bob = useSharedValue(0);
 
-  // 서 있는 동안에도 살짝 통통 튀어 살아 있는 느낌을 준다(말하는 중이면 더 크게). 모션 줄이기 설정이면 멈춘다.
+  // 서 있는 동안에도 살짝 통통 튀어 살아 있는 느낌을 준다(말하는 중이면 더 크게). 모션 줄이기 설정이거나 화면이 안 보이면 멈춘다.
   useEffect(() => {
-    if (reduce) {
+    if (reduce || paused) {
+      cancelAnimation(bob);
       bob.value = 0;
       return;
     }
     bob.value = withRepeat(withTiming(1, { duration: active ? 420 : 780, easing: Easing.inOut(Easing.quad) }), -1, true);
-  }, [active, reduce, bob]);
+  }, [active, reduce, paused, bob]);
 
   const last = useRef({ x, y });
   useEffect(() => {
@@ -228,13 +238,13 @@ function AgentMarker({
   }, [x, y, reduce, tx, ty, agent.speed, pxScale]);
 
   useEffect(() => {
-    if (agent.searching && !reduce) {
+    if (agent.searching && !reduce && !paused) {
       pulse.value = 0;
       pulse.value = withRepeat(withTiming(1, { duration: 1600, easing: Easing.out(Easing.quad) }), -1, false);
     } else {
       pulse.value = withTiming(0, { duration: duration.fast });
     }
-  }, [agent.searching, reduce, pulse]);
+  }, [agent.searching, reduce, paused, pulse]);
 
   const moveStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: 1 / scale.value }],
@@ -398,6 +408,7 @@ function TileMap({
   followLabel,
   onFollow,
   followKey,
+  paused = false,
   accessibilityLabel = "회의 지도",
 }: MeetingMapProps) {
   const { colors, scheme } = useTheme();
@@ -578,6 +589,9 @@ function TileMap({
   };
   const focusIndex = focus === null ? -1 : pins.findIndex((p) => p.lat === focus.lat && p.lng === focus.lng);
   const showFollow = followLabel !== undefined && (userMoved || focus !== null);
+  // 경로 선의 그림 좌표. SVG 판은 그림 전체가 아니라 이 점들 둘레만큼만 만든다(routeBox: 안드로이드 큰 비트맵 끊김).
+  const routeLines = routes.map((r) => r.points.map(calm ? calmAt : (p: LatLng) => projectGeo(p)));
+  const lineBox = routeBox(routeLines.flat(), px);
 
   return (
     // 바깥 상자에서 지도를 잘라 낸다(타일이 아래 내용 뒤로 새지 않게). 손가락 동작은 앱 맨 바깥 GestureHandlerRootView가 받는다(_layout).
@@ -602,10 +616,15 @@ function TileMap({
               </Animated.View>
               <View style={[StyleSheet.absoluteFill, { backgroundColor: palette.night ? VEIL.dark : VEIL.light }]} pointerEvents="none" />
               <Animated.View style={[styles.world, worldStyle]} pointerEvents="none">
-                {routes.length > 0 && (
-                  <Svg width={ART_W} height={ART_H} style={styles.routes}>
-                    {routes.map((r, i) => {
-                      const points = r.points.map(calm ? calmAt : (p: LatLng) => projectGeo(p));
+                {lineBox !== null && (
+                  // 판 크기와 viewBox를 같게 두어 그림 좌표 그대로 그린다(보이는 선 굵기·선명도는 예전과 같다).
+                  <Svg
+                    width={lineBox.w}
+                    height={lineBox.h}
+                    viewBox={`${lineBox.x} ${lineBox.y} ${lineBox.w} ${lineBox.h}`}
+                    style={{ position: "absolute", left: lineBox.x + WORLD_PAD, top: lineBox.y + WORLD_PAD }}
+                  >
+                    {routeLines.map((points, i) => {
                       const d = smoothPath(points);
                       if (d === "") return null;
                       // 차분한 얇은 선 + 테두리, 구간 가운데에 가는 방향 꺾쇠(화면에서 짧은 구간은 뺀다). 굵기는 화면 기준.
@@ -652,6 +671,7 @@ function TileMap({
                         screen={toScreen(p)}
                         active={a.id === bubble?.agentId}
                         dim={bubble != null && a.id !== bubble.agentId}
+                        paused={paused}
                         bubble={
                           bubble != null && a.id === bubble.agentId
                             ? { speaker: `${a.name} AI`, text: bubble.text, mapWidth: width, leftInset: 0, topInset: 0 }
@@ -816,7 +836,6 @@ const createStyles = (t: Theme) => StyleSheet.create({
   // 그림 좌표로 펼친 지도 판: 그림 둘레로 WORLD_PAD만큼 큰 상자를 왼쪽 위 기준으로 옮기고 키운다.
   // 안드로이드에서 상자 밖으로 넘쳐 그리면 작은 움직임에도 지도 전체를 다시 그려 느려지므로, 넘치지 않게 크게 잡는다.
   world: { position: "absolute", left: 0, top: 0, width: ART_W + WORLD_PAD * 2, height: ART_H + WORLD_PAD * 2, transformOrigin: "0 0", overflow: "hidden" },
-  routes: { position: "absolute", left: WORLD_PAD, top: WORLD_PAD },
   gestureRoot: { flex: 1, overflow: "hidden" },
   followChip: {
     position: "absolute",

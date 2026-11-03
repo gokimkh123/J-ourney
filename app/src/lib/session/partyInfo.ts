@@ -6,6 +6,10 @@ export const partyInfo = createValueStore<Record<string, InviteInfo>>({});
 
 export function putPartyInfo(info: InviteInfo): void {
   const current = partyInfo.get();
+  // 홈·조건·내 캐릭터가 3초마다 같은 정보를 다시 받아도 저장소를 바꾸지 않는다(11/3). 바꾸면 이 정보를 쓰는
+  // 떠 있는 모든 화면(뒤에 숨은 회의 지도·대화, 일정 화면 포함)이 3초마다 다시 그려져 앱이 점점 느려졌다.
+  const old = current[info.trip.id];
+  if (old !== undefined && JSON.stringify(old) === JSON.stringify(info)) return;
   partyInfo.set({ ...current, [info.trip.id]: info });
 }
 

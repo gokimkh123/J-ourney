@@ -419,6 +419,8 @@ export default function MeetingScreen() {
               // 사람이 지도를 끌거나 확대하면 자동 카메라가 멈추고 이 버튼이 뜬다. 회의 단계가 바뀌면(사람 확인·A·B 고르기 등) 저절로 다시 따라간다.
               followLabel="회의 따라보기"
               followKey={state.phase}
+              // 다른 탭에 있을 때는 캐릭터의 끝없는 움직임을 멈춘다(탭 화면은 떠 있어 일정 탭까지 끊겼다).
+              paused={!focused}
             />
             <Animated.View style={[styles.sheetWrap, { height: sheetWrapHeight }]}>
             <BottomSheet
