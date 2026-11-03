@@ -74,6 +74,7 @@ export { default as PlanChoice } from "./PlanChoice.tsx";
 export type { PlanChoiceProps, PlanChoicePerson, PlanChoiceStop } from "./PlanChoice.tsx";
 export { default as PlanCards } from "./PlanCards.tsx";
 export { default as PlanShareBoard } from "./PlanShareBoard.tsx";
+export { default as ShareIcon } from "./ShareIcon.tsx";
 export type { PlanCardsProps, PlanCard } from "./PlanCards.tsx";
 export { default as ChoiceWaiting } from "./ChoiceWaiting.tsx";
 export type { ChoiceWaitingProps, ChoiceWaitingPerson } from "./ChoiceWaiting.tsx";

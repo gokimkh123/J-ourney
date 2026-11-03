@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { ActivityIndicator, ScrollView, Share, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Share, StyleSheet, View } from "react-native";
 
 import {
   AppText,
@@ -14,6 +14,7 @@ import {
   PlanShareBoard,
   ScheduleItem,
   SegmentedTabs,
+  ShareIcon,
   SheetOption,
   StatusPill,
   TimeWheel,
@@ -52,10 +53,12 @@ import { useSession } from "../lib/session/useSession.ts";
 import { placeKindOf } from "../lib/plan/placeKind.ts";
 import { dateLabel } from "../lib/trip/dateRange.ts";
 import { showToast } from "../lib/ui/toast.ts";
-import { spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
+import { hitSize, pressedOpacity, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
 // 하루 일정이 동래~영도처럼 위아래로 길게 퍼져도 다 들어오는 높이
 const MAP_HEIGHT = 360;
+/** 제목 옆 보내기(공유) 아이콘 칸: 옆의 작은(xs) 글자 버튼과 같은 높이 */
+const SHARE_BUTTON = 32;
 
 const STATUS: Record<PlanStatus, { label: string; tone: "warning" | "accent" | "success" }> = {
   voting: { label: "사람 확정 전", tone: "warning" },
@@ -401,11 +404,15 @@ function LivePlanScreen() {
         kind={row.kind}
         {...(row.moveLabel !== undefined && { moveLabel: row.moveLabel })}
         {...(editable && { onTimePress: () => setSheet({ type: "time", key: row.itemId }) })}
-        onPress={() => {
-          setFocus({ lat: row.lat, lng: row.lng });
-          if (tappable(row.itemId)) openSheet({ type: "row", key: row.itemId });
-        }}
-        pressHint={tappable(row.itemId) ? "지도에서 크게 보고 빼기·장소 변경을 고릅니다" : "지도에서 이 장소를 크게 봅니다"}
+        // 짧게 누르면 지도만 그 장소로, 길게 누르면 빼기·장소 변경 창(11/3 결정: 볼 때마다 창이 떠서 번거로웠다).
+        onPress={() => setFocus({ lat: row.lat, lng: row.lng })}
+        {...(tappable(row.itemId) && {
+          onLongPress: () => {
+            setFocus({ lat: row.lat, lng: row.lng });
+            openSheet({ type: "row", key: row.itemId });
+          },
+        })}
+        pressHint={tappable(row.itemId) ? "지도에서 크게 봅니다. 길게 누르면 빼기·장소 변경을 고릅니다" : "지도에서 이 장소를 크게 봅니다"}
       />
     ),
   }));
@@ -447,7 +454,17 @@ function LivePlanScreen() {
                 {history.length > 0 && (
                   <Button label={`고친 기록 ${history.length}`} variant="ghost" size="xs" onPress={() => setSheet({ type: "history" })} />
                 )}
-                <Button label="공유" variant="ghost" size="xs" onPress={() => setShareOpen(true)} accessibilityHint="일정을 글이나 이미지로 보냅니다" />
+                {/* 글자 버튼 대신 파티 홈 초대 코드 공유와 같은 아이콘(11/4). 보이는 칸은 다른 작은 버튼 높이, 눌리는 곳은 hitSize. */}
+                <Pressable
+                  onPress={() => setShareOpen(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="일정 보내기"
+                  accessibilityHint="일정을 글이나 이미지로 보냅니다"
+                  hitSlop={(hitSize - SHARE_BUTTON) / 2}
+                  style={({ pressed }) => [styles.shareButton, pressed && { opacity: pressedOpacity }]}
+                >
+                  <ShareIcon color={colors.text} />
+                </Pressable>
               </View>
             )}
           </View>
@@ -742,7 +759,8 @@ const createStyles = (t: Theme) =>
   StyleSheet.create({
     // 제목이 두 줄이 되어도 오른쪽 버튼은 첫 줄 가운데에 맞춘다(display 줄 높이 36, 작은 버튼 32)
     titleRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.sm },
-    titleActions: { flexDirection: "row", gap: spacing.xs, marginTop: (36 - 32) / 2 },
+    titleActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs, marginTop: (36 - 32) / 2 },
+    shareButton: { width: SHARE_BUTTON, height: SHARE_BUTTON, alignItems: "center", justifyContent: "center" },
     offscreen: { position: "absolute", left: -10000, top: 0 },
     title: { flex: 1, minWidth: 0 },
     busy: { flexDirection: "row", alignItems: "center", gap: spacing.xs, minHeight: 36 },

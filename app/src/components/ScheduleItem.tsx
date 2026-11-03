@@ -27,6 +27,8 @@ export type ScheduleItemProps = {
   /** 장소 종류 스티커. 없으면 기본 핀. 분류 → kind 변환은 화면이 한다. */
   kind?: PlaceKind;
   onPress?: () => void;
+  /** 있으면 길게 눌러 할 일(일정 탭: 빼기·장소 변경 창). 화면 읽기에서는 "고치기" 동작으로도 부른다 */
+  onLongPress?: () => void;
   /** 누를 때 읽어 줄 안내. 기본은 장소 정보 보기 */
   pressHint?: string;
   /** 있으면 오른쪽 끝에 ⋯ 버튼(일정 고치기). 없으면 버튼 자리도 없다 */
@@ -52,6 +54,7 @@ export default function ScheduleItem({
   moveLabel,
   kind = "pin",
   onPress,
+  onLongPress,
   pressHint,
   onMore,
   moreLabel,
@@ -75,7 +78,12 @@ export default function ScheduleItem({
       )}
       <Pressable
         onPress={onPress}
-        disabled={!onPress}
+        onLongPress={onLongPress}
+        disabled={!onPress && !onLongPress}
+        accessibilityActions={onLongPress !== undefined ? [{ name: "longpress", label: "고치기" }] : undefined}
+        onAccessibilityAction={(e) => {
+          if (e.nativeEvent.actionName === "longpress") onLongPress?.();
+        }}
         accessibilityRole={onPress ? "button" : undefined}
         accessibilityLabel={`${time === undefined ? "" : `${time} `}${title}, ${category}${costLabel === undefined ? "" : `, ${costLabel}`}${verified ? "" : ", 지도 확인 필요"}${badge === undefined ? "" : `, ${badge.label}`}`}
         accessibilityHint={onPress ? (pressHint ?? "고른 이유와 장소 정보를 봅니다") : undefined}
