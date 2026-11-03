@@ -9,6 +9,7 @@ import Animated, {
   ZoomIn,
   cancelAnimation,
   runOnJS,
+  useAnimatedReaction,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
@@ -35,11 +36,14 @@ import {
   clampCamera,
   destinationRect,
   scaleLimits,
+  showsRoutes,
+  tileDensityFor,
   tilesFor,
   viewRect,
   zoomAround,
   zoomForScale,
   type MapCamera,
+  type TileRect,
 } from "./map/tiles.ts";
 
 export type LatLng = { lat: number; lng: number };
@@ -387,6 +391,8 @@ const pinStyles = StyleSheet.create({
 const WORLD_PAD = 4000;
 /** 확대한 장소로 갈 때의 배율(골목이 보이는 정도) */
 const FOCUS_SCALE = 10;
+/** 이웃 타일끼리 겹쳐 그리는 폭(화면 dp). 가장자리 부드럽게 그리기로 생기는 실선을 덮는다. */
+const TILE_OVERLAP = 0.6;
 // 오픈스트리트맵 타일 위에 앱 바탕색을 반투명하게 덮어 색·글자를 눌러 준다(11/2 시안: 밝게 45%, 어둡게 60%).
 const VEIL = { light: "rgba(251, 248, 243, 0.45)", dark: "rgba(21, 22, 29, 0.6)" } as const;
 /** 경로 방향 꺾쇠(›) 모양(화면 px)과, 꺾쇠를 넣을 가장 짧은 구간(화면 px) */
@@ -558,9 +564,9 @@ function TileMap({
   }));
 
   // 타일: 지금 보이는 곳 둘레만 그린다. 굵은 타일(가장 작게 줄였을 때의 단계)을 보이는 곳보다 넓게 깔고, 그 위에 자세한 타일.
-  const pixelRatio = PixelRatio.get();
-  const baseZ = zoomForScale(limits.min, pixelRatio);
-  const detailZ = zoomForScale(settled.scale, pixelRatio);
+  // 줄인 화면은 오픈스트리트맵이 그 거리에 정한 단계(정보 적게), 키운 화면은 폰 밀도로 선명하게(tileDensityFor, 11/3 결정).
+  const baseZ = zoomForScale(limits.min, 1);
+  const detailZ = zoomForScale(settled.scale, tileDensityFor(settled.scale, PixelRatio.get()));
   const baseTiles = useMemo(() => {
     if (width <= 0) return [];
     const v = viewRect(settled, width, height);
@@ -600,7 +606,34 @@ function TileMap({
   const showFollow = followLabel !== undefined && (userMoved || focus !== null);
   // 경로 선의 그림 좌표. SVG 판은 그림 전체가 아니라 이 점들 둘레만큼만 만든다(routeBox: 안드로이드 큰 비트맵 끊김).
   const routeLines = routes.map((r) => r.points.map(calm ? calmAt : (p: LatLng) => projectGeo(p)));
-  const lineBox = routeBox(routeLines.flat(), px);
+  // 이 지도의 첫 화면(회의: 화면 폭 맞춤, 일정: 장소들 맞춤)보다 줄이면 경로 선을 그리지 않는다(showsRoutes, 11/3 결정).
+  const homeScale = width <= 0 || follow ? artScale : computeArtViewport(artPoints, width, viewH, "fit").scale;
+  const lineBox = showsRoutes(px, homeScale) ? routeBox(routeLines.flat(), px) : null;
+  // lineBox는 손을 떼야 다시 정해져서, 줄이는 동안에는 선이 남아 안 사라지는 것처럼 보였다(11/3).
+  // 그래서 움직이는 배율(camS)로도 보고, 첫 화면보다 줄이는 순간 바로 흐리게 지운다.
+  const routeOpacity = useSharedValue(1);
+  useAnimatedReaction(
+    () => showsRoutes(camS.value, homeScale),
+    (shown, before) => {
+      if (shown === before) return;
+      routeOpacity.value = before === null || reduceMotion ? Number(shown) : withTiming(Number(shown), { duration: duration.fast });
+    },
+  );
+  const routeStyle = useAnimatedStyle(() => ({ opacity: routeOpacity.value }));
+
+  // 타일 한 장: 늘 원래 크기(256px)로 풀고 칸에 꽉 채운다. 놓인 크기에 맞춰 줄여 풀면 확대할 때 글자가 깨졌다(11/3).
+  const tileImage = (t: TileRect, left: number, top: number, width: number, height: number) => (
+    <Image
+      key={t.key}
+      source={{ uri: TILE_URL(t.z, t.x, t.y), headers: TILE_HEADERS }}
+      cachePolicy="memory-disk"
+      allowDownscaling={false}
+      contentFit="fill"
+      style={{ position: "absolute", left, top, width, height }}
+    />
+  );
+  // 밑 타일끼리 겹칠 폭(그림 px): 놓을 때의 반올림 틈(화면 점 하나)을 덮고, 줄인 화면에서도 화면에서 TILE_OVERLAP만큼은 겹친다.
+  const baseOverlap = Math.max(1 / PixelRatio.get(), TILE_OVERLAP / px);
 
   return (
     // 바깥 상자에서 지도를 잘라 낸다(타일이 아래 내용 뒤로 새지 않게). 손가락 동작은 앱 맨 바깥 GestureHandlerRootView가 받는다(_layout).
@@ -614,45 +647,45 @@ function TileMap({
           {width > 0 && (
             <>
               <Animated.View style={[styles.world, worldStyle]} pointerEvents="none">
-                {[...baseTiles, ...detailTiles].map((t) => (
-                  <Image
-                    key={t.key}
-                    source={{ uri: TILE_URL(t.z, t.x, t.y), headers: TILE_HEADERS }}
-                    cachePolicy="memory-disk"
-                    style={{ position: "absolute", left: t.left + WORLD_PAD, top: t.top + WORLD_PAD, width: t.width + 0.6 / px, height: t.height + 0.6 / px }}
-                  />
-                ))}
+                {/* 굵은 밑 타일은 그림 좌표 자리에 둔다. 화면 크기 자리에 두면 깊이 키울수록 한 장이 수만 dp짜리 칸이 된다(11/3).
+                    놓을 때의 반올림 틈은 baseOverlap만큼 겹쳐 덮는다(대개 위 자세한 타일에 가려진다). */}
+                {baseTiles.map((t) => tileImage(t, t.left + WORLD_PAD, t.top + WORLD_PAD, t.width + baseOverlap, t.height + baseOverlap))}
+                {/* 자세한 타일은 멈춘 카메라(settled) 기준 화면 크기 자리에 놓고 판째 1/px로 줄여 지도판에 맞춘다(11/3). 그림 좌표로 놓으면
+                    깊이 키울수록 몇 dp짜리 칸이 되어, 놓을 때의 반올림 오차가 지도판째 수십 배로 커져 타일 사이가 벌어졌다.
+                    자세한 타일은 어느 배율에서도 화면에서 수백 dp 안쪽이다(tilesDensity.test.ts). */}
+                <View style={[styles.tileLayer, { transform: [{ translateX: settled.x + WORLD_PAD }, { translateY: settled.y + WORLD_PAD }, { scale: 1 / px }] }]}>
+                  {detailTiles.map((t) =>
+                    tileImage(t, (t.left - settled.x) * px, (t.top - settled.y) * px, t.width * px + TILE_OVERLAP, t.height * px + TILE_OVERLAP),
+                  )}
+                </View>
               </Animated.View>
               <View style={[StyleSheet.absoluteFill, { backgroundColor: palette.night ? VEIL.dark : VEIL.light }]} pointerEvents="none" />
               <Animated.View style={[styles.world, worldStyle]} pointerEvents="none">
                 {lineBox !== null && (
-                  // 판 크기와 viewBox를 같게 두어 그림 좌표 그대로 그린다(보이는 선 굵기·선명도는 예전과 같다).
-                  <Svg
-                    width={lineBox.w}
-                    height={lineBox.h}
-                    viewBox={`${lineBox.x} ${lineBox.y} ${lineBox.w} ${lineBox.h}`}
-                    style={{ position: "absolute", left: lineBox.x + WORLD_PAD, top: lineBox.y + WORLD_PAD }}
-                  >
-                    {routeLines.map((points, i) => {
-                      const d = smoothPath(points);
-                      if (d === "") return null;
-                      // 차분한 얇은 선 + 테두리, 구간 가운데에 가는 방향 꺾쇠(화면에서 짧은 구간은 뺀다). 굵기는 화면 기준.
-                      const clear = (p: ArtPoint) => pins.every((_, k) => Math.hypot(p.x - pinAt(k).x, p.y - pinAt(k).y) * px >= ARROW_PIN_CLEAR);
-                      const arrows = pathMidArrows(points, clear).filter((a) => a.length * px >= ARROW_MIN_LEG);
-                      return (
-                        <G key={`route${i}`}>
-                          <Path d={d} stroke={palette.trailUnder} strokeWidth={7 / px} strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.9} />
-                          <Path d={d} stroke={palette.trail} strokeWidth={2.5 / px} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                          {arrows.map((a, k) => (
-                            <G key={k} transform={`translate(${a.x} ${a.y}) rotate(${a.deg}) scale(${1 / px})`}>
-                              <Path d={CHEVRON} stroke={palette.trailUnder} strokeWidth={6} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                              <Path d={CHEVRON} stroke={palette.trail} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                            </G>
-                          ))}
-                        </G>
-                      );
-                    })}
-                  </Svg>
+                  // 판 크기와 viewBox를 같게 두어 그림 좌표 그대로 그린다(보이는 선 굵기·선명도는 예전과 같다). 줄이는 동안의 숨기기는 routeStyle.
+                  <Animated.View style={[{ position: "absolute", left: lineBox.x + WORLD_PAD, top: lineBox.y + WORLD_PAD }, routeStyle]}>
+                    <Svg width={lineBox.w} height={lineBox.h} viewBox={`${lineBox.x} ${lineBox.y} ${lineBox.w} ${lineBox.h}`}>
+                      {routeLines.map((points, i) => {
+                        const d = smoothPath(points);
+                        if (d === "") return null;
+                        // 차분한 얇은 선 + 테두리, 구간 가운데에 가는 방향 꺾쇠(화면에서 짧은 구간은 뺀다). 굵기는 화면 기준.
+                        const clear = (p: ArtPoint) => pins.every((_, k) => Math.hypot(p.x - pinAt(k).x, p.y - pinAt(k).y) * px >= ARROW_PIN_CLEAR);
+                        const arrows = pathMidArrows(points, clear).filter((a) => a.length * px >= ARROW_MIN_LEG);
+                        return (
+                          <G key={`route${i}`}>
+                            <Path d={d} stroke={palette.trailUnder} strokeWidth={7 / px} strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.9} />
+                            <Path d={d} stroke={palette.trail} strokeWidth={2.5 / px} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                            {arrows.map((a, k) => (
+                              <G key={k} transform={`translate(${a.x} ${a.y}) rotate(${a.deg}) scale(${1 / px})`}>
+                                <Path d={CHEVRON} stroke={palette.trailUnder} strokeWidth={6} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                                <Path d={CHEVRON} stroke={palette.trail} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                              </G>
+                            ))}
+                          </G>
+                        );
+                      })}
+                    </Svg>
+                  </Animated.View>
                 )}
                 {pins.map((pin, i) => {
                   const p = pinAt(i);
@@ -845,6 +878,7 @@ const createStyles = (t: Theme) => StyleSheet.create({
   // 그림 좌표로 펼친 지도 판: 그림 둘레로 WORLD_PAD만큼 큰 상자를 왼쪽 위 기준으로 옮기고 키운다.
   // 안드로이드에서 상자 밖으로 넘쳐 그리면 작은 움직임에도 지도 전체를 다시 그려 느려지므로, 넘치지 않게 크게 잡는다.
   world: { position: "absolute", left: 0, top: 0, width: ART_W + WORLD_PAD * 2, height: ART_H + WORLD_PAD * 2, transformOrigin: "0 0", overflow: "hidden" },
+  tileLayer: { position: "absolute", left: 0, top: 0, width: 0, height: 0, overflow: "visible", transformOrigin: "0 0" },
   gestureRoot: { flex: 1, overflow: "hidden" },
   followChip: {
     position: "absolute",

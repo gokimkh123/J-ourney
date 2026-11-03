@@ -13,7 +13,10 @@ export const TILE_URL = (z: number, x: number, y: number) => `https://tile.opens
 export const TILE_HEADERS = { 'User-Agent': 'J-ourney/0.1 (DevDay 2026 demo app)' };
 export const TILE_CREDIT = '© OpenStreetMap contributors';
 
-/** 타일 확대 단계 한도: 부산 전체(9)부터 골목(17)까지 */
+/**
+ * 타일 확대 단계 한도: 부산 전체(9)부터 골목(17)까지. 끝까지 키우면 화면 가로가 약 750m다(scaleLimits).
+ * 11/3: 18단계로 올렸더니 끝까지 키울 때 지도가 안 보여서 한 단계 낮춰 되돌렸다.
+ */
 export const MIN_TILE_Z = 9;
 export const MAX_TILE_Z = 17;
 
@@ -27,7 +30,8 @@ const LNG_PER_ART_PX = (() => {
   return 1 / (b.x - a.x);
 })();
 
-// 손가락 동작 계산(clampCamera·zoomAround)은 화면 쪽 스레드(worklet)에서도 돌므로 'worklet' 표시를 붙인다(일반 호출에는 영향 없음).
+// 손가락 동작 계산(clampCamera·zoomAround)과 줄이는 동안의 선 숨기기(showsRoutes)는 화면 쪽 스레드(worklet)에서도 돌므로
+// 'worklet' 표시를 붙인다(일반 호출에는 영향 없음).
 function clamp(v: number, lo: number, hi: number): number {
   'worklet';
   return Math.min(Math.max(v, lo), hi);
@@ -61,6 +65,34 @@ export function zoomForScale(scale: number, pixelRatio = 2): number {
   let z = MIN_TILE_Z;
   while (z < MAX_TILE_Z && tileArtW(z) * scale > want * 1.4) z += 1;
   return z;
+}
+
+/** 이 배율(그림 1px이 화면 몇 dp인가)부터를 "키운 화면"으로 본다. 회의 지도 기본(약 1)·일정 지도 첫 화면(약 1.4~2.2)은 줄인 화면이다. */
+export const NEAR_SCALE = 2.5;
+
+/**
+ * 타일 단계를 고를 때 쓸 화면 밀도(zoomForScale의 pixelRatio). 11/3 결정: 카카오맵처럼 줄이면 정보 적게, 키우면 선명하게.
+ * 줄인 화면은 1이라 오픈스트리트맵이 그 거리에 정한 단계를 받는다(정보가 적은 대신 그림을 늘려 조금 흐림).
+ * 키운 화면은 폰 밀도대로 한 단계 높여 받아 글자가 선명하다(한 밀도만 쓰면 중간 배율에서 2~3배로 늘어 글자가 깨졌다).
+ */
+export function tileDensityFor(scale: number, pixelRatio: number): number {
+  return scale < NEAR_SCALE ? 1 : pixelRatio;
+}
+
+/**
+ * 첫 화면 배율의 이 비율보다 줄이면 경로 선을 숨긴다. 첫 화면보다 조금만 줄여도 숨기고, 손가락 떨림 정도(5%)만 봐준다.
+ * 11/3: 0.75는 한참 줄여야 사라져서 안 사라지는 것처럼 보였다.
+ */
+export const ROUTE_HIDE_BELOW = 0.95;
+
+/**
+ * 경로 선을 그릴까(11/3 결정: 줄이면 선을 숨겨 정보를 적게). 고정 단계로 정하면 지도마다 첫 화면 단계가 달라서
+ * (회의 지도 11·일정 지도 12단계) 회의 지도의 A·B 경로가 첫 화면부터 사라지거나, 일정 지도는 두 배 넘게 줄여야 사라졌다.
+ * 그래서 그 지도의 첫 화면(homeScale)보다 줄였는지로 정한다.
+ */
+export function showsRoutes(scale: number, homeScale: number): boolean {
+  'worklet';
+  return scale >= homeScale * ROUTE_HIDE_BELOW;
 }
 
 /** 화면에 보이는 그림 범위 */
