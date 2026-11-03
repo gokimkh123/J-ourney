@@ -62,6 +62,16 @@ export function createPlanBoardSync(options: {
   let pollTimer: { handle: unknown } | null = null;
   let lastRequest = 0;
   let appliedRequest = 0;
+  // 지금 board를 만든 응답(JSON 글). 5초 폴링이 같은 응답을 받으면 board를 그대로 두어 화면이 다시 그려지지 않게 한다.
+  let boardText: string | null = null;
+
+  /** 지금 board와 같은 응답이면 지금 board를 그대로 쓰고, 다르면 새 board로 바꾼다. */
+  function reuse(json: unknown, board: PlanBoard): PlanBoard {
+    const text = JSON.stringify(json);
+    if (text === boardText && state.board !== null) return state.board;
+    boardText = text;
+    return board;
+  }
 
   function setState(patch: Partial<BoardSyncState>): void {
     if (disposed) return;
@@ -116,7 +126,7 @@ export function createPlanBoardSync(options: {
     if (request > appliedRequest) {
       if (r.ok) {
         appliedRequest = request;
-        setState({ board: r.board, phase: 'ready' });
+        setState({ board: reuse(r.json, r.board), phase: 'ready' });
       } else if (state.board === null) {
         setState({ phase: errorCode(r.error) === 'NOT_FOUND' ? 'waiting' : 'error' });
       }
@@ -149,7 +159,7 @@ export function createPlanBoardSync(options: {
     }
     if (request > appliedRequest) {
       appliedRequest = request;
-      setState({ board: r.board, phase: 'ready', busy: false, notice: null });
+      setState({ board: reuse(r.json, r.board), phase: 'ready', busy: false, notice: null });
     } else {
       setState({ busy: false, notice: null });
     }

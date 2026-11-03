@@ -3,6 +3,7 @@ import { Alert } from 'react-native';
 
 import { endpoints } from '../api/index.ts';
 import { describeError } from '../ui/format.ts';
+import { showToast } from '../ui/toast.ts';
 import type { Session } from '../session/session.ts';
 import type { ReviewChoice } from './serverMeeting.ts';
 import { canSend, demoAnswers, hasAnswered, pendingNames, sendLabel, toChoices } from './reviewView.ts';
@@ -41,6 +42,8 @@ export function useReview(state: MeetingState, session: Session | null, isHost: 
   const [error, setError] = useState<string | null>(null);
   const lastKey = useRef(key);
   const autoSent = useRef(new Set<string>());
+  // 방장이 "기다리지 않고 진행하기"를 보냈는가(사람 확인이 닫히면 알림을 띄우고 지운다)
+  const proceeded = useRef(false);
 
   useEffect(() => {
     if (lastKey.current === key) return;
@@ -78,10 +81,14 @@ export function useReview(state: MeetingState, session: Session | null, isHost: 
         onPress: () => {
           setProceeding(true);
           setError(null);
-          endpoints
-            .closeReview(meetingId)
-            .catch((e: unknown) => setError(describeError(e, 'meeting')))
-            .finally(() => setProceeding(false));
+          // 보내고 나서도 서버가 사람 확인을 닫는 이벤트가 올 때까지(아래 효과) 도는 표시를 둔다. 실패하면 바로 푼다.
+          // 닫는 이벤트가 응답보다 먼저 올 수 있어 보내기 전에 표시해 둔다.
+          proceeded.current = true;
+          endpoints.closeReview(meetingId).catch((e: unknown) => {
+            proceeded.current = false;
+            setError(describeError(e, 'meeting'));
+            setProceeding(false);
+          });
         },
       },
     ]);
@@ -90,6 +97,14 @@ export function useReview(state: MeetingState, session: Session | null, isHost: 
   // 시연 모드: 방장이 아닌 구성원 몫을 간격을 두고 대신 보낸다.
   const demo = session?.demo === true && isHost;
   const reviewing = state.phase === 'reviewing' && meetingId !== null;
+  // "기다리지 않고 진행하기"의 도는 표시는 사람 확인이 실제로 닫히면(다음 단계로 넘어가면) 풀고, 진행했다고 짧게 알린다.
+  useEffect(() => {
+    if (reviewing) return;
+    setProceeding(false);
+    if (!proceeded.current) return;
+    proceeded.current = false;
+    showToast('안 답한 안건은 ‘넣기’로 계산했어요');
+  }, [reviewing]);
   useEffect(() => {
     if (!demo || !reviewing || meetingId === null) return;
     const todo = demoAnswers(state, session?.memberId ?? '').filter(

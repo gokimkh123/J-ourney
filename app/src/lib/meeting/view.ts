@@ -1,8 +1,9 @@
 import type { PlaceKind } from '../../components/PlaceSticker.tsx';
+import { stopKindOf } from '../plan/chosenPlan.ts';
 import { candidateKindOf } from '../plan/placeKind.ts';
 import { durationLabel } from '../ui/format.ts';
 import { latestRoute } from './reducer.ts';
-import type { AgentInfo, MeetingState, TimelineItem } from './types.ts';
+import type { AgentInfo, MeetingState, RouteDay, RouteStop, TimelineItem } from './types.ts';
 
 type MessageItem = Extract<TimelineItem, { kind: 'message' }>;
 type StatusTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger';
@@ -196,6 +197,56 @@ export function mapPins(state: MeetingState): {
     const index = names.indexOf(c.name);
     return index === -1 ? pin : { ...pin, label: String(index + 1) };
   });
+}
+
+export type RoutePin = { id: string; name: string; lat: number; lng: number; color: string; label: string; kind: PlaceKind };
+
+/** 정류장 색: 그곳을 꼭 가거나 좋아한 첫 구성원의 AI 색, 없으면(식당·숙소) 기본 색 */
+function stopColor(state: MeetingState, stop: RouteStop): string {
+  const memberId = [...(stop.mustFor ?? []), ...(stop.likedBy ?? [])][0];
+  return state.agents.find((agent) => agent.memberId === memberId)?.color ?? FALLBACK_COLOR;
+}
+
+/**
+ * 일정안을 지도에 그릴 때의 스티커와 선(11/3: 후보 스티커와 일정 선이 따로 놀아 아이콘이 다 이어지지 않던 것).
+ * 스티커를 일정 정류장으로 그리고(식당·숙소 포함) 선도 같은 자리를 이어서, 모든 스티커가 선 위에 놓인다.
+ * day를 주면 그날만 그리고 번호는 시트 목록처럼 1부터, 없으면 모든 날을 그리고 번호는 날을 이어 센다.
+ * 같은 곳(날 끝과 다음 날 처음의 숙소 등)은 스티커 하나이고, 선은 날마다 하나라 그 숙소에서 이어진다.
+ */
+export function routeMapView(state: MeetingState, route: RouteDay[], day: number | null): { pins: RoutePin[]; lines: { lat: number; lng: number }[][] } {
+  const days = [...route].sort((a, b) => a.day - b.day).filter((d) => day === null || d.day === day);
+  const pins: RoutePin[] = [];
+  const seen = new Set<string>();
+  const lines = days.map((d) =>
+    d.stops.map((stop) => {
+      const key = stop.placeId ?? `${stop.lat},${stop.lng}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        pins.push({
+          id: stop.placeId ?? stop.itemId,
+          name: stop.name,
+          lat: stop.lat,
+          lng: stop.lng,
+          color: stopColor(state, stop),
+          label: String(pins.length + 1),
+          kind: stopKindOf(stop),
+        });
+      }
+      return { lat: stop.lat, lng: stop.lng };
+    }),
+  );
+  return { pins, lines };
+}
+
+/**
+ * 회의 도중(라운드)의 지도: 일정 정류장 스티커(번호) 뒤에, 아직 일정에 없는 후보를 번호 없이 남긴다(AI가 그곳을 오가므로).
+ * 같은 곳(장소 id나 이름이 같음)은 정류장 스티커 하나만 그린다.
+ */
+export function withOtherCandidates<P extends { id: string; name: string; label?: string }>(routePins: RoutePin[], candidates: P[]): (RoutePin | Omit<P, 'label'>)[] {
+  const others = candidates
+    .filter((c) => !routePins.some((p) => p.id === c.id || p.name === c.name))
+    .map(({ label: _label, ...rest }) => rest);
+  return [...routePins, ...others];
 }
 
 export function candidateRows(state: MeetingState): {
