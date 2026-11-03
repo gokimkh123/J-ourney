@@ -4,13 +4,13 @@ import { categories, places } from '../db/schema.js';
 import type { MustKeepRule } from '../persona/types.js';
 import { type OpenHours, closedOn, hoursOn } from './hours.js';
 import { REACT, overlapMinutes, reactionOf, reactionScore } from './react.js';
-import { type Candidate, HOURS_KEYS, type Mark, type MemberInput, REST_KEYS, RETRIEVE, type RetrieveResult, intro, isBusiness } from './retrieve.js';
+import { type Candidate, HOURS_KEYS, type Mark, type MemberInput, REST_KEYS, RETRIEVE, type RetrieveResult, intro, isBusiness, menuOf } from './retrieve.js';
 import type { CarLeg, RouteClient, TransitLeg, WalkLeg } from './route.js';
 import { type RulePlace, dislikeMatches, dislikeText, isAreaRule, isDietAvoid, isLegacyRule, isNameRule, likeMatches, likeText, ruleMatcher } from './rules.js';
 import { placeIdOf } from './runs.js';
 import { type Point, TRAVEL, centerOf, distanceKm } from './travel.js';
 import type { Board, MoveMode, ReviewDecision } from './types.js';
-import { DAY_MS } from '../lib/time.js';
+import { DAY_MINUTES, DAY_MS, toMinutes } from '../lib/time.js';
 
 /**
  * 6단계 동선 짜기 규칙 값 (모두 여기서만 바꿈). 10/23 사용자 결정: 머무는 시간·시각표는 근거가 없어 넣지 않고, 경로 + 가는 길(대중교통·자차·택시) + 맛집 + 낭비 없는 순서만 줌
@@ -207,12 +207,7 @@ export interface PlanSets {
 }
 export type PlanStates = Record<'A' | 'B', PlanSets>;
 
-const DAY = 1440;
 const KST_MINUTES = 9 * 60;
-const toMinutes = (hhmm: string) => {
-  const [h, m] = hhmm.split(':').map(Number);
-  return h * 60 + (m || 0);
-};
 /** 당일치기에서 도착 뒤·출발 전 여유(FLIGHT)를 빼고 다닐 수 있는 시간 (분). 0 이하면 다닐 시간이 없음 (11/2 점검: 10:00 도착·12:00 출발이 통과해 끼니 없는 일정) */
 export const dayTripSpanMinutes = (arrivalTime: string, departureTime: string) =>
   toMinutes(departureTime) - FLIGHT.departureBufferMinutes - (toMinutes(arrivalTime) + FLIGHT.arrivalBufferMinutes);
@@ -242,7 +237,7 @@ export function duskKst(p: Point, ymd: string, zenith: number): number | null {
 /** at(분)에 열려 있는지 (영업시간을 모르면 false: 야경 자리에 두지 않음) */
 const openAt = (open: OpenHours | null, at: number) => {
   if (!open) return false;
-  const close = open.close <= open.open ? open.close + DAY : open.close;
+  const close = open.close <= open.open ? open.close + DAY_MINUTES : open.close;
   return at >= open.open && at < close;
 };
 const isNightSpot = (p: Spot, dusk: number) => !!p.code?.startsWith(SCHEDULE.night.code) && openAt(p.open, dusk);
@@ -314,7 +309,7 @@ async function moreRestaurants(db: Db, pool: RetrieveResult, members: readonly M
   const month = Number(pool.dates[0].slice(5, 7));
   return rows.flatMap((p): Spot[] => {
     if (inPool.has(p.id) || p.lat === null || p.lng === null || !p.lcls3 || !isMeal(RETRIEVE.foodType, p.lcls3)) return [];
-    const view = { id: p.id, title: p.title, code: p.lcls3, districtCode: p.districtCode, isFood: true, menu: [intro(p.introRaw, 'firstmenu'), intro(p.introRaw, 'treatmenu')].filter(Boolean).join(' ') || null };
+    const view = { id: p.id, title: p.title, code: p.lcls3, districtCode: p.districtCode, isFood: true, menu: menuOf(p.introRaw) };
     const rest = intro(p.introRaw, ...REST_KEYS);
     if (avoids.some((f) => f(view)) || pool.dates.every((d) => closedOn(rest, d) === 'closed')) return [];
     const marks: Record<string, Mark[]> = {};
@@ -398,7 +393,7 @@ function spotsOf(
       proposed: b?.proposedBy.length ?? 0,
       meal: isMeal(c.type, code),
       must: Object.values(c.marks).some((ks) => ks.some((k) => k.kind === 'must')),
-      evening: c.open ? c.open.open >= DINNER_START && c.open.open < DAY : (start ?? -1) >= DINNER_START,
+      evening: c.open ? c.open.open >= DINNER_START && c.open.open < DAY_MINUTES : (start ?? -1) >= DINNER_START,
       startsAt: c.open ? c.open.open : start,
       booked: !!c.booked,
     };
@@ -917,7 +912,7 @@ async function contextOf(db: Db, router: RouteClient, input: ScheduleInput): Pro
   );
   const start = Math.max(...members.map((m) => toMinutes(m.profile.startTime)));
   let end = Math.min(...members.map((m) => toMinutes(m.profile.endTime ?? REACT.dayEnd)));
-  if (end <= start) end += DAY;
+  if (end <= start) end += DAY_MINUTES;
   const dinner = end > DINNER_START;
   const all = spotsOf(pool, input.board, members, input.decision, filled);
   // 하루가 저녁 전에 끝나면 밤 행사·야시장은 갈 수 없어 넣지 않음

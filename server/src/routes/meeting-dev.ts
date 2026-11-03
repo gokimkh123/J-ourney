@@ -11,7 +11,7 @@ import { parseBody } from '../lib/validate.js';
 import { type MeetingStateType, buildMeetingGraph, meetingGraphShape } from '../meeting/graph.js';
 import type { EventHub } from '../meeting/live.js';
 import { REACT, reactionScore } from '../meeting/react.js';
-import { type MeetingLimits, eventsAfter } from '../meeting/runs.js';
+import type { MeetingLimits } from '../meeting/runs.js';
 import { ID_MAX } from './meetings.js';
 import type { MeetingObserver, MeetingService, RunOutcome } from '../meeting/service.js';
 import type { TourClient } from '../tour/client.js';
@@ -121,11 +121,6 @@ export function meetingDevRoutes({ db, crowdClient, limits, service, hub, allowT
   });
 
   // 다시 접속한 화면: afterSeq 뒤의 이벤트 (명세서 WebSocket 봉투와 같은 형식)
-  r.get('/dev/meeting/events', requireMember(db), async (c) => {
-    const afterSeq = Number(c.req.query('afterSeq') ?? 0) || 0;
-    return c.json({ events: await eventsAfter(db, c.get('member').tripId, afterSeq) });
-  });
-
   /** 실행이 끝나면 보내는 마지막 줄: 1–4단계 결과와, 멈췄으면 사람 확인 요청 */
   async function resultLine(meetingId: string, out: RunOutcome, started: number) {
     const [row] = await db.select({ llmCalls: meetings.llmCalls }).from(meetings).where(eq(meetings.id, meetingId));

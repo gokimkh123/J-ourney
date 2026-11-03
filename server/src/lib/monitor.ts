@@ -1,8 +1,9 @@
-import { createHmac } from 'node:crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { Db } from '../db/client.js';
-import { llmUsage, meetings, tourApiUsage } from '../db/schema.js';
+import { llmUsage, meetings } from '../db/schema.js';
+import { ipKey } from '../llm/usage.js';
+import { tourCallsByOperation } from '../tour/usage.js';
 import { type AccessKey, accessOf } from './access.js';
 import { tunnelIp } from './rate-limit.js';
 import { nowKst, todayKst } from './time.js';
@@ -105,7 +106,7 @@ export function createMonitor(opts: { accessKeys: readonly AccessKey[]; ipSecret
   };
   const clientOf = (c: Context) => {
     const ip = tunnelIp(c);
-    return ip === null ? '로컬' : `기기 ${createHmac('sha256', opts.ipSecret).update(ip).digest('hex').slice(0, MONITOR.clientChars)}`;
+    return ip === null ? '로컬' : `기기 ${ipKey(ip, opts.ipSecret).slice(0, MONITOR.clientChars)}`;
   };
   const count = (route: string) => {
     const minute = nowKst().slice(0, 16);
@@ -155,7 +156,6 @@ export function createMonitor(opts: { accessKeys: readonly AccessKey[]; ipSecret
 export async function monitorStats(db: Db) {
   const day = todayKst();
   const [llm] = await db.select({ count: llmUsage.count }).from(llmUsage).where(eq(llmUsage.day, day));
-  const apis = await db.select({ operation: tourApiUsage.operation, count: tourApiUsage.count }).from(tourApiUsage).where(and(eq(tourApiUsage.day, day)));
   const live = await db
     .select({ id: meetings.id, tripId: meetings.tripId, status: meetings.status, startedAt: meetings.startedAt, llmCalls: meetings.llmCalls })
     .from(meetings)
@@ -163,7 +163,7 @@ export async function monitorStats(db: Db) {
   return {
     now: nowKst(),
     llmToday: llm?.count ?? 0,
-    apisToday: Object.fromEntries(apis.map((a) => [a.operation, a.count])),
+    apisToday: await tourCallsByOperation(db, day),
     meetings: live.map((m) => ({ ...m, startedAt: nowKst(m.startedAt) })),
   };
 }

@@ -2,6 +2,7 @@ import type { OpenHours } from './hours.js';
 import { type Candidate, type MemberInput, RETRIEVE, type RetrieveResult } from './retrieve.js';
 import { agentIdOf, placeIdOf } from './runs.js';
 import type { Board, BoardCandidate, Reaction, ReactionKind } from './types.js';
+import { DAY_MINUTES, clock, toMinutes } from '../lib/time.js';
 
 /**
  * 4단계 후보 보드 반응 규칙 값 (모두 여기서만 바꿈, 10/15 사용자 결정)
@@ -45,20 +46,11 @@ function mergeReaction(code: Omit<Reaction, 'agentId'> | null, ai: AiReaction | 
   return { kind: code.kind, reason: `${code.reason} · ${ai.reason}` };
 }
 
-const DAY = 1440;
-const toMinutes = (hhmm: string) => {
-  const [h, m] = hhmm.split(':').map(Number);
-  return h * 60 + (m || 0);
-};
-const clock = (v: number) => {
-  const x = ((v % DAY) + DAY) % DAY;
-  return `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`;
-};
 
 /** 영업시간과 하루 시간대(분)가 겹치는 분. 자정을 넘겨 여는 곳(예: 18:00–02:00)은 다음 날까지 셈 */
 export function overlapMinutes(open: OpenHours, start: number, end: number): number {
-  const close = open.close <= open.open ? open.close + DAY : open.close;
-  const until = end <= start ? end + DAY : end;
+  const close = open.close <= open.open ? open.close + DAY_MINUTES : open.close;
+  const until = end <= start ? end + DAY_MINUTES : end;
   return Math.max(0, Math.min(close, until) - Math.max(open.open, start));
 }
 
@@ -84,9 +76,9 @@ export function reactionOf(c: Candidate, m: MemberInput, opts: { lodging: boolea
     const start = toMinutes(m.profile.startTime);
     const end = toMinutes(m.profile.endTime ?? REACT.dayEnd);
     const minutes = overlapMinutes(c.open, start, end);
-    const length = (c.open.close <= c.open.open ? c.open.close + DAY : c.open.close) - c.open.open;
+    const length = (c.open.close <= c.open.open ? c.open.close + DAY_MINUTES : c.open.close) - c.open.open;
     if (minutes === 0) {
-      const opensLate = c.open.open >= (end <= start ? end + DAY : end);
+      const opensLate = c.open.open >= (end <= start ? end + DAY_MINUTES : end);
       block.push(opensLate ? `${clock(c.open.open)}부터 영업 (하루 일정은 ${clock(end)}까지)` : `${clock(c.open.close)}에 영업 끝 (하루 일정은 ${clock(start)}부터)`);
     } else if (minutes < REACT.tightMinutes && minutes < length) {
       // 하루 시간대가 영업시간을 잘라 조금만 남을 때만 (20분짜리 분수 쇼처럼 원래 짧은 곳은 아님)

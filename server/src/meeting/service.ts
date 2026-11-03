@@ -279,7 +279,7 @@ export function meetingService({ db, graph, limits, publisher, replay = false, l
     return { done: closed!.done };
   }
 
-  return { start, run, view, submitReview, closeReview };
+  return { start, view, submitReview, closeReview };
 }
 
 export type MeetingService = ReturnType<typeof meetingService>;

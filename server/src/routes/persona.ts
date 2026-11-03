@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/client.js';
 import { personas, trips } from '../db/schema.js';
-import { type Access, type AccessKey, accessOf } from '../lib/access.js';
+import { type Access, type AccessKey, accessOf, aiFor } from '../lib/access.js';
 import { type AuthEnv, type Member, requireMember } from '../lib/auth.js';
 import { ApiError } from '../lib/errors.js';
 import { laneQueue } from '../lib/lane.js';
@@ -73,9 +73,7 @@ async function savedCard(db: Db, answers: PersonaAnswers): Promise<CardText | nu
 async function makePersona(memberId: string, ip: string | null, answers: PersonaAnswers, access: Access | null, deps: PersonaDeps) {
   const { db, llmDailyLimit, llmCardsPerMember, llmPerIpDaily, ipHashSecret } = deps;
   // 접근 키가 있는 서버: 키를 낸 터널 요청은 키 몫의 LLM(IP 횟수 없음), 키 없는 터널 요청은 LLM 없음(녹화·규칙만)
-  const keyed = access?.kind === 'key';
-  const llm = keyed ? (deps.live?.llm ?? deps.llm) : access?.kind === 'none' ? null : deps.llm;
-  const recorder = keyed ? (deps.live?.recorder ?? deps.recorder) : deps.recorder;
+  const { keyed, llm, recorder } = aiFor(access, deps);
   const traits = scoreTraits(answers.scale);
   const chips = pickChips(traits);
   const done = (card: CardText) => ({ answers, traits, chips, ...card, profile: buildProfile(traits, answers, card.mustKeep) });

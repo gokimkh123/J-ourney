@@ -15,6 +15,7 @@ import { shortRegionName, withSubDistricts } from './regions.js';
 import { centerOf, oneWayMinutes } from './travel.js';
 import { type RulePlace, dislikeMatches, dislikeText, isAreaRule, isDietAvoid, isLegacyRule, isNameRule, likeMatches, likeText, ruleMatcher } from './rules.js';
 import type { ResolvedDestination, TripConditions } from './types.js';
+import { stripTags } from '../lib/text.js';
 
 /** 후보 찾기 규칙 값 (모두 여기서만 바꿈) */
 export const RETRIEVE = {
@@ -179,7 +180,6 @@ export function tripDates(c: TripConditions): string[] {
   return out;
 }
 
-const strip = (s: string | null | undefined) => (s ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 const round1 = (v: number) => Math.round(v * 10) / 10;
 function meters(a: { lat: number | null; lng: number | null }, b: { lat: number | null; lng: number | null }) {
   if (a.lat === null || a.lng === null || b.lat === null || b.lng === null) return Infinity;
@@ -192,6 +192,9 @@ export const intro = (raw: Record<string, string> | null, ...keys: string[]) => 
   for (const k of keys) if (raw?.[k]?.trim()) return raw[k];
   return null;
 };
+
+/** 대표 메뉴·취급 메뉴 글 (식당, 없으면 null) */
+export const menuOf = (raw: Record<string, string> | null) => [intro(raw, 'firstmenu'), intro(raw, 'treatmenu')].filter(Boolean).join(' ') || null;
 /** 소개 정보(detailIntro2)의 휴무일·이용시간 칸 이름 (장소 유형마다 다름) */
 export const REST_KEYS = ['restdate', 'restdateculture', 'restdateleports', 'restdatefood', 'restdateshopping'];
 export const HOURS_KEYS = ['usetime', 'usetimeculture', 'usetimeleports', 'opentimefood', 'opentime', 'playtime'];
@@ -271,7 +274,7 @@ export async function retrieveCandidates(
     code: p.lcls3,
     districtCode: p.districtCode,
     isFood: p.type === RETRIEVE.foodType,
-    menu: [intro(p.introRaw, 'firstmenu'), intro(p.introRaw, 'treatmenu')].filter(Boolean).join(' ') || null,
+    menu: menuOf(p.introRaw),
   });
 
   // 장소 이름 규칙은 숙소·가게가 아닌 곳으로 맞을 때만 그 지역에서 지킨 것으로 봄 (이름에 같은 낱말이 든 펜션·가게만 있으면 여행지 밖·이름 맞추기에서 더 찾음)
@@ -301,7 +304,7 @@ export async function retrieveCandidates(
       .filter((p) => lodgingOnly || !isBusiness(p.lcls3) || p.type === RETRIEVE.foodType)
       .map((p) => {
         const v = viewOf(p);
-        return { id: p.id, title: p.title, category: (p.lcls3 && codeNames.get(p.lcls3)) ?? null, district: (p.districtCode && districtName.get(p.districtCode)) ?? null, isFood: v.isFood, menu: v.menu, summary: strip(p.overview) || null, popularity: listPop.scores.get(p.id) ?? null };
+        return { id: p.id, title: p.title, category: (p.lcls3 && codeNames.get(p.lcls3)) ?? null, district: (p.districtCode && districtName.get(p.districtCode)) ?? null, isFood: v.isFood, menu: v.menu, summary: stripTags(p.overview) || null, popularity: listPop.scores.get(p.id) ?? null };
       });
     for (const p of out) titleOf.set(p.id, p.title);
     return out;
@@ -511,7 +514,7 @@ export async function retrieveCandidates(
       restUnknown: dates.some((d) => closedOn(rest, d) === 'unknown'),
       code: p.lcls3,
       rest,
-      summary: strip(p.overview).slice(0, RETRIEVE.summaryChars),
+      summary: stripTags(p.overview).slice(0, RETRIEVE.summaryChars),
       menu: view.isFood ? view.menu : null,
       lat: p.lat,
       lng: p.lng,

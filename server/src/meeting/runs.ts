@@ -195,8 +195,7 @@ export function eventRecorder(db: Db, tripId: string, meetingId: string, publish
     if (isLlmTrace(e.type)) return Promise.reject(new Error('LLM 과정 이벤트는 기록하지 않음'));
     const type = e.type;
     return inLane(tripId, async () => {
-      const [row] = await db.select({ seq: sql<number>`coalesce(max(${meetingEvents.seq}), 0)` }).from(meetingEvents).where(eq(meetingEvents.tripId, tripId));
-      const seq = Number(row.seq) + 1;
+      const seq = (await lastSeqOf(db, tripId)) + 1;
       const at = new Date();
       await db.insert(meetingEvents).values({ tripId, seq, meetingId, type, data: e.data, at });
       const envelope: MeetingEnvelope = { type, tripId, seq, at: nowKst(at), data: e.data };

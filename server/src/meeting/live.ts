@@ -48,11 +48,6 @@ export class EventHub implements EventPublisher {
     }
   }
 
-  /** 지금 열린 연결 수 (시험·확인용) */
-  listening(tripId: string): number {
-    return this.listeners.get(tripId)?.size ?? 0;
-  }
-
   /** 메모리에 남은 여행·구성원 항목 수 (시험·확인용, 연결이 모두 닫히면 0) */
   entries(): { trips: number; members: number } {
     return { trips: this.listeners.size, members: this.sockets.size };
