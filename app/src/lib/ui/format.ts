@@ -23,7 +23,7 @@ export function extractInviteCode(input: string, length: number): string {
 /** 초대 공유 글. 코드는 맨 끝 줄에 따로 두어 눈에 잘 띄고, 통째로 붙여 넣어도 앱이 코드만 고른다(extractInviteCode). */
 export function inviteShareText(title: string | null, code: string): string {
   const head = title === null || title === '' ? '여행에 초대해요!' : `${title} 여행에 초대해요!`;
-  return `${head}\n여행회의 앱의 '코드로 참여'에 아래 초대 코드를 넣어 주세요. 이 메시지를 통째로 붙여 넣어도 돼요.\n\n${code}`;
+  return `${head}\nJ-ourney 앱의 '코드로 참여'에 아래 초대 코드를 넣어 주세요. 이 메시지를 통째로 붙여 넣어도 돼요.\n\n${code}`;
 }
 
 const UNKNOWN_ERROR = '알 수 없는 오류가 발생했어요';

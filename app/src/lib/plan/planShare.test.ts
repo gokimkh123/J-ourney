@@ -22,7 +22,7 @@ const ROUTE: RouteDay[] = [
 
 test('날짜별로 시각·장소(종류)를 적고, 이동은 그 사이에 적는다', () => {
   const lines = planShareText('부산 1박 2일', ROUTE, []).split('\n');
-  assert.equal(lines[0], '[여행회의] 부산 1박 2일 일정');
+  assert.equal(lines[0], '[J-ourney] 부산 1박 2일 일정');
   assert.equal(lines[2], '1일차 · 11월 14일 (토)');
   assert.match(lines[3]!, /^09:00 국제시장 \(관광\)$/);
   // 두 번째 곳 앞에 앞 곳에서 오는 이동
@@ -31,7 +31,8 @@ test('날짜별로 시각·장소(종류)를 적고, 이동은 그 사이에 적
   assert.match(lines[6]!, /^\d\d:\d\d 자갈치 식당 \(점심\)$/);
   // 날짜가 없는 날은 일차만
   assert.equal(lines[8], '2일차');
-  assert.equal(lines.at(-1), '시각은 이동 시간으로 짐작했어요.');
+  // 끝은 마지막 날의 마지막 장소(11/3: "시각은 이동 시간으로 짐작했어요" 문장은 뺌)
+  assert.match(lines.at(-1)!, /^\d\d:\d\d 해운대 \(관광\)$/);
 });
 
 test('이 폰에서 바꾼 시각을 얹는다', () => {

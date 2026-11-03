@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ActivityIndicator, ScrollView, Share, StyleSheet, View } from "react-native";
 
 import {
@@ -11,6 +11,7 @@ import {
   DraggableList,
   FormSheet,
   MeetingMap,
+  PlanShareBoard,
   ScheduleItem,
   SegmentedTabs,
   SheetOption,
@@ -40,7 +41,7 @@ import {
   type PlanDraft,
 } from "../lib/plan/planDraft.ts";
 import { applyPending, parseClock, pendingCount, withPending, type PendingTimes } from "../lib/plan/planTimes.ts";
-import { planShareText } from "../lib/plan/planShare.ts";
+import { planShareSheet, planShareText, type ShareSheet } from "../lib/plan/planShare.ts";
 import { planTimes, useTripTimes } from "../lib/plan/planTimesStore.ts";
 import { usePlanEdit } from "../lib/plan/usePlanEdit.ts";
 import type { PlanStatus } from "../lib/plan/types.ts";
@@ -227,6 +228,12 @@ function LivePlanScreen() {
   const board = edit.flow.board;
   const [tab, setTab] = useState("");
   const [sheet, setSheet] = useState<Sheet | null>(null);
+  // '공유'를 누르면 글·이미지 중에 고르는 시트.
+  const [shareOpen, setShareOpen] = useState(false);
+  // 이미지로 보낼 때만 화면 밖에 공유 판(모든 날 짧은 표)을 그리고, 자리를 잡으면(onLayout) 찍는다.
+  const [shareBoard, setShareBoard] = useState<ShareSheet | null>(null);
+  const boardRef = useRef<View>(null);
+  const boardLaidOut = useRef<(() => void) | null>(null);
   // 고친 것(초안). 처음 고칠 때 그때의 서버 일정으로 만든다.
   const [draft, setDraft] = useState<PlanDraft | null>(null);
   // 바꾸는 중인 시작 시각("수정 확정"에 이 폰에 저장). 서버에 시각표가 없어 초안과 따로 둔다.
@@ -316,11 +323,49 @@ function LivePlanScreen() {
     setPendingTimes({});
   };
   // 일정 글 공유(11/3): 정해진 일정(고치는 중인 초안은 빼고)과 이 폰에 저장한 시각으로 만든다.
-  const sharePlan = async () => {
+  const shareText = async () => {
+    setShareOpen(false);
     try {
       await Share.share({ message: planShareText(title, route, members, savedTimes) });
     } catch {
       // 공유 창을 열지 못해도 화면은 그대로 둔다.
+    }
+  };
+  // 일정 이미지 공유(11/3 시안 B): 모든 날의 시각·장소를 짧은 표 한 장으로 보낸다(지도는 뺌). 화면 밖에 그린 공유 판을 찍는다.
+  // 화면 자체를 늘려 찍던 방식은 아래가 잘렸다.
+  const shareImage = async () => {
+    setShareOpen(false);
+    // 찍기·보내기 라이브러리는 앱 안에 들어가는 부분이 있어서, 그것이 없는 예전 빌드에서는 불러오는 순간 오류가 난다.
+    // 파일 맨 위에서 불러오면 앱이 시작부터 깨지므로 누를 때 불러온다(11/3).
+    let Sharing: typeof import("expo-sharing");
+    let captureRef: typeof import("react-native-view-shot").captureRef;
+    try {
+      [Sharing, { captureRef }] = await Promise.all([import("expo-sharing"), import("react-native-view-shot")]);
+    } catch {
+      showToast("이미지 보내기는 새로 빌드한 앱에서 쓸 수 있어요");
+      return;
+    }
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        showToast("이 폰에서는 이미지를 보낼 수 없어요");
+        return;
+      }
+      // 공유 판을 그리고 자리를 잡을 때까지(길어도 1초) 기다린 뒤, 한 번 더 그려질 틈을 두고 찍는다.
+      const laidOut = new Promise<void>((resolve) => {
+        boardLaidOut.current = resolve;
+        setTimeout(resolve, 1000);
+      });
+      setShareBoard(planShareSheet(title, route, members, savedTimes));
+      await laidOut;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const uri = await captureRef(boardRef, { format: "png", result: "tmpfile" });
+      setShareBoard(null);
+      await Sharing.shareAsync(uri, { mimeType: "image/png", dialogTitle: `${title} 일정` });
+    } catch {
+      showToast("일정 이미지를 만들지 못했어요");
+    } finally {
+      boardLaidOut.current = null;
+      setShareBoard(null);
     }
   };
 
@@ -402,7 +447,7 @@ function LivePlanScreen() {
                 {history.length > 0 && (
                   <Button label={`고친 기록 ${history.length}`} variant="ghost" size="xs" onPress={() => setSheet({ type: "history" })} />
                 )}
-                <Button label="공유" variant="ghost" size="xs" onPress={() => void sharePlan()} accessibilityHint="날짜별 일정을 글로 보냅니다" />
+                <Button label="공유" variant="ghost" size="xs" onPress={() => setShareOpen(true)} accessibilityHint="일정을 글이나 이미지로 보냅니다" />
               </View>
             )}
           </View>
@@ -442,6 +487,20 @@ function LivePlanScreen() {
             onPress={() => void confirm()}
             style={styles.barButton}
           />
+        </View>
+      )}
+
+      <FormSheet visible={shareOpen} title="일정 보내기" onClose={() => setShareOpen(false)}>
+        <View>
+          <SheetOption label="글로 보내기" right="모든 날의 시각·장소" onPress={() => void shareText()} />
+          <SheetOption label="이미지로 보내기" right="모든 날 짧은 표 한 장" onPress={() => void shareImage()} />
+        </View>
+      </FormSheet>
+
+      {shareBoard !== null && (
+        // 화면 밖(왼쪽 멀리)에 그려서 사람에게는 안 보이고, 찍는 동안만 있다. 화면 읽기에도 잡히지 않게 숨긴다.
+        <View style={styles.offscreen} pointerEvents="none" importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+          <PlanShareBoard ref={boardRef} sheet={shareBoard} onLayout={() => boardLaidOut.current?.()} />
         </View>
       )}
 
@@ -684,6 +743,7 @@ const createStyles = (t: Theme) =>
     // 제목이 두 줄이 되어도 오른쪽 버튼은 첫 줄 가운데에 맞춘다(display 줄 높이 36, 작은 버튼 32)
     titleRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.sm },
     titleActions: { flexDirection: "row", gap: spacing.xs, marginTop: (36 - 32) / 2 },
+    offscreen: { position: "absolute", left: -10000, top: 0 },
     title: { flex: 1, minWidth: 0 },
     busy: { flexDirection: "row", alignItems: "center", gap: spacing.xs, minHeight: 36 },
     dateRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 32, marginTop: -spacing.xs },
