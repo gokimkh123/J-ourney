@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, ScrollView, Share, StyleSheet, View } from "react-native";
 
 import {
   AppText,
@@ -40,6 +40,7 @@ import {
   type PlanDraft,
 } from "../lib/plan/planDraft.ts";
 import { applyPending, parseClock, pendingCount, withPending, type PendingTimes } from "../lib/plan/planTimes.ts";
+import { planShareText } from "../lib/plan/planShare.ts";
 import { planTimes, useTripTimes } from "../lib/plan/planTimesStore.ts";
 import { usePlanEdit } from "../lib/plan/usePlanEdit.ts";
 import type { PlanStatus } from "../lib/plan/types.ts";
@@ -314,6 +315,14 @@ function LivePlanScreen() {
     setDraft(null);
     setPendingTimes({});
   };
+  // 일정 글 공유(11/3): 정해진 일정(고치는 중인 초안은 빼고)과 이 폰에 저장한 시각으로 만든다.
+  const sharePlan = async () => {
+    try {
+      await Share.share({ message: planShareText(title, route, members, savedTimes) });
+    } catch {
+      // 공유 창을 열지 못해도 화면은 그대로 둔다.
+    }
+  };
 
   // 줄마다 할 수 있는 일. 고치기 전에는 지금 서버 일정으로 만든 빈 초안에서 읽는다.
   const actionRows = !editable || board?.plan == null ? [] : draftRows(draftEditing ? draft : createDraft(board.plan.route, board.plan.version), dayIndex);
@@ -389,9 +398,12 @@ function LivePlanScreen() {
                 </AppText>
               </View>
             ) : (
-              history.length > 0 && (
-                <Button label={`고친 기록 ${history.length}`} variant="ghost" size="xs" onPress={() => setSheet({ type: "history" })} style={styles.titleAction} />
-              )
+              <View style={styles.titleActions}>
+                {history.length > 0 && (
+                  <Button label={`고친 기록 ${history.length}`} variant="ghost" size="xs" onPress={() => setSheet({ type: "history" })} />
+                )}
+                <Button label="공유" variant="ghost" size="xs" onPress={() => void sharePlan()} accessibilityHint="날짜별 일정을 글로 보냅니다" />
+              </View>
             )}
           </View>
 
@@ -671,7 +683,7 @@ const createStyles = (t: Theme) =>
   StyleSheet.create({
     // 제목이 두 줄이 되어도 오른쪽 버튼은 첫 줄 가운데에 맞춘다(display 줄 높이 36, 작은 버튼 32)
     titleRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.sm },
-    titleAction: { marginTop: (36 - 32) / 2 },
+    titleActions: { flexDirection: "row", gap: spacing.xs, marginTop: (36 - 32) / 2 },
     title: { flex: 1, minWidth: 0 },
     busy: { flexDirection: "row", alignItems: "center", gap: spacing.xs, minHeight: 36 },
     dateRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 32, marginTop: -spacing.xs },

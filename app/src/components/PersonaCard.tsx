@@ -35,11 +35,7 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
           <AppText variant="label" color={line}>
             J-ourney 여행 캐릭터
           </AppText>
-          <View style={[styles.no, { backgroundColor: soft }]}>
-            <AppText variant="label" color={ON_PASTEL}>
-              NO. {persona.no}
-            </AppText>
-          </View>
+          {/* "NO. 1"(파티에 들어온 순서)은 뜻이 안 보여서 뺐다(11/3). */}
         </View>
 
         <View style={styles.hero}>
@@ -97,8 +93,9 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
 
         <View style={styles.tmi}>
           <View style={styles.tmiTag}>
+            {/* AI가 지어 준 재미있는 한 줄 설정. "???"는 뜻이 안 보여서 TMI로(11/3). */}
             <AppText variant="label" color={ON_PASTEL}>
-              ???
+              TMI
             </AppText>
           </View>
           <AppText variant="small" color={colors.warningText} style={styles.lineValue}>
@@ -172,11 +169,6 @@ const createStyles = (t: Theme) => StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-  },
-  no: {
-    paddingVertical: spacing.xxs,
-    paddingHorizontal: spacing.sm + spacing.xxs,
-    borderRadius: radius.full,
   },
   hero: {
     alignItems: "center",

@@ -40,6 +40,7 @@ import { chosenPlanStore } from "../lib/plan/chosenPlan.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { addDays, dateLabel, nextSaturday, todayISO } from "../lib/trip/dateRange.ts";
 import { describeError, formatWon, nightsLabel } from "../lib/ui/format.ts";
+import { showToast } from "../lib/ui/toast.ts";
 import { usePolling } from "../lib/ui/usePolling.ts";
 import { hitSize, pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
@@ -182,12 +183,19 @@ export default function ConditionsScreen() {
         ? `${members.length}명 모두 준비됐어요`
         : `${waiting.map((m) => m.nickname).join(", ")} 님이 성향 검사를 아직 안 했어요`;
 
+  // 안 맞는 조건은 맨 위 안내 줄에 남기고, 짧은 알림으로도 띄운다(11/3). 회의 시작은 화면 맨 아래에 있어서
+  // 누를 때는 보통 아래까지 내려와 있어 맨 위 안내 줄이 안 보였다.
+  const fail = (text: string) => {
+    setErrorText(text);
+    showToast(text);
+  };
+
   async function onStart() {
     if (inFlight.current) return;
     // 예약한 장소는 이름을 적었으면 날짜(여행 기간 안)·시각을 꼭 정해야 한다. 서버에는 이름만 보낸다.
     const booked = checkBookedPlaces(bookedPlaces, range.start, range.end);
     if (!booked.ok) {
-      setErrorText(booked.error);
+      fail(booked.error);
       return;
     }
     const result = validateConditions(
@@ -207,7 +215,7 @@ export default function ConditionsScreen() {
       today,
     );
     if (!result.ok) {
-      setErrorText(Object.values(result.errors)[0] ?? "조건을 다시 확인해 주세요.");
+      fail(Object.values(result.errors)[0] ?? "조건을 다시 확인해 주세요.");
       return;
     }
     setErrorText(null);
@@ -223,7 +231,7 @@ export default function ConditionsScreen() {
         const started = await endpoints.startMeeting(me.tripId);
         rememberStartedMeeting(me.tripId, started.id);
       } catch (e) {
-        setErrorText(describeError(e, "meeting"));
+        fail(describeError(e, "meeting"));
         setStarting(false);
         inFlight.current = false;
         return;
