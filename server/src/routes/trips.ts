@@ -14,7 +14,7 @@ import { activeMeetingOf } from '../meeting/runs.js';
 import type { LlmClient } from '../llm/client.js';
 import type { LlmRecorder } from '../llm/record.js';
 import { tryConsumeLlmCall } from '../llm/usage.js';
-import { type AccessKey, accessOf } from '../lib/access.js';
+import { type AccessKey, accessOf, aiFor } from '../lib/access.js';
 import { DestinationError, DestinationUnavailable, resolveDestination } from '../meeting/destination.js';
 import { MEETING_RULES } from '../meeting/rounds.js';
 import { dayTripSpanMinutes, FLIGHT } from '../meeting/schedule.js';
@@ -247,9 +247,7 @@ export function tripRoutes(db: Db, deps: TripDeps) {
     if (body.startDate < todayKst()) throw new ApiError('VALIDATION_ERROR', '시작하는 날은 오늘이거나 그 뒤여야 함');
     const keys = deps.accessKeys ?? [];
     const access = keys.length ? accessOf(c, keys) : null;
-    const keyed = access?.kind === 'key';
-    const llm = keyed ? (deps.live?.llm ?? deps.llm) : access?.kind === 'none' ? null : deps.llm;
-    const recorder = keyed ? (deps.live?.recorder ?? deps.recorder) : deps.recorder;
+    const { llm, recorder } = aiFor(access, deps);
     let destination;
     try {
       destination = await resolveDestination(db, body.destination, { llm, recorder, reserve: () => tryConsumeLlmCall(db, deps.llmDailyLimit) });

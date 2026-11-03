@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import type { LlmClient } from '../llm/client.js';
 import type { RuleCategory } from '../meeting/categories.js';
 import { fallbackText } from './fallback.js';
 import { DISLIKE_OPTIONS, LIKE_OPTIONS, WANT_PLACES } from './questions.js';
 import { type Chip, type MustKeepRule, type PersonaAnswers, RULE_TARGETS, type TraitResult } from './types.js';
+import { clean, fits } from '../lib/text.js';
 
 /** 카드 문장·15번 해석 결과의 길이·개수 상한 (codes: 규칙 하나에 고르는 분류 코드 수) */
 // rules·wishes: 11/2 새 설문으로 사람이 쓰는 칸이 4개(가고 싶은 곳 최대 3곳·좋아요 기타·싫어요 기타·추가 사항)가 되어 3·2 → 6·4
@@ -107,7 +107,6 @@ const SYSTEM = `너는 단체 여행 앱 J-ourney의 '여행 캐릭터 카드' �
 - wishes: mustKeepText 가운데 mustKeep으로 바꾸지 못한 바람만 최대 ${LIMITS.wishes}개. 먹는 것의 개인 제약·입맛(알레르기, 못 먹거나 피하고 싶은 음식·재료, 식단)은 ${TASTE_TARGET} 칸에만 적고 wishes에는 넣지 않는다. label은 ${LIMITS.wish}자 이내 요약, quote는 mustKeepText의 일부를 글자 그대로 옮긴다. mustKeepText에 없는 내용(성향·좋아요·싫어요에서 짐작한 것)은 쓰지 않는다.
 mustKeepText가 null이면 mustKeep과 wishes는 빈 배열이다.`;
 
-const clean = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 
 /** 15번 자유 입력의 연락처·식별번호를 LLM에 보내기 전에 가림 (무료 등급 공급자는 입력을 제품 개선에 씀) */
 const PERSONAL = [
@@ -117,7 +116,6 @@ const PERSONAL = [
   { pattern: /\d{10,}/g, mask: '[번호]' },
 ];
 export const maskPersonal = (text: string) => PERSONAL.reduce((t, { pattern, mask }) => t.replace(pattern, mask), text);
-const fits = (s: string, max: number) => s.length > 0 && s.length <= max;
 
 /** 분류표를 중분류마다 한 줄로 묶음 (예: [웰니스관광] EX050100 온천/사우나/스파, EX050200 찜질방) */
 export function categoryTable(rows: readonly RuleCategory[]): string {
@@ -224,20 +222,6 @@ export function cardRequest(traits: TraitResult[], answers: PersonaAnswers, cate
     schema: CardDraft,
     schemaName: 'persona_card',
   };
-}
-
-/**
- * LLM이 카드 문장을 쓰고 15번을 해석함. 항목별로 검사해 틀린 칸만 규칙 문장으로 대신함
- * categories: '꼭 지킬 것'의 종류를 고를 공식 분류표 (비어 있으면 종류 규칙은 만들지 못함)
- */
-export async function llmCard(
-  llm: LlmClient,
-  traits: TraitResult[],
-  chips: Chip[],
-  answers: PersonaAnswers,
-  categories: readonly RuleCategory[] = [],
-): Promise<CardText> {
-  return cardFromDraft(await llm.generateJson(cardRequest(traits, answers, categories)), answers, chips, categories);
 }
 
 /** LLM 카드 초안 검사 (녹화된 답을 다시 쓸 때도 같은 검사를 거침) */

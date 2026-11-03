@@ -29,6 +29,19 @@ export type AccessGrant = Pick<AccessKey, 'label' | 'quota'>;
 /** 요청의 접근: local = 서버 컴퓨터 안에서 보냄(포트 연결) · key = 맞는 키를 낸 터널 요청 · none = 키가 없거나 틀린 터널 요청 */
 export type Access = { kind: 'local' } | ({ kind: 'key' } & AccessGrant) | { kind: 'none' };
 
+/**
+ * 접근 키에 따라 쓸 AI·녹화기 (성향 카드·여행지 확인이 같이 씀): 키를 낸 터널 요청은 키 몫(live, 없으면 기본),
+ * 키 없는 터널 요청은 AI 없음(녹화·규칙만), 서버 안 요청과 키가 없는 서버는 기본
+ */
+export function aiFor<L, R>(access: Access | null | undefined, deps: { llm: L | null; recorder?: R | null; live?: { llm: L; recorder: R } | null }) {
+  const keyed = access?.kind === 'key';
+  return {
+    keyed,
+    llm: keyed ? (deps.live?.llm ?? deps.llm) : access?.kind === 'none' ? null : deps.llm,
+    recorder: keyed ? (deps.live?.recorder ?? deps.recorder) : deps.recorder,
+  };
+}
+
 export const hashAccessKey = (key: string) => createHash('sha256').update(key, 'utf8').digest('hex');
 
 /** ACCESS_KEYS="이름:횟수:sha256(키),…" → 키 목록. 형식이 틀리면 서버를 켜지 않음 (키 값은 오류 문구에 넣지 않음) */

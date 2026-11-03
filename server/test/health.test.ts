@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createApp, nowKst } from '../src/app.js';
+import { createApp } from '../src/app.js';
+import { nowKst } from '../src/lib/time.js';
 
 describe('GET /api/v1/health', () => {
   it('DB 없이도 200과 상태 ok를 돌려줌 (CI 이미지 확인용)', async () => {
