@@ -8,8 +8,8 @@ test('① 조사 시작: 대기 → 조사면 가운데', () => {
   assert.equal(sheetLevelFor('idle', 'researching', false), 1);
 });
 
-test('③ 사람 확인: 펼침', () => {
-  assert.equal(sheetLevelFor('researching', 'reviewing', true), 2);
+test('③ 사람 확인: 끝까지(11/3)', () => {
+  assert.equal(sheetLevelFor('researching', 'reviewing', true), 3);
 });
 
 test('⑤ 사람 확인 뒤 동선 짜기: 가운데로 내림', () => {

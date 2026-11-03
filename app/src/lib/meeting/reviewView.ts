@@ -1,7 +1,7 @@
 import type { ReviewChoice } from './serverMeeting.ts';
 import type { Board, MeetingState, ReviewItemData } from './types.ts';
 
-/** 안건별로 사람이 고른 것: true 넣기, false 빼기. 안 고른 안건은 키가 없다. */
+/** 안건별로 사람이 고른 것: true 포함, false 제외. 안 고른 안건은 키가 없다. */
 export type ReviewPicks = Record<string, boolean>;
 
 export function remainingCount(items: ReviewItemData[], picks: ReviewPicks): number {

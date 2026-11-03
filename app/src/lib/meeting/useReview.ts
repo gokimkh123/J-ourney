@@ -96,7 +96,7 @@ export function useReview(state: MeetingState, session: Session | null, isHost: 
   }, [meetingId, proceeding]);
   const waiting = pendingNames(state);
   const proceedAsk = asking
-    ? `아직 안 답한 ${waiting.length > 0 ? `${waiting.join('·')} 님은 ` : ''}모든 안건을 ‘넣기’로 계산해요. 진행하면 더 답할 수 없어요.`
+    ? `아직 안 답한 ${waiting.length > 0 ? `${waiting.join('·')} 님은 ` : ''}모든 안건을 ‘포함’으로 계산해요. 진행하면 더 답할 수 없어요.`
     : null;
 
   // 시연 모드: 방장이 아닌 구성원 몫을 간격을 두고 대신 보낸다.
@@ -109,7 +109,7 @@ export function useReview(state: MeetingState, session: Session | null, isHost: 
     setAsking(false);
     if (!proceeded.current) return;
     proceeded.current = false;
-    showToast('안 답한 안건은 ‘넣기’로 계산했어요');
+    showToast('안 답한 안건은 ‘포함’으로 계산했어요');
   }, [reviewing]);
   useEffect(() => {
     if (!demo || !reviewing || meetingId === null) return;
