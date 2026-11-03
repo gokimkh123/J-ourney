@@ -11,6 +11,7 @@ import Svg, { Path } from "react-native-svg";
 
 import LoginScreen from "../components/LoginScreen.tsx";
 import TabBar, { type TabBarIcon, type TabBarItem } from "../components/TabBar.tsx";
+import TabFade from "../components/TabFade.tsx";
 import ToastHost from "../components/Toast.tsx";
 import { CharacterSvg } from "../components/character/Bean.tsx";
 import type { CharacterProps } from "../components/character/props.ts";
@@ -33,6 +34,7 @@ import { themeMode } from "../lib/settings/index.ts";
 import { useThemeMode } from "../lib/settings/useThemeMode.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
 import { tripTabs } from "../lib/trip/tabVisibility.ts";
+import { backAction } from "../lib/ui/backAction.ts";
 import { startedMeetingStore } from "../lib/meeting/startedMeeting.ts";
 import { keepPerTrip } from "../lib/trip/tripState.ts";
 import { ThemeProvider, memberColors, outline, pastel, useTheme } from "../theme/index.ts";
@@ -164,21 +166,28 @@ function AppTopBar() {
   }, [me, name, refresh]);
 
   return (
-    <TopBar
-      party={me === null ? undefined : { name }}
-      onExitParty={() => {
-        void partyActions.exit();
-        router.navigate("/");
-      }}
-      onSettings={() => router.push("/settings")}
-    />
+    // 위쪽 줄도 내용(screenLayout)과 같이 탭을 열 때 밝아진다.
+    <TabFade>
+      <TopBar
+        party={me === null ? undefined : { name }}
+        onExitParty={() => {
+          void partyActions.exit();
+          router.navigate("/");
+        }}
+        onSettings={() => router.push("/settings")}
+      />
+    </TabFade>
   );
 }
 
 /** 화면 이름을 크게 적는 위쪽 줄(내 캐릭터). 오른쪽에 설정 버튼 */
 function PageTopBar({ title }: { title: string }) {
   const router = useRouter();
-  return <TopBar title={title} onSettings={() => router.push("/settings")} />;
+  return (
+    <TabFade>
+      <TopBar title={title} onSettings={() => router.push("/settings")} />
+    </TabFade>
+  );
 }
 
 /** 홈의 위쪽 줄: 파티 안 홈은 무대 위에 떠 있는 줄을 따로 그려서 비운다. */
@@ -186,25 +195,32 @@ function HomeTopBar() {
   return useSession() === null ? <AppTopBar /> : null;
 }
 
-/** 파티 안 홈에서 폰의 뒤로 가기를 누르면 앱이 닫히지 않고 초기 화면(내 파티)으로 나간다. */
-function usePartyBack() {
+/**
+ * 폰의 뒤로 가기를 홈으로 모은다(11/3 결정, 할 일은 backAction). 숨은 화면은 연 화면으로, 큰 탭은 홈으로,
+ * 파티 안 홈은 초기 화면(내 파티)으로 나가고 파티 밖 홈은 앱을 닫는다.
+ * 경로가 바뀔 때마다 다시 달아서 내비게이터의 뒤로 가기(있었던 탭을 거슬러 감)보다 먼저 받는다.
+ */
+function useHardwareBack() {
   const pathname = usePathname();
+  const router = useRouter();
   const hasTrip = useSession() !== null;
   useEffect(() => {
-    if (!hasTrip || pathname !== "/") return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      void partyActions.exit();
-      return true;
+      const action = backAction(pathname, hasTrip);
+      if (action === "home") router.navigate("/");
+      else if (action === "exitParty") void partyActions.exit();
+      else if (action === "exitApp") BackHandler.exitApp();
+      return action !== "history";
     });
     return () => sub.remove();
-  }, [hasTrip, pathname]);
+  }, [hasTrip, pathname, router]);
 }
 
 function ThemedTabs() {
   const { scheme, colors } = useTheme();
   const hasTrip = useSession() !== null;
   const tripTab = (title: string) => ({ title, href: hasTrip ? undefined : null, header: () => <AppTopBar /> });
-  usePartyBack();
+  useHardwareBack();
 
   // 앱 바탕색을 시스템 창 바탕에도 깔아, 키보드·스크롤 끝·시스템 바 뒤에 다른 색이 비치지 않게 한다.
   useEffect(() => {
@@ -220,18 +236,21 @@ function ThemedTabs() {
         tabBar={(props) => <AppTabBar {...props} />}
         // 커뮤니티를 탭 맨 앞에 두지만 처음 여는 화면은 홈이다(로그인 화면을 지나 탭이 새로 그려질 때도).
         initialRouteName="index"
-        // 폰의 뒤로 가기는 방금 있던 화면으로 돌아간다(기본값은 어디서든 첫 탭인 홈으로 간다).
+        // 숨은 화면(설정·장소 등)의 뒤로 가기는 방금 있던 화면으로 돌아간다(기본값은 어디서든 첫 탭인 홈으로 간다).
+        // 큰 탭·홈에서 폰의 뒤로 가기는 useHardwareBack이 홈으로 모은다(11/3).
         backBehavior="history"
+        // 탭을 열 때 화면이 살짝 흐렸다가 밝아진다(11/3 결정: 탭 페이드). 내비게이터 애니메이션 대신 TabFade가 한다.
+        screenLayout={({ children }) => <TabFade fill>{children}</TabFade>}
         screenOptions={{
           headerStyle: { backgroundColor: colors.background },
           headerTintColor: colors.text,
           headerTitleStyle: { fontWeight: "700" },
           headerShadowVisible: false,
           sceneStyle: { backgroundColor: colors.background },
-          // 탭은 애니메이션 없이 바로 바뀐다(11/3). 페이드를 켜면 지금 탭보다 앞 순서(왼쪽)의 탭이 안 보여도 폰 화면에서
+          // 내비게이터의 탭 애니메이션은 끈다(11/3). 켜면 지금 탭보다 앞 순서(왼쪽)의 탭이 안 보여도 폰 화면에서
           // 떼어지지 않아, 회의가 끝난 뒤 일정·내 캐릭터 탭 뒤에 회의 지도·대화가 통째로 붙어 있다가 탭을 옮길 때마다 다시
           // 그려져 끊겼다. 여는 탭에만 페이드를 걸면 새 탭이 투명한 채로 붙고 앞 탭은 바로 떼어져서, 페이드가 늦게 시작하면
-          // 화면이 비어 보였다(내 캐릭터). 안 보이는 탭은 바로 떼어지고 내용과 상태는 그대로 남는다.
+          // 화면이 비어 보였다(내 캐릭터). 안 보이는 탭은 바로 떼어지고 내용과 상태는 그대로 남는다. 페이드는 위 screenLayout.
           animation: "none",
         }}
       >
