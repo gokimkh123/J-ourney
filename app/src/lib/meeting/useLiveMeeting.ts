@@ -12,6 +12,7 @@ import { createLiveFeed } from './liveFeed.ts';
 import type { FeedStatus, LiveFeed } from './liveFeed.ts';
 import { initialMeetingState } from './reducer.ts';
 import { buildWsUrl } from './reconnect.ts';
+import { linkSocket } from './socketLink.ts';
 import type { MeetingState } from './types.ts';
 
 const clock = {
@@ -77,29 +78,36 @@ export function useLiveMeeting(enabled: boolean, session: Session | null): LiveM
           },
         });
         pacerRef.current = pacer;
-        ws.onopen = () => {
-          pacer.open();
-          handlers.onOpen();
-        };
-        ws.onmessage = (e) => {
-          const text = typeof e.data === 'string' ? e.data : String(e.data);
-          // 앱이 모르는 이벤트는 조용히 버려지므로 종류와 번호만 터미널(Metro)에 남긴다.
-          const dropped = droppedEventNote(text);
-          if (dropped !== null) console.log(`[live] ${dropped}`);
-          pacer.push(text);
-        };
-        // 닫히기 전에 오류가 나도 close가 뒤따라 온다.
-        ws.onerror = () => {};
-        ws.onclose = (e) => {
+        const dropPacer = () => {
           pacer.dispose();
           if (pacerRef.current === pacer) pacerRef.current = null;
-          handlers.onClose(e.code, e.reason ?? '');
         };
+        // 이쪽에서 닫은 뒤에는 콜백을 넘기지 않는다. 안드로이드는 연결 중에 부른 close()를 무시해서, 그 뒤 열리면 바로 다시 닫는다.
+        const link = linkSocket(ws, {
+          open() {
+            pacer.open();
+            handlers.onOpen();
+          },
+          message(text) {
+            // 앱이 모르는 이벤트는 조용히 버려지므로 종류와 번호만 터미널(Metro)에 남긴다.
+            const dropped = droppedEventNote(text);
+            if (dropped !== null) console.log(`[live] ${dropped}`);
+            pacer.push(text);
+          },
+          close(code, reason) {
+            dropPacer();
+            handlers.onClose(code, reason);
+          },
+        });
+        ws.onopen = () => link.opened();
+        ws.onmessage = (e) => link.received(typeof e.data === 'string' ? e.data : String(e.data));
+        // 닫히기 전에 오류가 나도 close가 뒤따라 온다.
+        ws.onerror = () => {};
+        ws.onclose = (e) => link.closed(e.code, e.reason ?? '');
         return {
           close: () => {
-            pacer.dispose();
-            if (pacerRef.current === pacer) pacerRef.current = null;
-            ws.close();
+            dropPacer();
+            link.close();
           },
         };
       },

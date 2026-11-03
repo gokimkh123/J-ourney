@@ -69,10 +69,12 @@ export function createSessionStore(kv: KeyValueStore): SessionStore {
       notify();
       return cache;
     },
+    // 메모리를 먼저 바꾸고 저장한다(파티 목록·성향·로그인 저장소와 같음). 저장이 끝나기 전에 나가기(clear)를 해도
+    // 늦게 끝난 저장이 세션을 되살리지 않는다.
     async save(session) {
-      await kv.setItem(STORAGE_KEY, JSON.stringify(session));
       cache = session;
       notify();
+      await kv.setItem(STORAGE_KEY, JSON.stringify(session));
     },
     async clear() {
       cache = null;
