@@ -86,7 +86,8 @@ export const PACE_OPTIONS: readonly { id: string; text: string; emoji: string; l
   { id: 'pace_packed', text: '알차게', emoji: '🏃', level: 'high' },
 ];
 
-export const LIKE_SELECT = { min: 1, max: 5 } as const;
+// 좋아요도 0개 골라 넘어갈 수 있음 (11/3 사용자 지시 '좋아하는 것 필수로 답 안 해도 넘어가게', 싫어요와 같음)
+export const LIKE_SELECT = { min: 0, max: 5 } as const;
 export const DISLIKE_SELECT = { min: 0, max: 3 } as const;
 export const MUST_KEEP_MAX_LENGTH = 200;
 /** 좋아요·싫어요의 '기타' 직접 입력: 보기에 없는 것 한두 개를 적는 칸 */
@@ -147,7 +148,7 @@ export const PUBLIC_QUESTIONS = [
     id: LIKES_ID,
     order: 16,
     type: 'multi' as const,
-    text: '여행에서 좋아하는 것을 골라 주세요',
+    text: '여행에서 좋아하는 것을 골라 주세요 (없으면 넘어가도 됨)',
     minSelect: LIKE_SELECT.min,
     maxSelect: LIKE_SELECT.max,
     options: LIKE_OPTIONS.map(({ id, text, emoji }) => ({ id, text, emoji })),
