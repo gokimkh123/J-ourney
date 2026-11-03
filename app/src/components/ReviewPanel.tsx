@@ -9,7 +9,7 @@ export type ReviewPanelProps = {
   items: ReviewItemData[];
   /** 장소가 아닌 참고 메모(읽기만) */
   memos: string[];
-  /** 안건별로 고른 것: true 넣기, false 빼기. 안 고른 안건은 키가 없다. */
+  /** 안건별로 고른 것: true 포함, false 제외. 안 고른 안건은 키가 없다. */
   picks: Record<string, boolean>;
   onPick: (placeId: string, keep: boolean) => void;
   /** 오른쪽 위 "1/2" */
@@ -59,9 +59,10 @@ export default function ReviewPanel({
           return (
             <View key={item.placeId} style={styles.card} accessibilityLabel={`${index + 1}번 ${item.name}`}>
               <View style={styles.cardHead}>
-                <View style={styles.badge}>
-                  <AppText variant="label">{index + 1}</AppText>
-                </View>
+                {/* 지도 핀과 같은 번호. 11/3: 메인 색 동그라미 없이 숫자만 */}
+                <AppText variant="label" tone="muted" style={styles.number}>
+                  {index + 1}
+                </AppText>
                 <AppText variant="heading" style={styles.name}>
                   {item.name}
                 </AppText>
@@ -76,9 +77,9 @@ export default function ReviewPanel({
                   </AppText>
                 </View>
               )}
-              <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel={`${item.name} 넣을지 뺄지`}>
-                <Choice label="넣기" checked={pick === true} onPress={() => onPick(item.placeId, true)} />
-                <Choice label="빼기" checked={pick === false} onPress={() => onPick(item.placeId, false)} />
+              <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel={`${item.name} 포함할지 제외할지`}>
+                <Choice label="포함" checked={pick === true} onPress={() => onPick(item.placeId, true)} />
+                <Choice label="제외" checked={pick === false} onPress={() => onPick(item.placeId, false)} />
               </View>
             </View>
           );
@@ -144,15 +145,8 @@ const createStyles = (t: Theme) =>
       backgroundColor: t.colors.surface,
     },
     cardHead: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-    badge: {
-      width: 24,
-      height: 24,
-      borderRadius: radius.full,
-      borderWidth: 2,
-      borderColor: t.colors.accent,
-      alignItems: "center",
-      justifyContent: "center",
-    },
+    // 번호 칸 너비는 그대로 두어 이름이 줄마다 같은 자리에서 시작한다.
+    number: { minWidth: 24, textAlign: "center" },
     name: { flex: 1, minWidth: 0 },
     body: { color: t.colors.textBody },
     consequence: {

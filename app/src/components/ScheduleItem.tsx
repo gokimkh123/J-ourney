@@ -37,7 +37,7 @@ export type ScheduleItemProps = {
   badge?: { label: string; tone: "accent" | "warning" | "danger" };
   /** 뺀 곳: 이름에 줄을 긋고 흐리게 */
   struck?: boolean;
-  /** 있으면 시각을 눌러 바꿀 수 있다(메인 색 글자). 일정 탭의 시작 시각 바꾸기 */
+  /** 있으면 시각을 눌러 바꿀 수 있다(글자색은 다른 시각과 같은 회색, 11/3). 일정 탭의 시작 시각 바꾸기 */
   onTimePress?: () => void;
 };
 
@@ -92,7 +92,7 @@ export default function ScheduleItem({
               hitSlop={{ top: spacing.sm, bottom: spacing.sm }}
               style={({ pressed }) => [styles.time, pressed && { opacity: pressedOpacity }]}
             >
-              <AppText variant="numeric" tone="accent">
+              <AppText variant="numeric" tone="muted">
                 {time}
               </AppText>
             </Pressable>

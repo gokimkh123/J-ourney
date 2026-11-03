@@ -70,10 +70,7 @@ export default function PartyActions() {
   }
 
   return (
-    <Card tone="accent" accessibilityLabel={`다음 할 일: ${title}`}>
-      <AppText variant="caption" tone="accent">
-        다음 할 일
-      </AppText>
+    <Card tone="accent" accessibilityLabel={title}>
       <AppText variant="title">{title}</AppText>
       <AppText variant="small" tone="muted">
         {text}

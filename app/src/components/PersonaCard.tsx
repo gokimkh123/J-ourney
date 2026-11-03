@@ -1,6 +1,6 @@
 import { StyleSheet, View } from "react-native";
 
-import { sourceBadge, traitRatio } from "../lib/ui/format.ts";
+import { traitRatio } from "../lib/ui/format.ts";
 import type { Persona } from "../lib/persona/types.ts";
 import { lightColors, outline, pastel, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
@@ -8,7 +8,6 @@ import Avatar from "./Avatar.tsx";
 import Card from "./Card.tsx";
 import Chip from "./Chip.tsx";
 import ProgressBar from "./ProgressBar.tsx";
-import StatusPill from "./StatusPill.tsx";
 
 // 파스텔 위에 올리는 글자는 어느 모드에서든 어두워야 읽힌다.
 const ON_PASTEL = lightColors.text;
@@ -106,10 +105,6 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
             {persona.tmi}
           </AppText>
         </View>
-      </View>
-
-      <View style={styles.source}>
-        <StatusPill label={sourceBadge(persona.source)} tone={persona.source === "llm" ? "accent" : "neutral"} />
       </View>
 
       {persona.mustKeep.length > 0 && (
@@ -237,11 +232,6 @@ const createStyles = (t: Theme) => StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radius.sm,
     backgroundColor: t.colors.warning,
-  },
-  // 알약은 스스로 왼쪽에 붙으므로(alignSelf) 줄로 감싸 가운데에 둔다.
-  source: {
-    flexDirection: "row",
-    justifyContent: "center",
   },
   traits: {
     gap: spacing.sm + spacing.xs,

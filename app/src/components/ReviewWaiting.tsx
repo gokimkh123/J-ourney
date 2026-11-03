@@ -55,7 +55,7 @@ export default function ReviewWaiting({ countLabel, spokenCount, progress, peopl
             </AppText>
             {mine.map((m) => (
               <AppText key={m.number} variant="small" style={styles.mineText}>
-                {m.number} {m.name} — {m.keep ? "넣기" : "빼기"}
+                {m.number} {m.name} — {m.keep ? "포함" : "제외"}
               </AppText>
             ))}
           </View>
