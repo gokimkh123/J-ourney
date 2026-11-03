@@ -270,12 +270,18 @@ function AgentMarker({
   );
 }
 
+// 핀·말풍선이 나타나고 사라지는 애니메이션. 그릴 때마다 새로 만들면 다시 그릴 때마다 Reanimated에 다시 등록돼서 한 번만 만든다.
+const PIN_ENTERING = ZoomIn.duration(duration.slow);
+const PIN_EXITING = FadeOut.duration(duration.normal);
+const BUBBLE_ENTERING = FadeIn.duration(duration.normal);
+const BUBBLE_EXITING = FadeOut.duration(duration.fast);
+
 function Pin({ pin, x, y }: { pin: MapPin; x: number; y: number }) {
   const styles = useStyles(createStyles);
   return (
     <Animated.View
-      entering={ZoomIn.duration(duration.slow)}
-      exiting={FadeOut.duration(duration.normal)}
+      entering={PIN_ENTERING}
+      exiting={PIN_EXITING}
       style={[styles.pin, { left: x - PIN_W / 2, top: y - PIN_H }]}
       accessible={pin.name !== undefined}
       accessibilityLabel={pin.name}
@@ -305,8 +311,8 @@ function Pin({ pin, x, y }: { pin: MapPin; x: number; y: number }) {
 function FlagPin({ pin, palette }: { pin: MapPin; palette: (typeof mapArtPalettes)["light"] }) {
   return (
     <Animated.View
-      entering={ZoomIn.duration(duration.slow)}
-      exiting={FadeOut.duration(duration.normal)}
+      entering={PIN_ENTERING}
+      exiting={PIN_EXITING}
       style={{ position: "absolute", width: FLAG_W, height: FLAG_H, left: -FLAG_FOOT.x, top: -FLAG_FOOT.y, transformOrigin: "9% 95%" }}
       accessible={pin.name !== undefined}
       accessibilityLabel={pin.name}
@@ -328,32 +334,35 @@ const TAG = 18;
 function StickerPin({ pin, palette, selected = false }: { pin: MapPin; palette: (typeof mapArtPalettes)["light"]; selected?: boolean }) {
   const { colors } = useTheme();
   return (
+    // 나타나는 애니메이션(ZoomIn, transform)과 고른 장소 키우기(transform)를 한 요소에 같이 두면 서로 덮어쓰므로 겹으로 나눈다(11/3 Reanimated 경고).
     <Animated.View
-      entering={ZoomIn.duration(duration.slow)}
-      exiting={FadeOut.duration(duration.normal)}
-      style={[
-        pinStyles.sticker,
-        { left: -STICKER_BOX / 2, top: -STICKER_BOX / 2, backgroundColor: selected ? colors.accent : palette.calmCasing },
-        selected && { transform: [{ scale: 1.3 }] },
-      ]}
+      entering={PIN_ENTERING}
+      exiting={PIN_EXITING}
+      style={[pinStyles.stickerSlot, { left: -STICKER_BOX / 2, top: -STICKER_BOX / 2 }]}
       accessible={pin.name !== undefined}
       accessibilityLabel={pin.name}
     >
-      <PlaceSticker kind={pin.kind ?? "pin"} size={STICKER} />
-      {pin.label !== undefined && (
-        <View style={[pinStyles.tag, { borderColor: palette.calmCasing }]}>
-          <AppText variant="caption" tone="onColor" maxFontSizeMultiplier={1} style={pinStyles.tagText}>
-            {pin.label}
-          </AppText>
-        </View>
-      )}
+      <View style={[pinStyles.sticker, { backgroundColor: selected ? colors.accent : palette.calmCasing }, selected && { transform: [{ scale: 1.3 }] }]}>
+        <PlaceSticker kind={pin.kind ?? "pin"} size={STICKER} />
+        {pin.label !== undefined && (
+          <View style={[pinStyles.tag, { borderColor: palette.calmCasing }]}>
+            <AppText variant="caption" tone="onColor" maxFontSizeMultiplier={1} style={pinStyles.tagText}>
+              {pin.label}
+            </AppText>
+          </View>
+        )}
+      </View>
     </Animated.View>
   );
 }
 
 const pinStyles = StyleSheet.create({
-  sticker: {
+  stickerSlot: {
     position: "absolute",
+    width: STICKER_BOX,
+    height: STICKER_BOX,
+  },
+  sticker: {
     width: STICKER_BOX,
     height: STICKER_BOX,
     padding: STICKER_RING,
@@ -806,8 +815,8 @@ function SpeechBubble({
   return (
     // 나타나는 애니메이션(Animated.View)과 투명도(opacity)를 한 요소에 같이 두면 서로 덮어쓰므로 겹으로 나눈다.
     <Animated.View
-      entering={FadeIn.duration(duration.normal)}
-      exiting={FadeOut.duration(duration.fast)}
+      entering={BUBBLE_ENTERING}
+      exiting={BUBBLE_EXITING}
       style={{ position: "absolute", left: relLeft, top: relTop, width: BUBBLE_MAX, alignItems: "flex-start" }}
       accessibilityLiveRegion="polite"
       pointerEvents="none"
