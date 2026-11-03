@@ -8,6 +8,7 @@ import { agentIdOf, placeIdOf } from './runs.js';
 import type { LegMode, MoveLeg, PlanProposal, PlanStop } from './schedule.js';
 import { centerOf, distanceKm } from './travel.js';
 import type { Board, ReactionKind, ReviewDecision } from './types.js';
+import { clean } from '../lib/text.js';
 
 /**
  * 7단계 평가 규칙 값 (모두 여기서만 바꿈). 10/28 사용자 승인: 10/27 계획 그림 2장(평가 계획·설명문과 코드 확인)대로
@@ -402,7 +403,6 @@ export type EvalDraft = {
 };
 const viewOf = (d: EvalDraft, l: PlanLabel) => d[l.toLowerCase()] as { why: string; stance: Stance };
 
-const clean = (s: string) => s.replace(/\s+/g, ' ').trim();
 /** 글 속 표 번호(코드가 이 회의에 매긴 것만)를 장소 이름으로. 이름이 바로 뒤에 있으면 번호만 지움 */
 export function withoutCodes(text: string, table: EvalTable): string {
   return text.replace(/\b([A-Z]\d{1,2})\b\s*/g, (all, code: string, at: number) => {

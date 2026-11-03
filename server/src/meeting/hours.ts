@@ -1,3 +1,5 @@
+import { DAY_MINUTES } from '../lib/time.js';
+import { stripTags } from '../lib/text.js';
 /**
  * TourAPI 상세의 휴무일·영업시간 문장을 규칙으로 읽음
  * 흔한 표현(매주 월요일, 연중무휴, 09:00~18:00, 계절·달별 시간)만 읽고, 못 읽으면 'unknown'·null로 두어 후보에서 빼지 않음
@@ -8,13 +10,12 @@ const WEEKDAYS = '일월화수목금토'; // Date.getUTCDay() 순서
 /** YYYY-MM-DD를 날짜로 (한국 날짜를 그대로 씀) */
 const toDate = (ymd: string) => new Date(`${ymd}T00:00:00Z`);
 
-const strip = (text: string) => text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
 export type ClosedCheck = 'open' | 'closed' | 'unknown';
 
 /** 그날 쉬는지 판단함. 명절 휴무처럼 특정 날만 쉬는 곳은 평일에는 연다고 봄 */
 export function closedOn(raw: string | null | undefined, ymd: string): ClosedCheck {
-  const text = strip(raw ?? '');
+  const text = stripTags(raw ?? '');
   if (!text) return 'unknown';
   const date = toDate(ymd);
   const day = WEEKDAYS[date.getUTCDay()];
@@ -40,7 +41,6 @@ export interface OpenHours {
 }
 
 const minutes = (h: string, m: string) => Number(h) * 60 + Number(m);
-const DAY = 1440;
 
 /** '3월~10월' · '11, 12, 1, 2월'을 달 목록으로 */
 function monthsOf(seg: string): Set<number> {
@@ -62,7 +62,7 @@ function monthsOf(seg: string): Set<number> {
  * 성수기에만 시간을 적은 곳(예: '매년 6월~9월 09:00~18:00')은 그 밖의 달에 null (시간 제한 없이 봄)
  */
 export function hoursOn(raw: string | null | undefined, month: number): OpenHours | null {
-  const text = strip(raw ?? '');
+  const text = stripTags(raw ?? '');
   if (!text) return null;
   if (/상시|24시간/.test(text) && !/\d{1,2}:\d{2}\s*[~\-–]/.test(text)) return { open: 0, close: 1440 };
   const range = /(\d{1,2}):(\d{2})\s*[~\-–]\s*(\d{1,2}):(\d{2})/;
@@ -79,11 +79,11 @@ export function hoursOn(raw: string | null | undefined, month: number): OpenHour
   const spans = [...text.matchAll(new RegExp(range.source, 'g'))].map((m) => {
     const open = minutes(m[1], m[2]);
     const close = minutes(m[3], m[4]);
-    return { open, close: close <= open ? close + DAY : close };
+    return { open, close: close <= open ? close + DAY_MINUTES : close };
   });
   if (!spans.length) return null;
   const close = Math.max(...spans.map((x) => x.close));
-  return { open: Math.min(...spans.map((x) => x.open)), close: close > DAY ? close - DAY : close };
+  return { open: Math.min(...spans.map((x) => x.open)), close: close > DAY_MINUTES ? close - DAY_MINUTES : close };
 }
 
 /** 화면·LLM에 보여 줄 짧은 영업시간 문구 */

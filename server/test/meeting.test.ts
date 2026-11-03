@@ -997,7 +997,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
 
   it('4명이 각자 3곳 + 숙소를 고르고, 명세서 이벤트를 순서대로 기록·전송함 (LLM 4회)', async () => {
     const llm = pickLlm();
-    const { app, db, token } = await readyTrip({ llm });
+    const { app, db, token, tripId } = await readyTrip({ llm });
     const { status, lines } = await run(app, token);
     expect(status).toBe(200);
     const result = lines.find((l) => l.kind === 'result');
@@ -1086,7 +1086,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
     expect(['이름난 곳', '덜 알려진 곳', '상관없음']).toContain(input.me.prefers.popular);
 
     // 다시 접속한 화면은 afterSeq 뒤부터 받음
-    const again = await call(app, 'GET', '/dev/meeting/events?afterSeq=2', undefined, token);
+    const again = await call(app, 'GET', `/trips/${tripId}/events?afterSeq=2`, undefined, token);
     expect(again.body.events[0].seq).toBe(3);
     expect(again.body.events).toHaveLength(events.length - 2);
     expect(again.body.events.some((e: { type: string }) => e.type.startsWith('llm.'))).toBe(false);
@@ -1175,7 +1175,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
   /** 8–10단계 시험용 평가 답: 1라운드에 '반짝반짝 탐험가'만 A안에 반대하며 A안의 태그 없는 첫 관광지를 빼 달라고 함, 그 밖은 모두 찬성·요청 없음 */
   const roundLlm = () => {
     const base = pickLlm();
-    return fakeLlm(async (input, n, system, schema) => {
+    return fakeLlm(async (input, _n, system, schema) => {
       if (!input.plans || !input.me) return base.generateJson({ system, input, schema, schemaName: 'test' });
       const ans = evalAnswer(input);
       if (input.me.title !== '반짝반짝 탐험가' || input.round !== 1) return ans;
@@ -1269,7 +1269,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
       };
       const pick = <T,>(xs: readonly T[]) => xs[Math.floor(rnd() * xs.length)];
       const base = pickLlm();
-      const llm = fakeLlm(async (input, n, system, schema) => {
+      const llm = fakeLlm(async (input, _n, system, schema) => {
         if (!input.plans || !input.me) return base.generateJson({ system, input, schema, schemaName: 'test' });
         if (rnd() < 0.05) return { ...evalAnswer(input), a: { why: '좋아요', stance: '약간 찬성' } }; // 형식 오류 → 1번 더
         const labels = Object.keys(input.plans);
@@ -1364,7 +1364,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
 
   it('7단계 평가: 보기 밖의 입장은 형식 오류로 1번 더 부르고, 그래도 틀리면 그 사람만 규칙 평가 (만족도는 코드 계산)', async () => {
     const base = pickLlm();
-    const llm = fakeLlm(async (input, n, system, schema) => {
+    const llm = fakeLlm(async (input, _n, system, schema) => {
       if (input.plans && input.me?.title === '반짝반짝 탐험가') return { ...evalAnswer(input), a: { why: '좋아요', stance: '약간 찬성' } };
       return base.generateJson({ system, input, schema, schemaName: 'test' });
     });
@@ -1395,7 +1395,7 @@ describe('3단계 고르기 ×4 (시험 경로 /dev/meeting/run)', () => {
   it('7단계 평가: 첫 시도가 형식 오류라 두 번째 답만 녹화된 사람도 LLM_REPLAY에서 그 녹화를 다시 씀 (규칙 평가로 바뀌지 않음)', async () => {
     const base = pickLlm();
     let tries = 0;
-    const llm = fakeLlm(async (input, n, system, schema) => {
+    const llm = fakeLlm(async (input, _n, system, schema) => {
       if (input.plans && input.me?.title === '반짝반짝 탐험가' && ++tries === 1) return { ...evalAnswer(input), a: { why: '좋아요', stance: '약간 찬성' } };
       return base.generateJson({ system, input, schema, schemaName: 'test' });
     });
@@ -1858,7 +1858,7 @@ describe('5단계 사람 확인 (공식 API · WebSocket)', () => {
 
   it('13–15단계: 회의가 끝나면 두 안의 이름·만족도·양보(meeting.agreed)와 일정 표가 열리고, A·B 고르기(2:2는 방장) → 고치기(빼기·넣기·순서·식당) → 확정 투표(반대면 다시 고치기, 모두 찬성이면 확정)', async () => {
     const { app, db, token, tripId, people } = await reviewTrip({ llm: jangsanLlm() });
-    const [host, jieun, hyunwoo, seoyeon] = people;
+    const [, jieun, hyunwoo, seoyeon] = people;
     const id = (await call(app, 'POST', `/trips/${tripId}/meetings`, undefined, token)).body.meeting.id as string;
     await waitStatus(app, token, id, 'reviewing');
     expect((await call(app, 'GET', `/trips/${tripId}/plan`, undefined, token)).status).toBe(404); // 회의가 끝나기 전

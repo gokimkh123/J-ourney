@@ -28,7 +28,6 @@ import { tripRoutes } from './routes/trips.js';
 import { authRoutes } from './routes/auth.js';
 import { type KakaoAuth, kakaoAuthClient } from './lib/user.js';
 
-export { nowKst } from './lib/time.js';
 
 export interface AppOptions {
   /** null이면 DB 없이 실행함 (CI 이미지 확인처럼 /health만 필요한 경우) */
