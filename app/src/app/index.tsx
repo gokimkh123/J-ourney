@@ -2,7 +2,7 @@ import * as Clipboard from "expo-clipboard";
 import { useRouter, type Href } from "expo-router";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { AccessibilityInfo, Alert, Pressable, ScrollView, Share, StyleSheet, Switch, View } from "react-native";
-import Svg, { Circle, Path, Rect } from "react-native-svg";
+import Svg, { Path, Rect } from "react-native-svg";
 
 import {
   AppText,
@@ -14,6 +14,7 @@ import {
   PartyCard,
   PartyHomeStage,
   PartyStage,
+  ShareIcon,
   TextField,
 } from "../components/index.ts";
 import { CharacterSvg } from "../components/character/Bean.tsx";
@@ -81,7 +82,7 @@ function PartyList() {
     // 방장이 없앤 파티(초대 조회 404, v2.4)는 목록에서 뺀다. 가짜 서버는 앱을 다시 켜면 비어서 404가 나므로 실서버만.
     const gone = config.useMock ? [] : results.filter((r) => r.gone).map((r) => r.p);
     for (const p of gone) void dropDeletedParty(leaveDeps, p.tripId);
-    if (gone.length > 0) Alert.alert(`방장이 ${gone.map((p) => partyInfo.get()[p.tripId]?.trip.title ?? "파티").join(", ")}를 없앴어요`);
+    if (gone.length > 0) Alert.alert(`방장이 ${gone.map((p) => partyInfo.get()[p.tripId]?.trip.title ?? "파티").join(", ")}를 삭제했어요`);
   }, [list, refreshOne]);
   usePolling(refreshAll, POLL_MS * 2, list.length > 0, ids);
 
@@ -340,7 +341,7 @@ function TripHome() {
       // 초대 코드가 없어졌으면 방장이 파티를 없앤 것(v2.4). 이 폰에서도 빼고 처음 화면으로.
       if (!config.useMock && e instanceof ApiError && e.status === 404) {
         void dropDeletedParty(leaveDeps, me.tripId);
-        Alert.alert("방장이 파티를 없앴어요");
+        Alert.alert("방장이 파티를 삭제했어요");
         return;
       }
       setPollError(describeError(e));
@@ -397,8 +398,8 @@ function TripHome() {
 
   const isHost = info?.members.find((m) => m.id === me.memberId)?.isHost === true;
   const partyName = info?.trip.title ?? "이 파티";
-  // 파티 나가기(파티원, ⋯ 메뉴)와 없애기(방장, 맨 아래 글자 버튼)는 시스템 창 대신 앱 모양 확인 시트로 묻는다(11/3).
-  // 서버가 답할 때까지 시트를 열어 두고, 성공하면 이 화면은 파티 목록으로 바뀌며 짧은 알림을 띄운다.
+  // 파티 탈퇴(파티원)와 삭제(방장)는 홈 맨 아래 같은 자리의 글자 버튼이다(11/4, 전에는 파티원만 ⋯ 메뉴).
+  // 시스템 창 대신 앱 모양 확인 시트로 묻고(11/3), 서버가 답할 때까지 시트를 열어 둔다. 성공하면 이 화면은 파티 목록으로 바뀌며 짧은 알림을 띄운다.
   const [confirm, setConfirm] = useState<"leave" | "delete" | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -414,13 +415,10 @@ function TripHome() {
       setConfirmBusy(false);
       setConfirmError(e instanceof ApiError && e.status === 409 ? "AI 회의가 진행 중이에요. 회의가 끝난 뒤 다시 해 주세요." : describeError(e));
     };
-    // 나가기는 서버가 막아도 이 폰에서는 뺀다(leaveParty). 방장 없애기(v2.4)는 회의가 도는 중이면 서버가 막는다(409).
-    if (confirm === "leave") void leaveParty(leaveDeps, me.tripId, isHost).then(() => showToast(`'${partyName}'에서 나왔어요`), failed);
-    else deleteParty(leaveDeps, me.tripId).then(() => showToast(`'${partyName}' 파티를 없앴어요`), failed);
+    // 탈퇴는 서버가 막아도 이 폰에서는 뺀다(leaveParty). 방장 삭제(v2.4)는 회의가 도는 중이면 서버가 막는다(409).
+    if (confirm === "leave") void leaveParty(leaveDeps, me.tripId, isHost).then(() => showToast(`'${partyName}' 파티에서 탈퇴했어요`), failed);
+    else deleteParty(leaveDeps, me.tripId).then(() => showToast(`'${partyName}' 파티를 삭제했어요`), failed);
   };
-
-  // ⋯ 메뉴: 파티원은 파티 나가기뿐이라 바로 확인 시트를 연다. 방장은 나갈 수 없고(v2.4) 없애기는 홈 맨 아래 버튼이라 메뉴가 없다.
-  const onMore = () => ask("leave");
 
   const stepIndex = Math.min(view.doneCount, STEP_LABELS.length - 1);
   const preparing = view.step === "persona" || view.step === "waiting" || view.step === "conditions";
@@ -438,7 +436,6 @@ function TripHome() {
         confetti={view.step === "result"}
         onExit={() => void partyActions.exit()}
         onSettings={() => router.push("/settings")}
-        {...(!isHost && { onMore })}
       />
       <View style={styles.homeBody}>
         <NextAction
@@ -451,7 +448,6 @@ function TripHome() {
           onNudge={onNudge}
           onConditions={() => router.push("/conditions")}
           onMeeting={() => router.navigate("/meeting")}
-          onAgreement={() => router.push("/agreement")}
           onPlan={() => router.navigate("/plan")}
         />
 
@@ -459,26 +455,26 @@ function TripHome() {
 
         {preparing && <InviteRow code={code} copied={copied} onCopy={() => void onCopy()} onShare={() => void onShare()} />}
 
-        {isHost && (
+        {info !== null && (
           <Button
-            label="파티 없애기"
+            label={isHost ? "파티 삭제" : "파티 탈퇴"}
             variant="dangerGhost"
             size="sm"
-            onPress={() => ask("delete")}
-            accessibilityHint="모든 구성원의 휴대폰에서 이 파티가 사라져요"
+            onPress={() => ask(isHost ? "delete" : "leave")}
+            accessibilityHint={isHost ? "모든 구성원의 휴대폰에서 이 파티가 사라져요" : "이 휴대폰에서 이 파티가 사라져요"}
             style={styles.deleteParty}
           />
         )}
 
         <ConfirmSheet
           visible={confirm !== null}
-          title={confirm === "delete" ? `'${partyName}' 파티를 없앨까요?` : `'${partyName}'에서 나갈까요?`}
+          title={confirm === "delete" ? `'${partyName}' 파티를 삭제할까요?` : `'${partyName}' 파티에서 탈퇴할까요?`}
           message={
             confirm === "delete"
               ? "모든 구성원의 휴대폰에서 이 파티가 사라져요. 되돌릴 수 없어요."
               : "이 휴대폰의 이 파티 정보(회의 조건·합의안 포함)가 지워져요. 같은 초대 코드로 다시 들어오면 새 구성원으로 참여해요."
           }
-          confirmLabel={confirm === "delete" ? "없애기" : "나가기"}
+          confirmLabel={confirm === "delete" ? "삭제하기" : "탈퇴하기"}
           danger
           busy={confirmBusy}
           error={confirmError}
@@ -518,12 +514,7 @@ function InviteRow({ code, copied, onCopy, onShare }: { code: string; copied: bo
         </Svg>
       </Pressable>
       <Pressable onPress={onShare} accessibilityRole="button" accessibilityLabel="초대 링크 공유" style={({ pressed }) => [styles.iconBtn, pressed && { opacity: pressedOpacity }]}>
-        <Svg width={20} height={20} viewBox="0 0 24 24">
-          <Circle cx={18} cy={5} r={2.5} {...icon} />
-          <Circle cx={6} cy={12} r={2.5} {...icon} />
-          <Circle cx={18} cy={19} r={2.5} {...icon} />
-          <Path d="M8.3 13.3l7.4 4.4M15.7 6.3l-7.4 4.4" {...icon} />
-        </Svg>
+        <ShareIcon color={colors.text} />
       </Pressable>
     </View>
   );
@@ -540,7 +531,6 @@ type NextActionProps = {
   onNudge: () => void;
   onConditions: () => void;
   onMeeting: () => void;
-  onAgreement: () => void;
   onPlan: () => void;
 };
 
@@ -564,10 +554,8 @@ function NextAction(p: NextActionProps) {
         <AppText variant="title" accessibilityRole="header">
           AI가 일정을 제안했어요
         </AppText>
-        <View style={[styles.actionRow, styles.resultActions]}>
-          <Button label="합의안 보기" onPress={p.onAgreement} style={styles.half} />
-          <Button label="일정 보기" variant="secondary" onPress={p.onPlan} style={styles.half} />
-        </View>
+        {/* 합의안 보기는 뺐다(11/3). 합의안은 회의가 끝난 회의 탭에서 본다. */}
+        <Button label="일정 보기" size="lg" onPress={p.onPlan} block style={styles.resultActions} />
       </View>
     );
   }
@@ -686,7 +674,6 @@ const createStyles = (t: Theme) =>
     inviteText: { flex: 1, flexDirection: "row", alignItems: "baseline", gap: 6 },
     inviteCode: { letterSpacing: 1 },
     iconBtn: { width: hitSize, height: hitSize, alignItems: "center", justifyContent: "center" },
-    actionRow: { flexDirection: "row", gap: spacing.sm },
     half: { flex: 1 },
     shrink: { flexShrink: 1 },
   });

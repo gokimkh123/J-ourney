@@ -89,9 +89,6 @@ function MyProfile() {
           })}
         </View>
       </Card>
-      <AppText variant="small" tone="muted" align="center">
-        캐릭터 이름과 한마디는 파티에 들어가 여행 질문 3개에 답하면 AI가 만들어 줘요.
-      </AppText>
       <View style={styles.links}>
         <Button label="12문항 다시 하기" variant="ghostMuted" onPress={() => router.navigate(QUESTIONNAIRE_ROUTE)} style={styles.link} />
       </View>

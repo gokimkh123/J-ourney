@@ -73,7 +73,7 @@ export default function SettingsScreen() {
   const [saveFailed, setSaveFailed] = useState(false);
   const [health, setHealth] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
-  // 파티 없애기(방장)·나가기는 시스템 창 대신 앱 모양 확인 시트로 묻는다(11/3). 서버가 답할 때까지 시트를 열어 둔다.
+  // 파티 삭제(방장)·탈퇴(파티원)는 시스템 창 대신 앱 모양 확인 시트로 묻는다(11/3). 서버가 답할 때까지 시트를 열어 둔다.
   const [confirm, setConfirm] = useState<"leave" | "delete" | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -100,15 +100,15 @@ export default function SettingsScreen() {
     if (me === null || confirm === null || confirmBusy) return;
     setConfirmBusy(true);
     setConfirmError(null);
-    // 나가기는 서버가 막아도 이 폰에서는 뺀다. 방장은 나갈 수 없고 파티를 없앤다(v2.4). 회의가 도는 중이면 서버가 막는다.
+    // 탈퇴는 서버가 막아도 이 폰에서는 뺀다. 방장은 탈퇴할 수 없고 파티를 삭제한다(v2.4). 회의가 도는 중이면 서버가 막는다.
     if (confirm === "leave") {
       void leaveParty(leaveDeps, me.tripId, isHost)
         .catch(() => undefined)
-        .then(() => finish(`'${partyName}'에서 나왔어요`));
+        .then(() => finish(`'${partyName}' 파티에서 탈퇴했어요`));
       return;
     }
     deleteParty(leaveDeps, me.tripId).then(
-      () => finish(`'${partyName}' 파티를 없앴어요`),
+      () => finish(`'${partyName}' 파티를 삭제했어요`),
       (e: unknown) => {
         setConfirmBusy(false);
         setConfirmError(e instanceof ApiError && e.status === 409 ? "AI 회의가 진행 중이에요. 회의가 끝난 뒤 다시 해 주세요." : describeError(e));
@@ -146,9 +146,9 @@ export default function SettingsScreen() {
             <InfoRow label="닉네임" value={me.nickname} />
             <InfoRow label="초대 코드" value={me.inviteCode} />
             {isHost ? (
-              <Button label="파티 없애기" variant="danger" size="lg" onPress={() => ask("delete")} block />
+              <Button label="파티 삭제" variant="danger" size="lg" onPress={() => ask("delete")} block />
             ) : (
-              <Button label="파티에서 나가기" variant="secondary" onPress={() => ask("leave")} block />
+              <Button label="파티 탈퇴" variant="secondary" onPress={() => ask("leave")} block />
             )}
           </>
         )}
@@ -178,13 +178,13 @@ export default function SettingsScreen() {
 
       <ConfirmSheet
         visible={confirm !== null}
-        title={confirm === "delete" ? `'${partyName}' 파티를 없앨까요?` : `'${partyName}'에서 나갈까요?`}
+        title={confirm === "delete" ? `'${partyName}' 파티를 삭제할까요?` : `'${partyName}' 파티에서 탈퇴할까요?`}
         message={
           confirm === "delete"
             ? "모든 구성원의 휴대폰에서 이 파티가 사라져요. 되돌릴 수 없어요."
             : "이 휴대폰에서 이 파티 정보가 지워져요. 같은 초대 코드로 다시 들어오면 새 구성원으로 참여해요."
         }
-        confirmLabel={confirm === "delete" ? "없애기" : "나가기"}
+        confirmLabel={confirm === "delete" ? "삭제하기" : "탈퇴하기"}
         danger
         busy={confirmBusy}
         error={confirmError}

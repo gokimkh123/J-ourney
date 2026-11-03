@@ -118,7 +118,7 @@ export default function MeetingScreen() {
   useEffect(() => {
     if (deletedTripId === null) return;
     void dropDeletedParty(leaveDeps, deletedTripId);
-    Alert.alert("방장이 파티를 없앴어요");
+    Alert.alert("방장이 파티를 삭제했어요");
     router.replace("/");
   }, [deletedTripId, router]);
   const review = useReview(play.state, me, isHost);
