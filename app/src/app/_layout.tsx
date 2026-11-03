@@ -12,6 +12,7 @@ import Svg, { Path } from "react-native-svg";
 
 import LoginScreen from "../components/LoginScreen.tsx";
 import TabBar, { type TabBarIcon, type TabBarItem } from "../components/TabBar.tsx";
+import ToastHost from "../components/Toast.tsx";
 import { CharacterSvg } from "../components/character/Bean.tsx";
 import type { CharacterProps } from "../components/character/props.ts";
 import TopBar from "../components/TopBar.tsx";
@@ -24,6 +25,7 @@ import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { meetingImmersive } from "../lib/meeting/stageStore.ts";
 import { chosenPlanStore } from "../lib/plan/chosenPlan.ts";
 import { decidedTrips } from "../lib/plan/decidedStore.ts";
+import { planTimes } from "../lib/plan/planTimesStore.ts";
 import { profile } from "../lib/persona/profileStore.ts";
 import { parties, partyActions, session } from "../lib/session/index.ts";
 import { usePartyInfos, useRefreshParty } from "../lib/session/usePartyInfo.ts";
@@ -256,7 +258,8 @@ function ThemedTabs() {
  */
 async function loadSession() {
   // 내 성향(1~12번)은 폰에만 있고 서버와 상관없으니 가짜 데이터 모드에서도 지우지 않는다.
-  const [saved, joined] = await Promise.all([session.load(), parties.load(), profile.load()]);
+  // 일정 탭에서 바꾼 시각도 폰에만 있다. 못 읽어도 짐작한 시각으로 보이면 되니 실패는 넘긴다.
+  const [saved, joined] = await Promise.all([session.load(), parties.load(), profile.load(), planTimes.load().catch(() => undefined)]);
   if (config.useMock) {
     if (saved !== null) await session.clear();
     if (joined.length > 0) await parties.clear();
@@ -296,6 +299,8 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider mode={mode}>
         {ready ? <AfterSplash /> : <Splash />}
+        {/* 동작이 끝났다는 짧은 알림(showToast). 모든 화면 위에 하나만 둔다. */}
+        <ToastHost />
       </ThemeProvider>
     </GestureHandlerRootView>
   );

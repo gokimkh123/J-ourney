@@ -32,6 +32,8 @@ import {
   mapPins,
   mapPoints,
   phaseLabel,
+  routeMapView,
+  withOtherCandidates,
   speechFeed,
 } from "../lib/meeting/view.ts";
 import { usePinStage } from "../components/map/usePinStage.ts";
@@ -50,7 +52,7 @@ import { answeredLabel, itemNumber, reviewPeople, reviewPins, pickedCountLabel }
 import { useLiveMeeting } from "../lib/meeting/useLiveMeeting.ts";
 import { useMeetingPlayback, type MeetingPlayback } from "../lib/meeting/usePlayback.ts";
 import { useReview } from "../lib/meeting/useReview.ts";
-import { stopKindOf } from "../lib/plan/chosenPlan.ts";
+import { dayOfKey, stopKindOf } from "../lib/plan/chosenPlan.ts";
 import { useServerChoice } from "../lib/plan/useServerChoice.ts";
 import { usePartyInfos } from "../lib/session/usePartyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
@@ -335,7 +337,20 @@ export default function MeetingScreen() {
   const visiblePins = mapPins(state)
     .filter((pin) => pinStage.isVisible(pin.id))
     .map((pin) => ({ ...pin, kind: kinds.get(pin.id) ?? kinds.get(pin.name) ?? "pin" }));
-  const pins = reviewing ? reviewPins(visiblePins, reviewItems) : visiblePins;
+  // 일정안 선을 그리는 동안은 스티커도 그 일정의 정류장으로 그려 모든 아이콘이 선으로 이어지게 한다(11/3).
+  // A·B 고르기에서는 시트에서 보는 날만, 번호도 시트 목록과 같다. 일정안이 나온 뒤(고르기·정해짐)는 정류장만,
+  // 회의 도중(라운드)에는 AI가 오가는 다른 후보도 번호 없이 남긴다.
+  const planMap = !reviewing && route.length > 0 ? routeMapView(state, route, choice?.stage === "choose" ? dayOfKey(choice.day) : null) : null;
+  const planOnly = choice !== null || state.phase === "proposed" || state.phase === "agreed" || state.phase === "confirming" || state.phase === "confirmed";
+  const pins = reviewing
+    ? reviewPins(visiblePins, reviewItems)
+    : planMap === null
+      ? visiblePins
+      : planOnly
+        ? planMap.pins
+        : withOtherCandidates(planMap.pins, visiblePins);
+  const mapRoutes =
+    planMap === null ? route.map((day) => ({ color: colors.accent, points: day.stops })) : planMap.lines.map((points) => ({ color: colors.accent, points }));
 
   // 시트 제목 줄 오른쪽 버튼: 재생 중에는 건너뛰기(실서버는 멈춘 동안 "지금으로")·일시정지, 끝나면 다시 보기·합의안 보기.
   const controls = (
@@ -395,7 +410,7 @@ export default function MeetingScreen() {
               bounds={boundsAround(mapPoints(state))}
               agents={pinStage.agents}
               pins={pins}
-              routes={route.map((day) => ({ color: colors.accent, points: day.stops }))}
+              routes={mapRoutes}
               bubble={currentBubble(state)}
               height={areaHeight}
               viewHeight={areaHeight - (heights[level] ?? midHeight) + SHEET_OVERLAP}

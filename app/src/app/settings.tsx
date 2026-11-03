@@ -17,6 +17,7 @@ import { themeMode } from "../lib/settings/index.ts";
 import { useThemeMode } from "../lib/settings/useThemeMode.ts";
 import type { ThemeMode } from "../lib/settings/themeMode.ts";
 import { describeError } from "../lib/ui/format.ts";
+import { showToast } from "../lib/ui/toast.ts";
 import { spacing, useStyles, type Theme } from "../theme/index.ts";
 
 /** 카카오 계정: 로그인 전이면 로그인 화면을 다시 띄우고, 로그인했으면 로그아웃(들어가 있는 파티는 그대로) */
@@ -72,6 +73,8 @@ export default function SettingsScreen() {
   const [saveFailed, setSaveFailed] = useState(false);
   const [health, setHealth] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+  // 파티 없애기·나가기를 서버가 답할 때까지 버튼에 도는 표시를 둔다(설정 화면은 떠 있으니 끝나면 꼭 푼다).
+  const [leaving, setLeaving] = useState(false);
 
   const onMode = (next: ThemeMode) => {
     setSaveFailed(false);
@@ -81,7 +84,11 @@ export default function SettingsScreen() {
   const doLeave = async () => {
     if (me !== null) {
       const isHost = partyInfo.get()[me.tripId]?.members.find((m) => m.id === me.memberId)?.isHost === true;
+      const title = partyInfo.get()[me.tripId]?.trip.title ?? "파티";
+      setLeaving(true);
       await leaveParty(leaveDeps, me.tripId, isHost).catch(() => undefined);
+      setLeaving(false);
+      showToast(`'${title}'에서 나왔어요`);
     }
     router.replace("/");
   };
@@ -97,14 +104,20 @@ export default function SettingsScreen() {
         text: "없애기",
         style: "destructive",
         onPress: () => {
+          const title = partyInfo.get()[me.tripId]?.trip.title ?? "파티";
+          setLeaving(true);
           deleteParty(leaveDeps, me.tripId)
-            .then(() => router.replace("/"))
+            .then(() => {
+              showToast(`'${title}' 파티를 없앴어요`);
+              router.replace("/");
+            })
             .catch((e: unknown) =>
               Alert.alert(
                 "파티를 없애지 못했어요",
                 e instanceof ApiError && e.status === 409 ? "AI 회의가 진행 중이에요. 회의가 끝난 뒤 다시 해 주세요." : describeError(e),
               ),
-            );
+            )
+            .finally(() => setLeaving(false));
         },
       },
     ]);
@@ -146,7 +159,11 @@ export default function SettingsScreen() {
           <>
             <InfoRow label="닉네임" value={me.nickname} />
             <InfoRow label="초대 코드" value={me.inviteCode} />
-            <Button label={isHost ? "파티 없애기" : "파티에서 나가기"} variant="secondary" onPress={isHost ? onDelete : onLeave} block />
+            {isHost ? (
+              <Button label="파티 없애기" variant="danger" size="lg" onPress={onDelete} loading={leaving} block />
+            ) : (
+              <Button label="파티에서 나가기" variant="secondary" onPress={onLeave} loading={leaving} block />
+            )}
           </>
         )}
       </Card>

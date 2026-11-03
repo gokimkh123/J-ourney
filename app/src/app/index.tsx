@@ -40,6 +40,7 @@ import { homeStep, type HomeStep } from "../lib/trip/homeStep.ts";
 import { memberChips } from "../lib/trip/memberChips.ts";
 import { partyStatus } from "../lib/trip/partyStatus.ts";
 import { describeError, normalizeInviteCode } from "../lib/ui/format.ts";
+import { showToast } from "../lib/ui/toast.ts";
 import { usePolling } from "../lib/ui/usePolling.ts";
 import { hitSize, memberColors, outline, pastel, pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
@@ -406,7 +407,9 @@ function TripHome() {
           text: "나가기",
           style: "destructive",
           onPress: () => {
-            void leaveParty(leaveDeps, me.tripId, isHost);
+            const title = info?.trip.title ?? "파티";
+            // 나가면 이 화면이 파티 목록으로 바뀐다. 끝났다는 것은 짧은 알림으로 알린다.
+            void leaveParty(leaveDeps, me.tripId, isHost).then(() => showToast(`'${title}'에서 나왔어요`));
           },
         },
       ],
@@ -414,6 +417,8 @@ function TripHome() {
   };
 
   // 방장 파티 없애기(v2.4): 모두의 파티가 사라지고 되돌릴 수 없다. 회의가 도는 중이면 서버가 막는다(409).
+  // 서버가 답할 때까지 버튼에 도는 표시를 둔다. 없애면 이 화면은 파티 목록으로 바뀐다.
+  const [deleting, setDeleting] = useState(false);
   const onDelete = () => {
     Alert.alert(
       `${info?.trip.title ?? "이 파티"}를 없앨까요?`,
@@ -424,12 +429,18 @@ function TripHome() {
           text: "없애기",
           style: "destructive",
           onPress: () => {
-            deleteParty(leaveDeps, me.tripId).catch((e: unknown) => {
-              Alert.alert(
-                "파티를 없애지 못했어요",
-                e instanceof ApiError && e.status === 409 ? "AI 회의가 진행 중이에요. 회의가 끝난 뒤 다시 해 주세요." : describeError(e),
-              );
-            });
+            const title = info?.trip.title ?? "파티";
+            setDeleting(true);
+            deleteParty(leaveDeps, me.tripId).then(
+              () => showToast(`'${title}' 파티를 없앴어요`),
+              (e: unknown) => {
+                setDeleting(false);
+                Alert.alert(
+                  "파티를 없애지 못했어요",
+                  e instanceof ApiError && e.status === 409 ? "AI 회의가 진행 중이에요. 회의가 끝난 뒤 다시 해 주세요." : describeError(e),
+                );
+              },
+            );
           },
         },
       ],
@@ -482,7 +493,16 @@ function TripHome() {
         {preparing && <InviteRow code={code} copied={copied} onCopy={() => void onCopy()} onShare={() => void onShare()} />}
 
         {isHost && (
-          <Button label="파티 없애기" variant="ghost" size="sm" onPress={onDelete} accessibilityHint="모든 구성원의 휴대폰에서 이 파티가 사라져요" style={styles.deleteParty} />
+          <Button
+            label="파티 없애기"
+            variant="danger"
+            size="lg"
+            block
+            loading={deleting}
+            onPress={onDelete}
+            accessibilityHint="모든 구성원의 휴대폰에서 이 파티가 사라져요"
+            style={styles.deleteParty}
+          />
         )}
       </View>
     </ScrollView>
@@ -623,8 +643,8 @@ function NextAction(p: NextActionProps) {
 
 const createStyles = (t: Theme) =>
   StyleSheet.create({
-    // 방장 파티 없애기: 홈 맨 아래 작은 글자 버튼(되돌릴 수 없어 눈에 덜 띄게)
-    deleteParty: { alignSelf: "center", marginTop: spacing.md },
+    // 방장 파티 없애기: 홈 맨 아래 큰 빨간 버튼(되돌릴 수 없는 동작이라 위험이 한눈에 보이게)
+    deleteParty: { marginTop: spacing.md },
     screen: { flex: 1, backgroundColor: t.colors.background },
     scroll: { paddingBottom: spacing.xl },
     body: { padding: spacing.md, gap: spacing.lg },

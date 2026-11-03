@@ -18,6 +18,7 @@ import {
 } from "../../lib/community/community.ts";
 import { useParties } from "../../lib/session/useParties.ts";
 import { describeError } from "../../lib/ui/format.ts";
+import { showToast } from "../../lib/ui/toast.ts";
 import { pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../../theme/index.ts";
 
 type View_ = { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; detail: CommunityPlaceDetail };
@@ -39,6 +40,8 @@ export default function CommunityPlaceScreen() {
   const [view, setView] = useState<View_>({ kind: "loading" });
   const [more, setMore] = useState(false);
   const [writing, setWriting] = useState(false);
+  // 내 후기 지우기를 서버가 답할 때까지 버튼에 도는 표시를 둔다.
+  const [removing, setRemoving] = useState(false);
   const requestId = useRef(0);
 
   const load = useCallback(
@@ -107,10 +110,15 @@ export default function CommunityPlaceScreen() {
         text: "지우기",
         style: "destructive",
         onPress: () => {
+          setRemoving(true);
           void endpoints
             .deleteCommunityReview(place.placeId, author.token)
-            .then(() => load(true))
-            .catch((error: unknown) => Alert.alert("지우지 못했어요", describeError(error)));
+            .then(async () => {
+              await load(true);
+              showToast("후기를 지웠어요");
+            })
+            .catch((error: unknown) => Alert.alert("지우지 못했어요", describeError(error)))
+            .finally(() => setRemoving(false));
         },
       },
     ]);
@@ -187,7 +195,7 @@ export default function CommunityPlaceScreen() {
                 아직 후기가 없어요.
               </AppText>
             ) : (
-              reviews.map((r) => <ReviewRow key={r.reviewId} review={r} onEdit={() => setWriting(true)} onDelete={onDelete} />)
+              reviews.map((r) => <ReviewRow key={r.reviewId} review={r} onEdit={() => setWriting(true)} onDelete={onDelete} removing={removing} />)
             )}
           </View>
         </View>
@@ -236,7 +244,7 @@ function Stars({ value, size, label }: { value: number; size: number; label: str
   );
 }
 
-function ReviewRow({ review, onEdit, onDelete }: { review: CommunityReview; onEdit: () => void; onDelete: () => void }) {
+function ReviewRow({ review, onEdit, onDelete, removing }: { review: CommunityReview; onEdit: () => void; onDelete: () => void; removing: boolean }) {
   const styles = useStyles(createStyles);
   return (
     <View style={styles.review}>
@@ -252,7 +260,7 @@ function ReviewRow({ review, onEdit, onDelete }: { review: CommunityReview; onEd
       {review.mine && (
         <View style={styles.reviewActions}>
           <Button label="고치기" variant="ghost" size="sm" onPress={onEdit} />
-          <Button label="지우기" variant="ghost" size="sm" onPress={onDelete} />
+          <Button label="지우기" variant="ghost" size="sm" onPress={onDelete} loading={removing} />
         </View>
       )}
     </View>

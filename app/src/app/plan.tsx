@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, View } from "react-native";
 
 import {
@@ -15,6 +15,7 @@ import {
   SegmentedTabs,
   SheetOption,
   StatusPill,
+  TimeWheel,
   boundsAround,
   type DraggableItem,
 } from "../components/index.ts";
@@ -22,7 +23,7 @@ import { config } from "../lib/config/index.ts";
 import type { RouteDay } from "../lib/meeting/types.ts";
 import type { MemberRef } from "../lib/meeting/view.ts";
 import type { EditOptions } from "../lib/plan/board.ts";
-import { categoryOf, chosenPlanStore, dayOfKey, dayRows, peopleOf, routeDayTabs, stopKindOf } from "../lib/plan/chosenPlan.ts";
+import { chosenPlanStore, dayOfKey, dayRows, draftDayRows, mapSignature, routeDayTabs, type StopRow } from "../lib/plan/chosenPlan.ts";
 import { addableSights, canEdit, dayIndexOf, historyRows, mealChoices, type HistoryRow } from "../lib/plan/editView.ts";
 import {
   addSight,
@@ -35,9 +36,10 @@ import {
   removeRow,
   restoreRow,
   swapMeal,
-  type DraftMark,
   type PlanDraft,
 } from "../lib/plan/planDraft.ts";
+import { applyPending, parseClock, pendingCount, withPending, type PendingTimes } from "../lib/plan/planTimes.ts";
+import { planTimes, useTripTimes } from "../lib/plan/planTimesStore.ts";
 import { usePlanEdit } from "../lib/plan/usePlanEdit.ts";
 import type { PlanStatus } from "../lib/plan/types.ts";
 import { currentMembers, currentPlan } from "../lib/plan/current.ts";
@@ -46,6 +48,7 @@ import { usePartyInfos } from "../lib/session/usePartyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { placeKindOf } from "../lib/plan/placeKind.ts";
 import { dateLabel } from "../lib/trip/dateRange.ts";
+import { showToast } from "../lib/ui/toast.ts";
 import { spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 
 // 하루 일정이 동래~영도처럼 위아래로 길게 퍼져도 다 들어오는 높이
@@ -159,23 +162,56 @@ function MockPlanScreen() {
   );
 }
 
-type Sheet = { type: "row"; key: string } | { type: "replace"; key: string } | { type: "add" } | { type: "history" };
+type Sheet = { type: "row"; key: string } | { type: "replace"; key: string } | { type: "add" } | { type: "history" } | { type: "time"; key: string };
 
-const BADGE: Record<Exclude<DraftMark, null>, { label: string; tone: "accent" | "warning" | "danger" }> = {
-  removed: { label: "뺌", tone: "danger" },
-  added: { label: "넣음", tone: "accent" },
-  moved: { label: "옮김", tone: "warning" },
-  reordered: { label: "순서", tone: "warning" },
-  swapped: { label: "바꿈", tone: "warning" },
+type PlanMapProps = {
+  rows: StopRow[];
+  focus: { lat: number; lng: number } | null;
+  onFollow: () => void;
+  routeColor: string;
+  label: string;
 };
+
+/**
+ * 일정 위쪽 지도. 지도는 무거워서(타일·선·스티커) 그리는 것(mapSignature)·초점·색이 그대로면 다시 그리지 않는다.
+ * 줄 끌기 시작·끝, 시트 열고 닫기, 시각 바꾸기, 보내는 중 표시처럼 목록만 바뀌는 일에 지도가 따라 그려지지 않게 한다.
+ */
+const PlanMap = memo(
+  function PlanMap({ rows, focus, onFollow, routeColor, label }: PlanMapProps) {
+    const points = rows.map((r) => ({ lat: r.lat, lng: r.lng }));
+    return (
+      <MeetingMap
+        art="busan"
+        artView="fit"
+        calm
+        bounds={boundsAround(points)}
+        pins={rows.map((r, i) => ({ id: r.itemId, name: r.title, lat: r.lat, lng: r.lng, color: r.color, label: String(i + 1), kind: r.kind }))}
+        routes={[{ color: routeColor, points }]}
+        height={MAP_HEIGHT}
+        focus={focus}
+        followLabel="전체 보기"
+        onFollow={onFollow}
+        accessibilityLabel={label}
+      />
+    );
+  },
+  (a, b) =>
+    a.routeColor === b.routeColor &&
+    a.label === b.label &&
+    a.onFollow === b.onFollow &&
+    a.focus?.lat === b.focus?.lat &&
+    a.focus?.lng === b.focus?.lng &&
+    mapSignature(a.rows) === mapSignature(b.rows),
+);
 
 /** 서버가 한 번에 받는 고치기 수 */
 const MAX_EDITS = 10;
 
 /**
- * 실서버: A·B 중 정해진 안의 날짜별 지도와 시간표. 시각은 앱이 이동 시간을 이어 붙여 짐작한 값이다.
- * 정해지면 끝이고(확정 투표 없음, 11/1 결정), 그 뒤로 누구나 고친다: 손잡이(≡)로 끌어 순서, 줄을 눌러 빼기·장소 변경·다른 날로, 장소 넣기. 고친 것은 이 폰에만 모였다가
- * 하나라도 있으면 아래에 "수정 확정"이 나오고, 누르면 한 번에 보낸다. 누가 무엇을 바꿨는지는 고친 기록에 남는다.
+ * 실서버: A·B 중 정해진 안의 날짜별 지도와 시간표. 시각은 앱이 이동 시간을 이어 붙여 짐작한 값이다(사람이 바꾼 시각은 이 폰에만 저장).
+ * 정해지면 끝이고(확정 투표 없음, 11/1 결정), 그 뒤로 누구나 고친다: 손잡이(≡)로 끌어 순서, 줄을 눌러 빼기·장소 변경·다른 날로, 장소 넣기, 시각을 눌러 시작 시각.
+ * 고쳐도 목록은 평소 모양 그대로 바뀌고(따로 수정 모드 없음, 11/3 결정) 아래에 "취소"·"수정 확정" 두 버튼만 나온다. 확정하면 한 번에 보낸다.
+ * 누가 무엇을 바꿨는지는 고친 기록에 남는다.
  */
 function LivePlanScreen() {
   const styles = useStyles(createStyles);
@@ -191,10 +227,15 @@ function LivePlanScreen() {
   const [sheet, setSheet] = useState<Sheet | null>(null);
   // 고친 것(초안). 처음 고칠 때 그때의 서버 일정으로 만든다.
   const [draft, setDraft] = useState<PlanDraft | null>(null);
+  // 바꾸는 중인 시작 시각("수정 확정"에 이 폰에 저장). 서버에 시각표가 없어 초안과 따로 둔다.
+  const [pendingTimes, setPendingTimes] = useState<PendingTimes>({});
+  const savedTimes = useTripTimes(me?.tripId ?? null);
   // 줄을 끄는 동안에는 화면 스크롤을 멈춘다.
   const [dragging, setDragging] = useState(false);
   // 장소를 누르면 지도가 그 장소로 확대된다("전체 보기"로 돌아감). 날을 바꾸면 처음 모습으로.
   const [focus, setFocus] = useState<{ lat: number; lng: number } | null>(null);
+  // 지도(PlanMap)가 다시 그려지지 않게 늘 같은 함수로 넘긴다.
+  const onFollow = useCallback(() => setFocus(null), []);
 
   // 앱을 다시 켜서 이 폰에 정한 안이 없어도 서버 일정 표가 있으면 그것을 보여 준다.
   const route = board?.plan?.route ?? chosen?.route ?? null;
@@ -222,16 +263,22 @@ function LivePlanScreen() {
   const busy = edit.flow.busy;
   const editable = canEdit(board) && !busy;
   const count = draft === null ? 0 : changeCount(draft);
-  const editing = draft !== null && count > 0;
+  const draftEditing = draft !== null && count > 0;
+  const timeCount = pendingCount(savedTimes, pendingTimes);
+  // 무엇이든 하나라도 고쳤으면 아래에 두 버튼이 나온다(목록 모양은 그대로).
+  const editing = draftEditing || timeCount > 0;
   // 고치는 사이 다른 사람이 먼저 고쳤으면(서버 일정 version이 바뀜) 보내지 않는다.
-  const stale = editing && board?.plan !== undefined && board.plan !== null && board.plan.version !== draft.baseVersion;
+  const stale = draftEditing && board?.plan !== undefined && board.plan !== null && board.plan.version !== draft.baseVersion;
   const shownRoute = draft?.route ?? route;
   const title = board?.candidates.find((c) => c.planId === board.plan?.planId)?.title ?? `부산 ${tabs.length}일`;
   const day = tabs.find((t) => t.key === tab)?.key ?? tabs[0]!.key;
-  const dayIndex = dayIndexOf(shownRoute, dayOfKey(day));
-  const rows = dayRows({ route, members }, dayOfKey(day), colors.accent);
-  const date = route.find((d) => d.day === dayOfKey(day))?.date;
-  const points = rows.map((r) => ({ lat: r.lat, lng: r.lng }));
+  const dayNumber = dayOfKey(day);
+  const dayIndex = dayIndexOf(shownRoute, dayNumber);
+  // 그날 시각: 저장된 것 위에 바꾸는 중인 것을 얹는다.
+  const fixed = applyPending(savedTimes, pendingTimes)[dayNumber] ?? {};
+  // 고치는 중이면 초안으로, 아니면 서버 일정으로 만든 줄. 지도도 같은 줄을 따라간다.
+  const rows = draftEditing ? draftDayRows(draft, dayIndex, members, colors.accent, fixed) : dayRows({ route, members }, dayNumber, colors.accent, fixed);
+  const date = route.find((d) => d.day === dayNumber)?.date;
   const notices = [
     ...(stale ? ["다른 사람이 먼저 고쳤어요. 바꾼 것은 최신 일정에 다시 해 주세요."] : []),
     ...(count > MAX_EDITS ? [`한 번에 ${MAX_EDITS}건까지 확정할 수 있어요`] : []),
@@ -252,13 +299,23 @@ function LivePlanScreen() {
     setSheet(next);
   };
   const confirm = async () => {
-    if (draft === null) return;
-    // 고치기 시작할 때의 version을 같이 보내, 그 사이 다른 사람이 고쳤으면 서버가 막는다(409 PLAN_LOCKED).
-    if (await edit.apply(draftEdits(draft), draft.baseVersion)) setDraft(null);
+    if (draftEditing) {
+      // 고치기 시작할 때의 version을 같이 보내, 그 사이 다른 사람이 고쳤으면 서버가 막는다(409 PLAN_LOCKED).
+      if (!(await edit.apply(draftEdits(draft), draft.baseVersion))) return;
+      setDraft(null);
+    }
+    // 바꾼 시각은 서버에 보내지 않고 이 폰에만 저장한다.
+    if (timeCount > 0 && me !== null) void planTimes.save(me.tripId, applyPending(savedTimes, pendingTimes));
+    setPendingTimes({});
+    showToast("일정을 고쳤어요");
+  };
+  const cancel = () => {
+    setDraft(null);
+    setPendingTimes({});
   };
 
   // 줄마다 할 수 있는 일. 고치기 전에는 지금 서버 일정으로 만든 빈 초안에서 읽는다.
-  const actionRows = !editable || board?.plan == null ? [] : draftRows(editing ? draft : createDraft(board.plan.route, board.plan.version), dayIndex);
+  const actionRows = !editable || board?.plan == null ? [] : draftRows(draftEditing ? draft : createDraft(board.plan.route, board.plan.version), dayIndex);
   // v2.4: 관광지·끼니 식당·옮겨 온 곳·넣은 곳을 끌어서 그날 순서를 정한다(점심은 저녁보다 앞).
   const draggableKeys = actionRows.filter((r) => r.canDrag).map((r) => r.key);
   const drop = (fromKey: string, targetKey: string) => {
@@ -269,49 +326,29 @@ function LivePlanScreen() {
     const r = actionRows.find((x) => x.key === key);
     return r !== undefined && (r.canMove || r.canRemove || r.canSwap || r.canRestore);
   };
-  const items: DraggableItem[] = editing
-    ? draftRows(draft, dayIndex).map((row) => ({
-        key: row.key,
-        draggable: draggableKeys.includes(row.key),
-        node: (
-          <ScheduleItem
-            title={row.name}
-            category={row.originalName !== null ? `${row.stop !== null ? categoryOf(row.stop) : "식사"} · ${row.originalName} 대신` : row.stop !== null ? categoryOf(row.stop) : "관광"}
-            verified
-            forMembers={row.stop !== null ? peopleOf(row.stop, members) : []}
-            kind={row.stop !== null ? stopKindOf(row.stop) : placeKindOf(row.added?.category ?? "")}
-            struck={row.mark === "removed"}
-            {...(row.mark !== null && { badge: BADGE[row.mark] })}
-            {...(row.mark === "removed" && editable && { onMore: () => setDraft((d) => (d === null ? d : restoreRow(d, row.key))), moreLabel: "되돌리기" })}
-            onPress={() => {
-              const at = row.stop ?? row.added;
-              if (at !== null) setFocus({ lat: at.lat, lng: at.lng });
-              if (tappable(row.key)) openSheet({ type: "row", key: row.key });
-            }}
-            pressHint={tappable(row.key) ? "지도에서 크게 보고 빼기·장소 변경을 고릅니다" : "지도에서 이 장소를 크게 봅니다"}
-          />
-        ),
-      }))
-    : rows.map((row) => ({
-        key: row.itemId,
-        draggable: draggableKeys.includes(row.itemId),
-        node: (
-          <ScheduleItem
-            time={row.time}
-            title={row.title}
-            category={row.category}
-            verified
-            forMembers={row.forMembers}
-            kind={row.kind}
-            {...(row.moveLabel !== undefined && { moveLabel: row.moveLabel })}
-            onPress={() => {
-              setFocus({ lat: row.lat, lng: row.lng });
-              if (tappable(row.itemId)) openSheet({ type: "row", key: row.itemId });
-            }}
-            pressHint={tappable(row.itemId) ? "지도에서 크게 보고 빼기·장소 변경을 고릅니다" : "지도에서 이 장소를 크게 봅니다"}
-          />
-        ),
-      }));
+  // 고치기 전후 같은 모양의 줄. 고칠 수 있으면 시각을 눌러 시작 시각을 바꾼다.
+  const items: DraggableItem[] = rows.map((row) => ({
+    key: row.itemId,
+    draggable: draggableKeys.includes(row.itemId),
+    node: (
+      <ScheduleItem
+        time={row.time}
+        title={row.title}
+        category={row.category}
+        verified
+        forMembers={row.forMembers}
+        kind={row.kind}
+        {...(row.moveLabel !== undefined && { moveLabel: row.moveLabel })}
+        {...(editable && { onTimePress: () => setSheet({ type: "time", key: row.itemId }) })}
+        onPress={() => {
+          setFocus({ lat: row.lat, lng: row.lng });
+          if (tappable(row.itemId)) openSheet({ type: "row", key: row.itemId });
+        }}
+        pressHint={tappable(row.itemId) ? "지도에서 크게 보고 빼기·장소 변경을 고릅니다" : "지도에서 이 장소를 크게 봅니다"}
+      />
+    ),
+  }));
+  const timeRow = sheet?.type === "time" ? rows.find((r) => r.itemId === sheet.key) : undefined;
   const list = (
     <DraggableList
       items={items}
@@ -329,19 +366,7 @@ function LivePlanScreen() {
         style={styles.screen}
         contentContainerStyle={[styles.scroll, editing && styles.scrollWithBar]}
       >
-        <MeetingMap
-          art="busan"
-          artView="fit"
-          calm
-          bounds={boundsAround(points)}
-          pins={rows.map((r, i) => ({ id: r.itemId, name: r.title, lat: r.lat, lng: r.lng, color: r.color, label: String(i + 1), kind: r.kind }))}
-          routes={[{ color: colors.accent, points }]}
-          height={MAP_HEIGHT}
-          focus={focus}
-          followLabel="전체 보기"
-          onFollow={() => setFocus(null)}
-          accessibilityLabel={`${dayOfKey(day)}일차 장소 ${rows.length}곳 지도`}
-        />
+        <PlanMap rows={rows} focus={focus} onFollow={onFollow} routeColor={colors.accent} label={`${dayNumber}일차 장소 ${rows.length}곳 지도`} />
 
         <View style={styles.body}>
           <View style={styles.titleRow}>
@@ -388,9 +413,9 @@ function LivePlanScreen() {
 
       {editing && (
         <View style={styles.bar}>
-          <Button label="수정 취소" variant="secondary" size="lg" disabled={busy} onPress={() => setDraft(null)} style={styles.barButton} />
+          <Button label="취소" variant="secondary" size="lg" disabled={busy} onPress={cancel} style={styles.barButton} />
           <Button
-            label={`수정 확정 (${count}건)`}
+            label={`수정 확정 (${count + timeCount}건)`}
             size="lg"
             loading={busy}
             disabled={stale || count > MAX_EDITS}
@@ -400,9 +425,24 @@ function LivePlanScreen() {
         </View>
       )}
 
+      <PlanTimeSheet
+        key={timeRow?.itemId ?? "none"}
+        row={timeRow}
+        fixed={timeRow !== undefined && fixed[timeRow.timeKey] !== undefined}
+        onPick={(minutes) => {
+          if (timeRow !== undefined) setPendingTimes((p) => withPending(p, dayNumber, timeRow.timeKey, minutes));
+          setSheet(null);
+        }}
+        onReset={() => {
+          if (timeRow !== undefined) setPendingTimes((p) => withPending(p, dayNumber, timeRow.timeKey, null));
+          setSheet(null);
+        }}
+        onClose={() => setSheet(null)}
+      />
+
       <PlanEditSheet
         sheet={sheet}
-        draft={editing ? draft : board?.plan != null ? createDraft(board.plan.route, board.plan.version) : null}
+        draft={draftEditing ? draft : board?.plan != null ? createDraft(board.plan.route, board.plan.version) : null}
         dayIndex={dayIndex}
         dayLabel={tabs.find((t) => t.key === day)?.label ?? ""}
         members={members}
@@ -414,6 +454,54 @@ function LivePlanScreen() {
         onClose={() => setSheet(null)}
       />
     </View>
+  );
+}
+
+/**
+ * 시각을 누르면 뜨는 시작 시각 돌림판. 고른 시각은 바꾸는 중인 시각에 담기고("수정 확정" 때 이 폰에 저장),
+ * 뒤 일정은 거기서부터 이어 붙는다. 바꾼 적 있는 곳은 짐작한 시각으로 되돌릴 수 있다.
+ */
+function PlanTimeSheet({
+  row,
+  fixed,
+  onPick,
+  onReset,
+  onClose,
+}: {
+  row: StopRow | undefined;
+  fixed: boolean;
+  onPick: (minutes: number) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  const styles = useStyles(createStyles);
+  const [value, setValue] = useState(row?.time ?? "09:00");
+  return (
+    <FormSheet visible={row !== undefined} title={row === undefined ? "" : `${row.title} 시작 시각`} onClose={onClose}>
+      {row !== undefined && (
+        <View style={styles.timeSheet}>
+          <TimeWheel value={value} onChange={setValue} />
+          <AppText variant="small" tone="muted">
+            뒤 일정도 같이 밀려요. 앞 일정보다 이르게는 못 해요.
+          </AppText>
+          <AppText variant="small" tone="warning">
+            서버에 시각표가 없어서 이 폰에만 저장돼요.
+          </AppText>
+          {fixed && <Button label="짐작한 시각으로 되돌리기" variant="ghost" size="sm" onPress={onReset} style={styles.timeReset} />}
+          <View style={styles.sheetButtons}>
+            <Button label="취소" variant="secondary" onPress={onClose} style={styles.barButton} />
+            <Button
+              label={`${value}으로 정하기`}
+              onPress={() => {
+                const minutes = parseClock(value);
+                if (minutes !== null) onPick(minutes);
+              }}
+              style={styles.barButton}
+            />
+          </View>
+        </View>
+      )}
+    </FormSheet>
   );
 }
 
@@ -594,6 +682,9 @@ const createStyles = (t: Theme) =>
       borderTopColor: t.colors.border,
     },
     barButton: { flex: 1, alignSelf: "stretch" },
+    timeSheet: { gap: spacing.sm },
+    timeReset: { alignSelf: "center" },
+    sheetButtons: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs },
     moveDays: { gap: spacing.xs, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: t.colors.border },
     chips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, paddingLeft: spacing.lg + spacing.sm },
     loading: { paddingVertical: spacing.md },

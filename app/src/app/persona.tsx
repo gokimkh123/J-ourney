@@ -58,7 +58,7 @@ function MyProfile() {
           </AppText>
           <View style={styles.chips}>
             {chips.map((chip) => (
-              <Chip key={chip.label} label={chip.label} emoji={chip.emoji} size="sm" />
+              <Chip key={chip.label} label={chip.label} size="sm" />
             ))}
           </View>
         </View>
@@ -75,7 +75,6 @@ function MyProfile() {
                     {trait.name}
                   </AppText>
                   <AppText variant="smallStrong" tone={neutral ? "muted" : "default"}>
-                    {trait.emoji === "" ? "" : `${trait.emoji} `}
                     {label}
                   </AppText>
                 </View>
