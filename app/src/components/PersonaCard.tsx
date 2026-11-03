@@ -25,8 +25,9 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
   const color = persona.color;
   const soft = pastel(color);
   const line = outline(color);
+  // 좋아요·싫어요는 고른 것이 있을 때만 줄을 보인다(없으면 "없음" 대신 줄째 뺀다).
   const likes = joinItems(persona.likes);
-  const dislikes = persona.dislikes.length > 0 ? joinItems(persona.dislikes) : "없음";
+  const dislikes = joinItems(persona.dislikes);
 
   return (
     <View style={styles.stack}>
@@ -70,24 +71,30 @@ export default function PersonaCard({ persona }: { persona: Persona }) {
           </View>
         )}
 
-        <View style={styles.lines}>
-          <View style={styles.line}>
-            <AppText variant="smallStrong" style={styles.lineLabel}>
-              좋아요
-            </AppText>
-            <AppText variant="small" style={styles.lineValue}>
-              {likes}
-            </AppText>
+        {(persona.likes.length > 0 || persona.dislikes.length > 0) && (
+          <View style={styles.lines}>
+            {persona.likes.length > 0 && (
+              <View style={styles.line}>
+                <AppText variant="smallStrong" style={styles.lineLabel}>
+                  좋아요
+                </AppText>
+                <AppText variant="small" style={styles.lineValue}>
+                  {likes}
+                </AppText>
+              </View>
+            )}
+            {persona.dislikes.length > 0 && (
+              <View style={styles.line}>
+                <AppText variant="smallStrong" style={styles.lineLabel}>
+                  싫어요
+                </AppText>
+                <AppText variant="small" style={styles.lineValue}>
+                  {dislikes}
+                </AppText>
+              </View>
+            )}
           </View>
-          <View style={styles.line}>
-            <AppText variant="smallStrong" style={styles.lineLabel}>
-              싫어요
-            </AppText>
-            <AppText variant="small" tone={persona.dislikes.length > 0 ? "default" : "muted"} style={styles.lineValue}>
-              {dislikes}
-            </AppText>
-          </View>
-        </View>
+        )}
 
         <View style={styles.tmi}>
           <View style={styles.tmiTag}>

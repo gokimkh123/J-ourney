@@ -63,6 +63,8 @@ export type { ChatBubbleProps } from "./ChatBubble.tsx";
 export { default as DraggableList } from "./DraggableList.tsx";
 export type { DraggableListProps, DraggableItem } from "./DraggableList.tsx";
 export { default as ToastHost } from "./Toast.tsx";
+export { default as ConfirmSheet } from "./ConfirmSheet.tsx";
+export type { ConfirmSheetProps } from "./ConfirmSheet.tsx";
 export type { SheetOptionProps } from "./SheetOption.tsx";
 export { default as CodeInput } from "./CodeInput.tsx";
 export type { CodeInputProps } from "./CodeInput.tsx";
