@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 
@@ -127,6 +127,8 @@ export default function ConditionsScreen() {
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // starting은 다시 그려진 뒤에야 바뀐다. 그 전에 한 번 더 눌러도 회의를 두 번 시작하지 않게 ref로 막는다.
+  const inFlight = useRef(false);
 
   const [info, setInfo] = useState<InviteInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
@@ -158,7 +160,7 @@ export default function ConditionsScreen() {
         : `${waiting.map((m) => m.nickname).join(", ")} 님이 성향 검사를 아직 안 했어요`;
 
   async function onStart() {
-    if (starting) return;
+    if (inFlight.current) return;
     const result = validateConditions(
       {
         destination: "부산",
@@ -183,6 +185,7 @@ export default function ConditionsScreen() {
     // 실서버에서는 조건을 저장하고 회의를 시작해야 이벤트가 흐른다. 가짜 서버는 회의 화면이 예시 회의를 재생한다.
     if (!config.useMock) {
       if (me === null) return;
+      inFlight.current = true;
       setStarting(true);
       try {
         await endpoints.saveConditions(me.tripId, result.body);
@@ -191,9 +194,11 @@ export default function ConditionsScreen() {
       } catch (e) {
         setErrorText(describeError(e, "meeting"));
         setStarting(false);
+        inFlight.current = false;
         return;
       }
       setStarting(false);
+      inFlight.current = false;
     }
     // 새 조건으로 회의를 다시 하므로 이전 합의안은 지운다.
     meetingResultStore.set(null);
