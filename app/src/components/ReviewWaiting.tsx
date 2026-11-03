@@ -26,7 +26,7 @@ export default function ReviewWaiting({ countLabel, spokenCount, progress, peopl
   const styles = useStyles(createStyles);
   return (
     <View style={styles.root}>
-      <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.scroll} contentContainerStyle={styles.content}>
+      <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.scroll} contentContainerStyle={styles.content}>
         <View style={styles.head}>
           <View style={styles.headText}>
             <AppText variant="title" accessibilityRole="header">

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { BackHandler, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { BackHandler, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
@@ -426,100 +426,104 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
         </AppText>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        {question !== undefined && (
-          <>
-            <View style={[styles.qHead, question.type === "scale" && styles.qHeadScale]}>
-              <AppText variant="title" accessibilityRole="header" style={styles.qText}>
-                {question.text}
-              </AppText>
-              {question.type === "multi" && (
-                <AppText variant="label" tone="accent" style={styles.qCount}>
-                  {formatCount(pickedCount, question.maxSelect)}
+      {/* 키보드가 뜨면 문항과 아래 버튼을 키보드 위로 올린다(11/3: 기타 입력칸이 키보드에 가려짐). 안드로이드는 화면이 시스템 막대 뒤까지
+          그려져 창이 줄지 않으므로 직접 올린다. 키보드 높이에 아래 시스템 막대가 들어 있어 그만큼(insets.bottom)은 빼고 올린다. */}
+      <KeyboardAvoidingView style={styles.body} behavior="padding" keyboardVerticalOffset={-insets.bottom}>
+        <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          {question !== undefined && (
+            <>
+              <View style={[styles.qHead, question.type === "scale" && styles.qHeadScale]}>
+                <AppText variant="title" accessibilityRole="header" style={styles.qText}>
+                  {question.text}
+                </AppText>
+                {question.type === "multi" && (
+                  <AppText variant="label" tone="accent" style={styles.qCount}>
+                    {formatCount(pickedCount, question.maxSelect)}
+                  </AppText>
+                )}
+              </View>
+              {reuseSaved && index === 0 && (
+                <AppText variant="small" tone="muted">
+                  저장된 내 성향을 써요. 이번 여행 질문만 답해 주세요.
                 </AppText>
               )}
-            </View>
-            {reuseSaved && index === 0 && (
-              <AppText variant="small" tone="muted">
-                저장된 내 성향을 써요. 이번 여행 질문만 답해 주세요.
-              </AppText>
-            )}
-            {question.type === "scale" && (
-              <View style={styles.dialArea}>
-                <ScaleInput
+              {question.type === "scale" && (
+                <View style={styles.dialArea}>
+                  <ScaleInput
+                    question={question}
+                    answers={answers}
+                    update={setAnswers}
+                    onPick={(value) => advanceAfterPick(index, questions.length, `${question.id}:${value}`)}
+                  />
+                </View>
+              )}
+              {question.type === "multi" && (
+                <MultiInput
                   question={question}
                   answers={answers}
                   update={setAnswers}
-                  onPick={(value) => advanceAfterPick(index, questions.length, `${question.id}:${value}`)}
+                  otherOpen={otherOpen[question.id] === true}
+                  onToggleOther={() => {
+                    const open = otherOpen[question.id] === true;
+                    if (open) setAnswers((state) => setOther(state, question, ""));
+                    setOtherOpen((current) => ({ ...current, [question.id]: !open }));
+                  }}
                 />
-              </View>
-            )}
-            {question.type === "multi" && (
-              <MultiInput
-                question={question}
-                answers={answers}
-                update={setAnswers}
-                otherOpen={otherOpen[question.id] === true}
-                onToggleOther={() => {
-                  const open = otherOpen[question.id] === true;
-                  if (open) setAnswers((state) => setOther(state, question, ""));
-                  setOtherOpen((current) => ({ ...current, [question.id]: !open }));
-                }}
-              />
-            )}
-            {question.type === "list" && <ListInput question={question} answers={answers} update={setAnswers} />}
-            {question.type === "single" && (
-              <SingleInput
-                question={question}
-                answers={answers}
-                update={setAnswers}
-                onPick={(optionId) => advanceAfterPick(index, questions.length, `${question.id}:${optionId}`)}
-              />
-            )}
-            {question.type === "text" && (
-              <TextAnswerInput
-                question={question}
-                draft={drafts[question.id] ?? ""}
-                onChangeText={(text) => onChangeText(question, text)}
-              />
-            )}
-          </>
-        )}
-      </ScrollView>
+              )}
+              {question.type === "list" && <ListInput question={question} answers={answers} update={setAnswers} />}
+              {question.type === "single" && (
+                <SingleInput
+                  question={question}
+                  answers={answers}
+                  update={setAnswers}
+                  onPick={(optionId) => advanceAfterPick(index, questions.length, `${question.id}:${optionId}`)}
+                />
+              )}
+              {question.type === "text" && (
+                <TextAnswerInput
+                  question={question}
+                  draft={drafts[question.id] ?? ""}
+                  onChangeText={(text) => onChangeText(question, text)}
+                />
+              )}
+            </>
+          )}
+        </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: spacing.lg + insets.bottom }]}>
-        {!submitting && submitError !== null && (
-          <Banner tone="danger" text={submitError} actionLabel="다시 시도" onAction={() => void onSubmit()} />
-        )}
-        <View style={styles.navRow}>
-          {index > 0 && (
-            <Button
-              label="이전"
-              variant="secondary"
-              disabled={submitting}
-              onPress={() => goTo((i) => Math.max(0, i - 1))}
-              style={styles.navPrev}
-            />
+        <View style={[styles.footer, { paddingBottom: spacing.lg + insets.bottom }]}>
+          {!submitting && submitError !== null && (
+            <Banner tone="danger" text={submitError} actionLabel="다시 시도" onAction={() => void onSubmit()} />
           )}
-          {isLast ? (
-            <Button
-              label={inParty ? "내 캐릭터 카드 만들기" : "내 성향 저장하기"}
-              disabled={!canSubmit}
-              loading={submitting}
-              onPress={() => void onSubmit()}
-              style={styles.navNext}
-            />
-          ) : (
-            <Button
-              label={skipping ? "건너뛰기" : "다음"}
-              variant={skipping ? "soft" : "primary"}
-              disabled={!canNext}
-              onPress={() => goTo((i) => Math.min(questions.length - 1, i + 1))}
-              style={styles.navNext}
-            />
-          )}
+          <View style={styles.navRow}>
+            {index > 0 && (
+              <Button
+                label="이전"
+                variant="secondary"
+                disabled={submitting}
+                onPress={() => goTo((i) => Math.max(0, i - 1))}
+                style={styles.navPrev}
+              />
+            )}
+            {isLast ? (
+              <Button
+                label={inParty ? "내 캐릭터 카드 만들기" : "내 성향 저장하기"}
+                disabled={!canSubmit}
+                loading={submitting}
+                onPress={() => void onSubmit()}
+                style={styles.navNext}
+              />
+            ) : (
+              <Button
+                label={skipping ? "건너뛰기" : "다음"}
+                variant={skipping ? "soft" : "primary"}
+                disabled={!canNext}
+                onPress={() => goTo((i) => Math.min(questions.length - 1, i + 1))}
+                style={styles.navNext}
+              />
+            )}
+          </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </View>
   );
 }
@@ -531,6 +535,7 @@ const createStyles = (t: Theme) =>
     close: { width: hitSize, height: hitSize, alignItems: "center", justifyContent: "center" },
     bar: { flex: 1 },
     count: { minWidth: 40, textAlign: "right" },
+    body: { flex: 1 },
     content: { flexGrow: 1, paddingHorizontal: spacing.md, paddingTop: spacing.xl, paddingBottom: spacing.md, gap: spacing.md },
     qHead: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: spacing.sm + spacing.xs, paddingHorizontal: spacing.sm },
     qText: { flex: 1, lineHeight: 32 },

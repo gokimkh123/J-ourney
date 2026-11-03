@@ -27,7 +27,7 @@ export default function ChoiceWaiting({ cards, mine, onChange, people, onDecide,
   const done = people.filter((p) => p.done).length;
   return (
     <View style={styles.root}>
-      <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.scroll} contentContainerStyle={styles.content}>
+      <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.scroll} contentContainerStyle={styles.content}>
         <AppText variant="title" accessibilityRole="header">
           선택 완료
         </AppText>

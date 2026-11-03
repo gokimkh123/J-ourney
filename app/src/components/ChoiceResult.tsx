@@ -23,7 +23,7 @@ export default function ChoiceResult({ head, title, rows, hostPick, onNext }: Ch
   const total = rows.reduce((sum, r) => sum + r.votes, 0);
   return (
     <View style={styles.root}>
-      <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.scroll} contentContainerStyle={styles.content}>
+      <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.scroll} contentContainerStyle={styles.content}>
         <View style={styles.titleBlock}>
           <AppText variant="small" tone="muted">
             {head}

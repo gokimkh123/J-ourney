@@ -52,6 +52,7 @@ function Wheel({ count, value, onChange, label }: { count: number; value: number
       }}
     >
       <ScrollView
+        overScrollMode="never"
         ref={ref}
         onLayout={onLayout}
         nestedScrollEnabled

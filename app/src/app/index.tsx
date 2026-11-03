@@ -14,7 +14,6 @@ import {
   PartyCard,
   PartyHomeStage,
   PartyStage,
-  StatusPill,
   TextField,
 } from "../components/index.ts";
 import { CharacterSvg } from "../components/character/Bean.tsx";
@@ -135,7 +134,7 @@ function PartyList() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
+      <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
         {empty ? (
           <View style={[styles.body, styles.bodyTop]}>
             <EmptyStart onCreate={() => open("create")} onJoin={() => open("join")} />
@@ -428,7 +427,7 @@ function TripHome() {
   const preparing = view.step === "persona" || view.step === "waiting" || view.step === "conditions";
 
   return (
-    <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
+    <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
       <PartyHomeStage
         title={info?.trip.title ?? "불러오는 중"}
         subtitle={`${stepIndex + 1}/${STEP_LABELS.length} · ${STEP_LABELS[stepIndex]}`}
@@ -562,9 +561,7 @@ function NextAction(p: NextActionProps) {
   if (p.step === "result") {
     return (
       <View style={[styles.actionCard, styles.resultCard]} accessible={false}>
-        <View style={styles.resultPill}>
-          <StatusPill label="AI 합의 완료" tone="success" />
-        </View>
+        {/* "AI 합의 완료" 표시는 뺐다(11/3). 제목만으로 끝난 줄 안다. */}
         <AppText variant="title" accessibilityRole="header">
           AI가 일정을 제안했어요
         </AppText>
@@ -673,7 +670,6 @@ const createStyles = (t: Theme) =>
       gap: spacing.md,
     },
     resultCard: { gap: 10 },
-    resultPill: { alignSelf: "flex-start" },
     resultActions: { marginTop: 6 },
     actionHead: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: spacing.sm },
     actionMeta: { fontWeight: "700", color: t.colors.textBody },

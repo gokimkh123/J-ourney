@@ -235,25 +235,41 @@ function sequenceKeys(d: PlanDraft, day: number): string[] {
     .map((r) => r.added?.placeId ?? r.stop?.placeId ?? r.key);
 }
 
+/** fromKey 줄을 targetKey 줄 자리로 옮긴 뒤 그날 줄 순서(숙소 뺌). 끌 수 없는 줄이거나 제자리면 null */
+function droppedOrder(d: PlanDraft, dayIndex: number, fromKey: string, targetKey: string): { rows: DraftRow[]; next: string[] } | null {
+  const rows = draftRows(d, dayIndex).filter((r) => r.kind !== 'lodging');
+  const movable = rows.filter((r) => r.canDrag).map((r) => r.key);
+  const from = movable.indexOf(fromKey);
+  const to = movable.indexOf(targetKey);
+  if (from < 0 || to < 0 || from === to) return null;
+  const reordered = [...movable];
+  reordered.splice(from, 1);
+  reordered.splice(to, 0, fromKey);
+  let k = 0;
+  return { rows, next: rows.map((r) => (r.canDrag ? reordered[k++]! : r.key)) };
+}
+
+function lunchAfterDinner(rows: DraftRow[], next: string[]): boolean {
+  const mealAt = (meal: 'lunch' | 'dinner') => next.findIndex((key) => rows.find((r) => r.key === key)?.meal === meal);
+  const lunch = mealAt('lunch');
+  const dinner = mealAt('dinner');
+  return lunch >= 0 && dinner >= 0 && lunch > dinner;
+}
+
+/** 이 끌기가 점심을 저녁 뒤로 보내 받지 않는 끌기인가. 화면이 말없이 제자리로 돌리지 않고 까닭을 알려 준다(11/3). */
+export function dropBreaksMealOrder(d: PlanDraft, dayIndex: number, fromKey: string, targetKey: string): boolean {
+  const dropped = droppedOrder(d, dayIndex, fromKey, targetKey);
+  return dropped !== null && lunchAfterDinner(dropped.rows, dropped.next);
+}
+
 /**
  * 끌어서 놓기(v2.4). fromKey 줄을 targetKey 줄 자리로 옮긴다. 끌 수 있는 줄끼리만 자리를 바꾸고 다른 줄(뺀 곳)은 제자리.
  * 점심이 저녁 뒤로 가면 서버가 받지 않으므로 그대로 둔다. 원래 순서로 돌아오면 그날 순서를 지운다.
  */
 export function dropRow(d: PlanDraft, dayIndex: number, fromKey: string, targetKey: string): PlanDraft {
-  const rows = draftRows(d, dayIndex).filter((r) => r.kind !== 'lodging');
-  const movable = rows.filter((r) => r.canDrag).map((r) => r.key);
-  const from = movable.indexOf(fromKey);
-  const to = movable.indexOf(targetKey);
-  if (from < 0 || to < 0 || from === to) return d;
-  const reordered = [...movable];
-  reordered.splice(from, 1);
-  reordered.splice(to, 0, fromKey);
-  let k = 0;
-  const next = rows.map((r) => (r.canDrag ? reordered[k++]! : r.key));
-  const mealAt = (meal: 'lunch' | 'dinner') => next.findIndex((key) => rows.find((r) => r.key === key)?.meal === meal);
-  const lunch = mealAt('lunch');
-  const dinner = mealAt('dinner');
-  if (lunch >= 0 && dinner >= 0 && lunch > dinner) return d;
+  const dropped = droppedOrder(d, dayIndex, fromKey, targetKey);
+  if (dropped === null || lunchAfterDinner(dropped.rows, dropped.next)) return d;
+  const { next } = dropped;
   // 끈 날은 예전 순서(order)를 쓰지 않는다.
   const order = { ...d.order };
   delete order[dayIndex];

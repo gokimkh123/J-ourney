@@ -506,6 +506,7 @@ export default function MeetingScreen() {
                 />
               )}
               {!reviewing && choice === null && <View style={styles.sheetScroll}><ScrollView
+                overScrollMode="never"
                 ref={sheetScroll}
                 showsVerticalScrollIndicator={false}
                 nestedScrollEnabled

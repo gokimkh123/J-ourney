@@ -23,7 +23,7 @@ export default function FormSheet({ visible, title, onClose, children }: FormShe
         <Pressable style={styles.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="닫기" />
         <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]} accessibilityViewIsModal>
           <View style={styles.handle} />
-          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+          <ScrollView overScrollMode="never" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
             <AppText variant="title" accessibilityRole="header">
               {title}
             </AppText>

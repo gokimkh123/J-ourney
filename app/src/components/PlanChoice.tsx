@@ -36,7 +36,7 @@ export default function PlanChoice({ cards, selected, onSelect, people, dayTabs,
   const done = people.filter((p) => p.done).length;
   return (
     <View style={styles.root}>
-      <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.scroll} contentContainerStyle={styles.content}>
+      <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} nestedScrollEnabled style={styles.scroll} contentContainerStyle={styles.content}>
         <AppText variant="title" accessibilityRole="header">
           어느 안으로 갈까요?
         </AppText>

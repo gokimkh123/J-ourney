@@ -76,6 +76,7 @@ export default function CommunityScreen() {
       {view.kind === "error" && <StateView tone="danger" title="불러오지 못했어요" text={view.message} actionLabel="다시 시도" onAction={() => void load(region)} />}
       {shown !== null && (
         <ScrollView
+          overScrollMode="never"
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} />}
@@ -94,7 +95,7 @@ export default function CommunityScreen() {
                       {section.group}
                     </AppText>
                   </View>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
+                  <ScrollView overScrollMode="never" horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
                     {section.places.map((place, i) => (
                       <PlaceCard key={place.placeId} place={place} rank={i + 1} onPress={() => open(place)} />
                     ))}

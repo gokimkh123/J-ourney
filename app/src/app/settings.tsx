@@ -124,7 +124,7 @@ export default function SettingsScreen() {
   };
 
   return (
-    <ScrollView showsVerticalScrollIndicator={false} style={styles.scroll} contentContainerStyle={styles.content}>
+    <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} style={styles.scroll} contentContainerStyle={styles.content}>
       {saveFailed && <Banner tone="warning" text="설정을 저장하지 못했어요. 이번 실행 동안만 적용돼요." />}
 
       <Card title="화면 모드">

@@ -129,7 +129,7 @@ export default function CommunityPlaceScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+      <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
         <View>
           <PlacePhoto place={place} width="100%" height={PHOTO_H + insets.top} rounded={false} />
           {place.imageUrl !== null && place.imageCredit !== null && (

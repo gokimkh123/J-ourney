@@ -128,7 +128,7 @@ export default function InviteScreen() {
         : `${host.nickname} 님이 기다리고 있어요`;
 
   return (
-    <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+    <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       {members.length > 0 && <MemberBand members={members.map((m) => ({ id: m.id, name: m.nickname, color: m.color }))} />}
       <View style={styles.body}>
         <View style={styles.intro}>

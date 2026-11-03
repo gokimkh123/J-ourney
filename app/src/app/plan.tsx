@@ -31,6 +31,7 @@ import {
   createDraft,
   draftEdits,
   draftRows,
+  dropBreaksMealOrder,
   dropRow,
   moveRow,
   removeRow,
@@ -93,7 +94,7 @@ function MockPlanScreen() {
   const points = planDay.items.map((item) => ({ lat: item.place.lat, lng: item.place.lng }));
 
   return (
-    <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
+    <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
       <MeetingMap
         art="busan"
         artView="fit"
@@ -320,6 +321,12 @@ function LivePlanScreen() {
   const draggableKeys = actionRows.filter((r) => r.canDrag).map((r) => r.key);
   const drop = (fromKey: string, targetKey: string) => {
     if (!draggableKeys.includes(fromKey) || !draggableKeys.includes(targetKey) || fromKey === targetKey) return;
+    // 점심을 저녁 뒤로(저녁을 점심 앞으로) 끌면 서버가 받지 않아 제자리로 돌아간다. 말없이 돌아가지 않게 까닭을 알린다(11/3).
+    const base = draftEditing ? draft : board?.plan == null ? null : createDraft(board.plan.route, board.plan.version);
+    if (base !== null && dropBreaksMealOrder(base, dayIndex, fromKey, targetKey)) {
+      showToast("점심은 저녁보다 앞에만 둘 수 있어요");
+      return;
+    }
     change((d) => dropRow(d, dayIndex, fromKey, targetKey));
   };
   const tappable = (key: string) => {
@@ -361,6 +368,7 @@ function LivePlanScreen() {
   return (
     <View style={styles.screen}>
       <ScrollView
+        overScrollMode="never"
         showsVerticalScrollIndicator={false}
         scrollEnabled={!dragging}
         style={styles.screen}

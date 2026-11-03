@@ -44,7 +44,7 @@ export default function AgreementScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+      <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
         <MemberBand members={state.agents.map((a) => ({ id: a.agentId, name: a.nickname, color: a.color, chips: a.chips }))} />
 
         <View style={styles.body}>

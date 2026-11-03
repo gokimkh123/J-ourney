@@ -35,7 +35,7 @@ export default function PlaceScreen() {
   };
 
   return (
-    <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
+    <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
       <Stack.Screen options={{ title: detail.title }} />
       <View style={styles.head}>
         <PlaceSticker kind={placeKindOf(item.category)} size={48} />

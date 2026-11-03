@@ -24,9 +24,10 @@ type View_ =
   | { kind: "notFound" }
   | { kind: "error"; message: string };
 
-/** 탭 하나가 파티 밖(초기 화면)과 파티 안에서 다른 내용을 보여 준다. */
+/** 탭 하나가 파티 밖(초기 화면)과 파티 안에서 다른 내용을 보여 준다. 다른 파티로 옮기면 그 파티 카드로 새로 시작한다. */
 export default function PersonaScreen() {
-  return useSession() === null ? <MyProfile /> : <PartyPersona />;
+  const me = useSession();
+  return me === null ? <MyProfile /> : <PartyPersona key={`${me.tripId}:${me.memberId}`} />;
 }
 
 /** 초기 화면의 내 캐릭터: 1~12번 성향 검사를 한 번 해 두면 이 폰에 저장되어 모든 파티에서 쓴다. */
@@ -49,7 +50,7 @@ function MyProfile() {
   const chips = profileChips(saved);
   const color = memberColors[0];
   return (
-    <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
+    <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
       <Card>
         <View style={styles.hero}>
           <Avatar color={color} chips={chips} name="내 성향" size="xl" variant="full" />
@@ -105,9 +106,11 @@ function PartyPersona() {
   const [view, setView] = useState<View_>({ kind: "loading" });
   const requestId = useRef(0);
 
+  // 탭을 열 때마다 새로 받되, 카드가 이미 보이면 그대로 두고 뒤에서 바꾼다(11/3). 매번 불러오는 중으로 바꾸면
+  // 카드가 사라졌다 통째로 다시 그려져서 탭을 열 때마다 끊겨 보였다. 새로 받다 실패해도(연결 등) 보이던 카드를 둔다.
   const load = useCallback(async () => {
     const id = ++requestId.current;
-    setView({ kind: "loading" });
+    setView((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
     if (session.getSession() === null) {
       setView({ kind: "noSession" });
       return;
@@ -121,7 +124,8 @@ function PartyPersona() {
       if (error instanceof ApiError && error.status === 404) {
         setView({ kind: "notFound" });
       } else {
-        setView({ kind: "error", message: describeError(error) });
+        const message = describeError(error);
+        setView((prev) => (prev.kind === "ready" ? prev : { kind: "error", message }));
       }
     }
   }, []);
@@ -137,7 +141,7 @@ function PartyPersona() {
 
   if (view.kind === "ready") {
     return (
-      <ScrollView showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
+      <ScrollView overScrollMode="never" showsVerticalScrollIndicator={false} style={styles.screen} contentContainerStyle={styles.scroll}>
         <PartyActions />
         <PersonaCard persona={view.persona} />
         <View style={styles.links}>
