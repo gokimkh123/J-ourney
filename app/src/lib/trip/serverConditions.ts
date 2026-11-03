@@ -14,8 +14,10 @@ export function moveModeOf(transport: string): MoveMode {
 export const SERVER_MAX_ROUNDS = 5;
 
 export function toServerConditions(body: ConditionsBody): ServerConditions {
+  // 예약한 장소의 날짜·시각은 서버가 아직 받지 않아 이 폰에만 둔다(나중에_구현할_것 20번).
+  const { bookedPlaceTimes: _onPhone, ...rest } = body;
   return {
-    ...body,
+    ...rest,
     moveMode: moveModeOf(body.transport),
     rules: { ...body.rules, maxRounds: Math.min(body.rules.maxRounds, SERVER_MAX_ROUNDS) },
   };

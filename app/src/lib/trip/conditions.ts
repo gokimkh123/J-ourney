@@ -28,6 +28,8 @@ export type ConditionsBody = {
   departureTime?: string;
   bookedLodging?: string;
   bookedPlaces?: string[];
+  /** 이 폰에만: 예약한 장소의 날짜·시각(bookedPlaces와 같은 순서). 서버는 이름만 받아 보내지 않는다(serverConditions) */
+  bookedPlaceTimes?: { date: string; time: string }[];
 };
 
 export type ConditionsResult =
