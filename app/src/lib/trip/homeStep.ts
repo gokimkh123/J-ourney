@@ -27,7 +27,7 @@ const ORDER: HomeStep[] = ['persona', 'waiting', 'conditions', 'meeting', 'resul
  * 1) 내 성향 검사 전 → persona  2) 아직 준비 안 된 사람이 있음 → waiting
  * 3) 조건 없음 → conditions  4) 합의안 없음 → meeting  5) 합의안 있음 → result
  * 목록을 아직 못 받았으면 가장 앞 단계(persona)로 보되, 화면은 불러오는 중으로 표시한다.
- * 서버 여행 상태가 회의 시작 뒤(meeting 이후)면 이 폰에 조건이 없어도 3)을 지난 것으로 본다.
+ * 서버 여행 상태가 meeting이면 이 폰에 조건이 없어도 3)을 지난 것으로, voting 이후면 5)로 본다.
  */
 export function homeStep({ members, myMemberId, hasConditions, hasResult, tripStatus }: HomeStepInput): HomeStepView {
   const list = members ?? [];
@@ -38,6 +38,8 @@ export function homeStep({ members, myMemberId, hasConditions, hasResult, tripSt
   let step: HomeStep;
   if (members === null || me === undefined || !me.personaReady) step = 'persona';
   else if (readyCount < total) step = 'waiting';
+  // 서버가 회의를 끝냈으면(voting 이후) 이 폰에 합의안이 없어도 결과 단계(방장 아닌 폰이 "회의 중"에 머물지 않게)
+  else if (tripStatus === 'voting' || tripStatus === 'confirmed') step = 'result';
   else if (!hasConditions && (tripStatus === undefined || tripStatus === 'preparing')) step = 'conditions';
   else if (!hasResult) step = 'meeting';
   else step = 'result';

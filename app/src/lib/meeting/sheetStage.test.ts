@@ -17,7 +17,7 @@ test('⑤ 사람 확인 뒤 동선 짜기: 가운데로 내림', () => {
 });
 
 test('⑧ 합의 뒤 A·B 고르기: 실서버만 펼침(예시 재생은 고르기가 없어 그대로)', () => {
-  assert.equal(sheetLevelFor('meeting', 'agreed', true), 2);
+  assert.equal(sheetLevelFor('meeting', 'agreed', true), 3);
   assert.equal(sheetLevelFor('meeting', 'agreed', false), null);
 });
 

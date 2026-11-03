@@ -77,3 +77,5 @@ export { default as ChoiceResult } from "./ChoiceResult.tsx";
 export type { ChoiceResultProps } from "./ChoiceResult.tsx";
 export { default as ReviewWaiting } from "./ReviewWaiting.tsx";
 export type { ReviewWaitingProps } from "./ReviewWaiting.tsx";
+export { PlacePhoto, Star } from "./CommunityParts.tsx";
+export { default as LoginScreen } from "./LoginScreen.tsx";

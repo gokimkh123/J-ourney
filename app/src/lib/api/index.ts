@@ -1,4 +1,5 @@
 import { accessKey, config } from '../config/index.ts';
+import { login } from '../auth/index.ts';
 import { session } from '../session/index.ts';
 import { createApiClient } from './client.ts';
 import type { FetchLike } from './client.ts';
@@ -12,6 +13,7 @@ export const api = createApiClient({
   baseUrl: config.useMock ? 'http://mock.local' : config.apiBaseUrl,
   fetchFn: config.useMock ? createMockFetch(createMockRoutes()) : realFetch,
   getToken: () => session.getToken(),
+  getLoginToken: () => login.getToken(),
   getAccessKey: () => (config.useMock || accessKey === '' ? undefined : accessKey),
 });
 

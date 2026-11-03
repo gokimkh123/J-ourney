@@ -6,6 +6,7 @@ import { config } from '../config/index.ts';
 import type { Session } from '../session/session.ts';
 import { droppedEventNote } from './droppedEvent.ts';
 import { createEventPacer, paceDelayMs, wakesPause } from './eventPacer.ts';
+import { atSpeed } from './speedStore.ts';
 import type { EventPacer } from './eventPacer.ts';
 import { createLiveFeed } from './liveFeed.ts';
 import type { FeedStatus, LiveFeed } from './liveFeed.ts';
@@ -64,7 +65,8 @@ export function useLiveMeeting(enabled: boolean, session: Session | null): LiveM
         const pacer = createEventPacer({
           clock: paceClock,
           deliver: handlers.onMessage,
-          delayAfter: (event) => paceDelayMs(event, feed.getState()),
+          // 2배속이면 쉬는 시간을 반으로(바꾼 뒤 다음 이벤트부터)
+          delayAfter: (event) => atSpeed(paceDelayMs(event, feed.getState())),
           catchUpMs: reconnected ? CATCH_UP_MS : 0,
           paused: pausedRef.current,
           // 사람 확인·회의 끝(A·B 고르기)이 오면 멈춰 있어도 거기까지 바로 보여 주고 멈춤을 푼다.

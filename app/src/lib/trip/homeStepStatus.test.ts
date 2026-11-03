@@ -14,8 +14,8 @@ test('v2.4: 서버 여행이 meeting이면 이 폰에 조건이 없어도(방장
   assert.equal(view.doneCount, 3);
 });
 
-test('v2.4: voting·confirmed도 회의를 지난 것으로 본다, 합의안이 있으면 result', () => {
-  assert.equal(homeStep({ members: ready, myMemberId: 'm2', hasConditions: false, hasResult: false, tripStatus: 'voting' }).step, 'meeting');
+test('v2.4: voting·confirmed면 회의가 끝난 것이라 합의안이 없어도 result', () => {
+  assert.equal(homeStep({ members: ready, myMemberId: 'm2', hasConditions: false, hasResult: false, tripStatus: 'voting' }).step, 'result');
   assert.equal(homeStep({ members: ready, myMemberId: 'm2', hasConditions: false, hasResult: true, tripStatus: 'confirmed' }).step, 'result');
 });
 

@@ -11,8 +11,6 @@ import { endpoints } from "../lib/api/index.ts";
 import {
   buildSubmitBody,
   hasContent,
-  isAnswered,
-  isComplete,
   listDraft,
   setOther,
   setScale,
@@ -29,6 +27,7 @@ import {
   profileQuestions,
 } from "../lib/persona/profile.ts";
 import { profile, useProfile } from "../lib/persona/profileStore.ts";
+import { canMoveOn, isReadyToSubmit } from "../lib/persona/skip.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import type {
   AnswerState,
@@ -41,10 +40,11 @@ import type {
 } from "../lib/persona/types.ts";
 import { disabledOpacity, hitSize, pressedOpacity, radius, spacing, useStyles, useTheme, type Theme } from "../theme/index.ts";
 import { describeError, formatCount } from "../lib/ui/format.ts";
+import { DOUBLE_TAP_MS, isDoubleTap, type LastTap } from "../lib/persona/doubleTap.ts";
 
 const PERSONA_ROUTE = "/persona" as Href;
-// 점수를 누른 뒤 다음 문항으로 넘어가기까지 기다리는 시간(고른 칸이 잠깐 보이게)
-const AUTO_ADVANCE_MS = 300;
+// 점수를 누른 뒤 다음 문항으로 넘어가기까지 기다리는 시간(고른 칸이 잠깐 보이게). 같은 칸을 이 안에 다시 누르면 바로 넘어간다.
+const AUTO_ADVANCE_MS = DOUBLE_TAP_MS;
 // 여러 개 고르기 칩을 한 줄에 몇 개 놓는지
 const CHIP_COLUMNS = 3;
 
@@ -55,8 +55,8 @@ function ScaleInput({ question, answers, update, onPick }: {
   question: ScaleQuestion;
   answers: AnswerState;
   update: UpdateAnswers;
-  /** 점수를 눌렀을 때(고른 뒤) 불린다. 화면이 다음 문항으로 넘길 때 쓴다. */
-  onPick?: () => void;
+  /** 점수를 눌렀을 때(고른 뒤) 고른 점수와 함께 불린다. 화면이 0.3초 뒤(같은 칸을 한 번 더 누르면 바로) 다음 문항으로 넘긴다. */
+  onPick?: (value: number) => void;
 }) {
   const styles = useStyles(createStyles);
   const answer = answers[question.id];
@@ -146,12 +146,12 @@ function ListInput({ question, answers, update }: { question: ListQuestion; answ
   );
 }
 
-/** 하나 고르기(v2.4 이번 여행 속도): 큰 버튼 셋. 누르면 잠깐 뒤 다음 문항으로 간다. */
+/** 하나 고르기(v2.4 이번 여행 속도): 글자만 있는 큰 버튼 셋. 누르면 0.3초 뒤(같은 버튼을 한 번 더 누르면 바로) 다음 문항으로 간다. 안 고르면 아래 '건너뛰기'. */
 function SingleInput({ question, answers, update, onPick }: {
   question: SingleQuestion;
   answers: AnswerState;
   update: UpdateAnswers;
-  onPick: () => void;
+  onPick: (optionId: string) => void;
 }) {
   const styles = useStyles(createStyles);
   const answer = answers[question.id];
@@ -165,14 +165,13 @@ function SingleInput({ question, answers, update, onPick }: {
             key={option.id}
             onPress={() => {
               update((state) => setSingle(state, question, option.id));
-              onPick();
+              onPick(option.id);
             }}
             accessibilityRole="radio"
             accessibilityState={{ checked: selected }}
             accessibilityLabel={option.text}
             style={({ pressed }) => [styles.singleCard, selected && styles.chipOn, pressed && { opacity: pressedOpacity }]}
           >
-            {option.emoji !== "" && <AppText style={styles.singleEmoji}>{option.emoji}</AppText>}
             <AppText variant="heading" align="center" style={selected ? styles.chipOnText : undefined}>
               {selected ? `✓ ${option.text}` : option.text}
             </AppText>
@@ -269,22 +268,35 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
   const inFlight = useRef(false);
   const alive = useRef(true);
   const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTap = useRef<LastTap>(null);
 
   function cancelAdvance() {
+    lastTap.current = null;
     if (advanceTimer.current !== null) {
       clearTimeout(advanceTimer.current);
       advanceTimer.current = null;
     }
   }
 
-  // 점수를 누르면 잠깐 뒤 다음 문항으로 간다. 그 사이 다른 칸을 누르면 시간을 다시 잰다.
+  // 고르면 0.3초 뒤 다음 문항으로 간다. 그 사이 다른 칸을 누르면 시간을 다시 재고, 같은 칸을 한 번 더 누르면 기다리지 않고 바로 간다.
   // 마지막 문항이거나 그 사이 다른 문항으로 옮겼다면 가지 않는다.
-  function advanceAfterPick(from: number, total: number) {
+  function advanceAfterPick(from: number, total: number, key: string) {
+    const now = Date.now();
+    const again = isDoubleTap(lastTap.current, key, now);
     cancelAdvance();
     if (from >= total - 1) return;
+    const go = () => {
+      if (alive.current) setIndex((i) => (i === from ? from + 1 : i));
+    };
+    if (again) {
+      go();
+      return;
+    }
+    lastTap.current = { key, at: now };
     advanceTimer.current = setTimeout(() => {
       advanceTimer.current = null;
-      if (alive.current) setIndex((i) => (i === from ? from + 1 : i));
+      lastTap.current = null;
+      go();
     }, AUTO_ADVANCE_MS);
   }
 
@@ -330,7 +342,7 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
   }, []);
 
   async function onSubmit() {
-    if (allQuestions === null || questions === null || inFlight.current || !isComplete(questions, answers)) return;
+    if (allQuestions === null || questions === null || inFlight.current || !isReadyToSubmit(questions, answers)) return;
     inFlight.current = true;
     setSubmitting(true);
     setSubmitError(null);
@@ -376,10 +388,11 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
 
   const question = questions[index];
   const isLast = index === questions.length - 1;
-  const canNext = question !== undefined && isAnswered(question, answers);
-  // 넘어가도 되는 문항(가고 싶은 곳·싫은 것)이 비어 있으면 "다음" 대신 "건너뛰기"
+  // 이번 여행 속도는 고르지 않고 건너뛸 수 있다(서버가 빈 답도 받음).
+  const canNext = question !== undefined && canMoveOn(question, answers);
+  // 넘어가도 되는 문항(가고 싶은 곳·속도·싫은 것)이 비어 있으면 "다음" 대신 "건너뛰기"
   const skipping = question !== undefined && !isLast && canNext && !hasContent(question, answers);
-  const canSubmit = isComplete(questions, answers) && !submitting;
+  const canSubmit = isReadyToSubmit(questions, answers) && !submitting;
 
   const picked = question === undefined ? undefined : answers[question.id];
   const pickedCount = picked?.type === "multi" ? picked.optionIds.length : 0;
@@ -416,7 +429,7 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {question !== undefined && (
           <>
-            <View style={styles.qHead}>
+            <View style={[styles.qHead, question.type === "scale" && styles.qHeadScale]}>
               <AppText variant="title" accessibilityRole="header" style={styles.qText}>
                 {question.text}
               </AppText>
@@ -437,7 +450,7 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
                   question={question}
                   answers={answers}
                   update={setAnswers}
-                  onPick={() => advanceAfterPick(index, questions.length)}
+                  onPick={(value) => advanceAfterPick(index, questions.length, `${question.id}:${value}`)}
                 />
               </View>
             )}
@@ -460,7 +473,7 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
                 question={question}
                 answers={answers}
                 update={setAnswers}
-                onPick={() => advanceAfterPick(index, questions.length)}
+                onPick={(optionId) => advanceAfterPick(index, questions.length, `${question.id}:${optionId}`)}
               />
             )}
             {question.type === "text" && (
@@ -522,6 +535,8 @@ const createStyles = (t: Theme) =>
     content: { flexGrow: 1, paddingHorizontal: spacing.md, paddingTop: spacing.xl, paddingBottom: spacing.md, gap: spacing.md },
     qHead: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: spacing.sm + spacing.xs, paddingHorizontal: spacing.sm },
     qText: { flex: 1, lineHeight: 32 },
+    // 점수 문항은 질문이 1~3줄로 바뀌어도 다이얼(누르는 곳)이 제자리에 있게 제목 칸을 세 줄 높이로 둔다.
+    qHeadScale: { minHeight: 32 * 3, alignItems: "flex-start" },
     qCount: { paddingBottom: 6 },
     dialArea: { flex: 1, justifyContent: "center" },
     inputBlock: { gap: spacing.sm },
@@ -544,7 +559,7 @@ const createStyles = (t: Theme) =>
     singleRow: { flexDirection: "row", gap: spacing.sm, paddingTop: spacing.sm },
     singleCard: {
       flex: 1,
-      height: 120,
+      height: 88,
       borderRadius: radius.xl,
       borderWidth: 1,
       borderColor: t.colors.border,
@@ -553,7 +568,6 @@ const createStyles = (t: Theme) =>
       justifyContent: "center",
       gap: spacing.sm,
     },
-    singleEmoji: { fontSize: 34, lineHeight: 42 },
     footer: {
       paddingHorizontal: spacing.md,
       paddingTop: spacing.sm,

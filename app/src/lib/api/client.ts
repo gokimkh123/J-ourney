@@ -16,6 +16,10 @@ export type RequestOptions = {
   body?: unknown;
   query?: Record<string, QueryValue>;
   auth?: boolean;
+  /** 구성원 토큰 대신 카카오 로그인 토큰(usr_)을 Authorization으로 보낸다(로그인했을 때만). */
+  login?: boolean;
+  /** 이 토큰을 Authorization으로 보낸다(지금 파티가 아닌 저장된 파티의 구성원 토큰 등). login·auth보다 앞선다. */
+  token?: string;
   timeoutMs?: number;
 };
 
@@ -23,6 +27,8 @@ export type ApiClientOptions = {
   baseUrl: string;
   fetchFn: FetchLike;
   getToken?: () => string | null | undefined | Promise<string | null | undefined>;
+  /** 카카오 로그인 토큰(usr_). login: true인 요청에만 쓴다. */
+  getLoginToken?: () => string | null | undefined;
   /** 접근 키. 값이 있으면 모든 요청에 X-Access-Key 헤더로 보낸다(서버가 터널 요청에만 확인함). */
   getAccessKey?: () => string | undefined;
   timeoutMs?: number;
@@ -49,13 +55,14 @@ export function createApiClient({
   baseUrl,
   fetchFn,
   getToken,
+  getLoginToken,
   getAccessKey,
   timeoutMs = 10000,
 }: ApiClientOptions): ApiClient {
   async function request(
     method: string,
     path: string,
-    { body, query, auth = true, timeoutMs: requestTimeoutMs }: RequestOptions = {},
+    { body, query, auth = true, login = false, token: explicitToken, timeoutMs: requestTimeoutMs }: RequestOptions = {},
   ): Promise<unknown> {
     const limitMs = requestTimeoutMs ?? timeoutMs;
     const url = `${baseUrl}/api/v1${path}${buildQuery(query)}`;
@@ -67,7 +74,12 @@ export function createApiClient({
     }
     const accessKey = getAccessKey?.();
     if (accessKey) headers['X-Access-Key'] = accessKey;
-    if (auth && getToken) {
+    if (explicitToken !== undefined) {
+      headers.Authorization = `Bearer ${explicitToken}`;
+    } else if (login) {
+      const token = getLoginToken?.();
+      if (token) headers.Authorization = `Bearer ${token}`;
+    } else if (auth && getToken) {
       const token = await getToken();
       if (token) headers.Authorization = `Bearer ${token}`;
     }

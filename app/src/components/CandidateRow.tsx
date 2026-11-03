@@ -2,6 +2,7 @@ import { Pressable, StyleSheet, View } from "react-native";
 
 import { pressedOpacity, radius, spacing, useStyles, useTheme, type Theme, type Tone } from "../theme/index.ts";
 import AppText from "./AppText.tsx";
+import PlaceSticker, { type PlaceKind } from "./PlaceSticker.tsx";
 import Avatar from "./Avatar.tsx";
 import StatusPill from "./StatusPill.tsx";
 
@@ -25,6 +26,8 @@ export type CandidateRowProps = {
   name: string;
   /** 처음 제안한 구성원 색(지도 핀과 같은 색) */
   proposerColor: string;
+  /** 장소 스티커. 있으면 왼쪽에 스티커를 두고 제안자 색은 스티커 모서리의 작은 점으로 보인다(순서 번호는 안 보임) */
+  kind?: PlaceKind;
   /** 일정 순서 번호가 정해졌으면 표시 */
   order?: number;
   reactions: CandidateReaction[];
@@ -34,19 +37,27 @@ export type CandidateRowProps = {
 };
 
 /** B2 후보 보드 한 줄: 장소 이름 + AI별 반응 라벨 */
-export default function CandidateRow({ name, proposerColor, order, reactions, expanded = false, onPress }: CandidateRowProps) {
+export default function CandidateRow({ name, proposerColor, kind, order, reactions, expanded = false, onPress }: CandidateRowProps) {
   const { colors } = useTheme();
   const styles = useStyles(createStyles);
   const content = (
     <>
       <View style={styles.top}>
-        <View style={[styles.marker, { backgroundColor: proposerColor }]}>
-          {order !== undefined && (
-            <AppText variant="label" color={colors.onMember}>
-              {order}
-            </AppText>
-          )}
-        </View>
+        {kind === undefined ? (
+          <View style={[styles.marker, { backgroundColor: proposerColor }]}>
+            {order !== undefined && (
+              <AppText variant="label" color={colors.onMember}>
+                {order}
+              </AppText>
+            )}
+          </View>
+        ) : (
+          <View style={styles.sticker}>
+            <PlaceSticker kind={kind} size={32} />
+            {/* 제안자 색 점만(11/3: 순서 번호는 빼기) */}
+            <View style={[styles.dot, { backgroundColor: proposerColor, borderColor: colors.surfaceRaised }]} />
+          </View>
+        )}
         <AppText variant="smallStrong" style={styles.name} numberOfLines={1}>
           {name}
         </AppText>
@@ -65,7 +76,7 @@ export default function CandidateRow({ name, proposerColor, order, reactions, ex
         reactions
           .filter((r) => r.reason !== undefined && r.reason !== "")
           .map((r, i) => (
-            <AppText key={`reason-${i}`} variant="caption" tone="muted" style={styles.reason}>
+            <AppText key={`reason-${i}`} variant="caption" tone="muted" style={kind === undefined ? styles.reason : styles.reasonSticker}>
               {r.name}: {r.reason}
             </AppText>
           ))}
@@ -120,5 +131,22 @@ const createStyles = (t: Theme) => StyleSheet.create({
   },
   reason: {
     paddingLeft: 20 + spacing.sm,
+  },
+  reasonSticker: {
+    paddingLeft: 32 + spacing.sm,
+  },
+  sticker: {
+    width: 32,
+    height: 32,
+  },
+  // 제안자 색 점: 지도 핀과 같은 색, 줄 바탕색 테두리로 스티커와 떼어 보인다.
+  dot: {
+    position: "absolute",
+    right: -4,
+    bottom: -4,
+    width: 14,
+    height: 14,
+    borderRadius: radius.full,
+    borderWidth: 2,
   },
 });

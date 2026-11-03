@@ -13,7 +13,9 @@ export type MapArtPalette = {
   trunk: string;
   steam: string;
   bridge: string;
+  /** 경로 선을 두르는 테두리(지도 길과 섞이지 않게) */
   trailUnder: string;
+  /** 경로 선과 방향 꺾쇠 색. 낮엔 짙은 회색, 밤엔 밝은 색 */
   trail: string;
   /** 조용한 지도(일정)에서 장소 스티커를 두르는 테두리색 */
   calmCasing: string;
@@ -56,8 +58,8 @@ export const mapArtPalettes: Record<'light' | 'dark', MapArtPalette> = {
     trunk: '#C59A62',
     steam: '#FFFFFF',
     bridge: '#FFFFFF',
-    trailUnder: '#D9BC86',
-    trail: '#FFFFFF',
+    trailUnder: '#FFFFFF',
+    trail: '#453E35',
     calmCasing: '#FFFFFF',
     label: '#A88A5C',
     labelStroke: '#FFF7E6',
@@ -82,8 +84,8 @@ export const mapArtPalettes: Record<'light' | 'dark', MapArtPalette> = {
     trunk: '#5A4A3A',
     steam: '#8A8DB4',
     bridge: '#4A4F70',
-    trailUnder: '#18151F',
-    trail: '#FFE29A',
+    trailUnder: '#15161D',
+    trail: '#E2DED6',
     calmCasing: '#2B2840',
     label: '#BBAEDB',
     labelStroke: '#2B2840',

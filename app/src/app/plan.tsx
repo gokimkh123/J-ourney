@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useDeferredValue, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, View } from "react-native";
 
 import {
@@ -69,6 +69,9 @@ function MockPlanScreen() {
   const shownTab = useDeferredValue(tab);
   const planDay = plan.days.find((d) => `day-${d.day}` === shownTab) ?? plan.days[0];
   const summary = planSummary(plan);
+  // 장소를 누르면 지도가 그 장소로 확대된다("전체 보기"로 돌아감). 날을 바꾸면 처음 모습으로.
+  const [focus, setFocus] = useState<{ lat: number; lng: number } | null>(null);
+  useEffect(() => setFocus(null), [shownTab]);
 
   if (planDay === undefined) {
     return (
@@ -103,6 +106,9 @@ function MockPlanScreen() {
           kind: placeKindOf(item.category),
         }))}
         routes={[{ color: colors.accent, points }]}
+        focus={focus}
+        followLabel="전체 보기"
+        onFollow={() => setFocus(null)}
         height={MAP_HEIGHT}
         accessibilityLabel={`${planDay.day}일차 장소 ${planDay.items.length}곳 지도`}
       />
@@ -140,7 +146,10 @@ function MockPlanScreen() {
                 forMembers={row.forMembers}
                 moveLabel={row.moveLabel}
                 kind={placeKindOf(item?.category ?? "")}
-                onPress={() => router.push({ pathname: "/place/[id]", params: { id: row.itemId } })}
+                onPress={() => item !== undefined && setFocus({ lat: item.place.lat, lng: item.place.lng })}
+                pressHint="지도에서 이 장소를 크게 봅니다"
+                onMore={() => router.push({ pathname: "/place/[id]", params: { id: row.itemId } })}
+                moreLabel="자세히"
               />
             );
           })}
@@ -184,6 +193,8 @@ function LivePlanScreen() {
   const [draft, setDraft] = useState<PlanDraft | null>(null);
   // 줄을 끄는 동안에는 화면 스크롤을 멈춘다.
   const [dragging, setDragging] = useState(false);
+  // 장소를 누르면 지도가 그 장소로 확대된다("전체 보기"로 돌아감). 날을 바꾸면 처음 모습으로.
+  const [focus, setFocus] = useState<{ lat: number; lng: number } | null>(null);
 
   // 앱을 다시 켜서 이 폰에 정한 안이 없어도 서버 일정 표가 있으면 그것을 보여 준다.
   const route = board?.plan?.route ?? chosen?.route ?? null;
@@ -272,7 +283,12 @@ function LivePlanScreen() {
             struck={row.mark === "removed"}
             {...(row.mark !== null && { badge: BADGE[row.mark] })}
             {...(row.mark === "removed" && editable && { onMore: () => setDraft((d) => (d === null ? d : restoreRow(d, row.key))), moreLabel: "되돌리기" })}
-            {...(tappable(row.key) && { onPress: () => openSheet({ type: "row", key: row.key }), pressHint: "빼기·장소 변경을 고릅니다" })}
+            onPress={() => {
+              const at = row.stop ?? row.added;
+              if (at !== null) setFocus({ lat: at.lat, lng: at.lng });
+              if (tappable(row.key)) openSheet({ type: "row", key: row.key });
+            }}
+            pressHint={tappable(row.key) ? "지도에서 크게 보고 빼기·장소 변경을 고릅니다" : "지도에서 이 장소를 크게 봅니다"}
           />
         ),
       }))
@@ -288,7 +304,11 @@ function LivePlanScreen() {
             forMembers={row.forMembers}
             kind={row.kind}
             {...(row.moveLabel !== undefined && { moveLabel: row.moveLabel })}
-            {...(tappable(row.itemId) && { onPress: () => openSheet({ type: "row", key: row.itemId }), pressHint: "빼기·장소 변경을 고릅니다" })}
+            onPress={() => {
+              setFocus({ lat: row.lat, lng: row.lng });
+              if (tappable(row.itemId)) openSheet({ type: "row", key: row.itemId });
+            }}
+            pressHint={tappable(row.itemId) ? "지도에서 크게 보고 빼기·장소 변경을 고릅니다" : "지도에서 이 장소를 크게 봅니다"}
           />
         ),
       }));
@@ -317,6 +337,9 @@ function LivePlanScreen() {
           pins={rows.map((r, i) => ({ id: r.itemId, name: r.title, lat: r.lat, lng: r.lng, color: r.color, label: String(i + 1), kind: r.kind }))}
           routes={[{ color: colors.accent, points }]}
           height={MAP_HEIGHT}
+          focus={focus}
+          followLabel="전체 보기"
+          onFollow={() => setFocus(null)}
           accessibilityLabel={`${dayOfKey(day)}일차 장소 ${rows.length}곳 지도`}
         />
 
@@ -339,7 +362,15 @@ function LivePlanScreen() {
             )}
           </View>
 
-          <SegmentedTabs options={tabs} value={day} onChange={setTab} accessibilityLabel="날짜 고르기" />
+          <SegmentedTabs
+            options={tabs}
+            value={day}
+            onChange={(next) => {
+              setTab(next);
+              setFocus(null);
+            }}
+            accessibilityLabel="날짜 고르기"
+          />
           <View style={styles.dateRow}>
             <AppText variant="caption" tone="muted">
               {date !== undefined ? dateLabel(date) : ""}

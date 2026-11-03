@@ -1,3 +1,5 @@
+import type { PlaceKind } from '../../components/PlaceSticker.tsx';
+import { candidateKindOf } from '../plan/placeKind.ts';
 import { durationLabel } from '../ui/format.ts';
 import { latestRoute } from './reducer.ts';
 import type { AgentInfo, MeetingState, TimelineItem } from './types.ts';
@@ -200,6 +202,8 @@ export function candidateRows(state: MeetingState): {
   placeId: string;
   name: string;
   proposerColor: string;
+  /** 장소 스티커(v2.4 후보 kind·category로 고름) */
+  kind: PlaceKind;
   order?: number;
   reactions: { name: string; color: string; kind: 'like' | 'warn' | 'block'; reason: string }[];
 }[] {
@@ -215,6 +219,7 @@ export function candidateRows(state: MeetingState): {
       placeId: c.placeId,
       name: c.name,
       proposerColor: pinColor(state, c.proposedBy),
+      kind: candidateKindOf(c.kind, c.category),
       reactions,
     };
     const label = pins.find((p) => p.id === c.placeId)?.label;

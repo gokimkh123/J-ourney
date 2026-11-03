@@ -38,6 +38,7 @@ import { usePinStage } from "../components/map/usePinStage.ts";
 import { keepAgentsVisible, type Position } from "../lib/meeting/agentPositions.ts";
 import { chatItems, myAgentIdOf } from "../lib/meeting/chatView.ts";
 import { sheetLevelFor } from "../lib/meeting/sheetStage.ts";
+import { meetingSpeed } from "../lib/meeting/speedStore.ts";
 import { latestRoute } from "../lib/meeting/reducer.ts";
 import type { RouteDay } from "../lib/meeting/types.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
@@ -63,7 +64,8 @@ import { duration, easing, radius, spacing, useStyles, useTheme, type Theme } fr
 
 type Tab = "ai" | "board" | "talk";
 
-// 시트는 세 단계다. 접힘(손잡이·제목 줄만), 중간(처음 모습, 지도를 넓게 보여 줌), 펼침(목록을 길게 봄).
+// 시트는 네 단계다. 접힘(손잡이·제목 줄만), 중간(처음 모습, 지도를 넓게 보여 줌), 펼침(목록을 길게 봄),
+// 끝까지(11/3: 지도를 거의 덮고 목록만 봄, 위에 끄는 띠만큼만 지도가 남는다).
 const SHEET_COLLAPSED = 96;
 const SHEET_MID_RATIO = 0.34;
 const SHEET_FULL_RATIO = 0.62;
@@ -73,6 +75,9 @@ const SHEET_DRAG_EXTRA = 28;
 const SHEET_OVERLAP = 22; // 시트 둥근 윗부분이 지도를 덮는 높이
 
 /** B2 회의 진행: 지도 위 AI들이 움직이고, 아래 시트에서 조사·후보·대화를 본다. 지금은 가짜 회의(부산)를 재생한다. */
+// 대화 탭에서 이만큼(px) 안쪽까지 내리면 맨 아래로 보고 새 말 따라가기를 다시 켠다.
+const NEAR_BOTTOM = 60;
+
 export default function MeetingScreen() {
   const styles = useStyles(createStyles);
   const { colors } = useTheme();
@@ -119,13 +124,19 @@ export default function MeetingScreen() {
   const { view: choice } = useServerChoice(play.state, live && play.state.agreement !== null, me, isHost, hostMemberId, colors.accent);
   const [tab, setTab] = useState<Tab>("ai");
   const sheetScroll = useRef<ScrollView>(null);
+  // 대화 탭이 새 말을 따라 내려갈지. 손가락으로 끌어 위를 볼 때만 끄고, 맨 아래로 돌아오면 다시 켠다.
+  // (자동으로 내려가는 애니메이션 중의 스크롤 이벤트로는 바꾸지 않는다. 말이 빨리 오면 따라가기를 놓쳤다)
   const atBottom = useRef(true);
+  const dragging = useRef(false);
+  const flinging = useRef(false);
   const [unseen, setUnseen] = useState(0);
   const [openCandidate, setOpenCandidate] = useState<string | null>(null);
   const [level, setLevel] = useState(LEVEL_MID);
   const [areaHeight, setAreaHeight] = useState(0);
   const onAreaLayout = (e: LayoutChangeEvent) => setAreaHeight(Math.round(e.nativeEvent.layout.height));
   const reduceMotion = useReducedMotion();
+  // 2배속 켜짐(아래쪽 빈 화면 return보다 앞에 둔다: 훅 개수가 렌더마다 같아야 한다)
+  const speed = useSyncExternalStore(meetingSpeed.subscribe, meetingSpeed.get, meetingSpeed.get);
   // 시트 높이는 값으로 두고 부드럽게 바꾼다. 지도는 항상 전체 크기로 깔려 있어서 시트가 움직여도 그림은 그대로다.
   // 높이는 레이아웃 값이라 기본 Animated(네이티브 드라이버 없이)로 움직인다.
   const sheetHeight = useRef(new Animated.Value(0)).current;
@@ -140,6 +151,8 @@ export default function MeetingScreen() {
   const agentMemory = useRef(new Map<string, Position>());
   const midHeight = Math.round(areaHeight * SHEET_MID_RATIO);
   const fullHeight = Math.round(areaHeight * SHEET_FULL_RATIO);
+  const topHeight = Math.max(fullHeight, areaHeight - SHEET_DRAG_EXTRA);
+  const heights = [SHEET_COLLAPSED, midHeight, fullHeight, topHeight];
   useEffect(() => {
     const id = sheetHeight.addListener(({ value }) => {
       sheetNow.current = value;
@@ -180,7 +193,7 @@ export default function MeetingScreen() {
 
   useEffect(() => {
     if (areaHeight <= 0) return;
-    const target = [SHEET_COLLAPSED, midHeight, fullHeight][level];
+    const target = heights[level] ?? midHeight;
     const velocity = releaseVelocity.current;
     releaseVelocity.current = 0;
     const gentle = stageMove.current;
@@ -193,7 +206,7 @@ export default function MeetingScreen() {
     }
     animateSheetTo(target, velocity, gentle);
     return () => sheetAnim.current?.stop();
-  }, [areaHeight, level, midHeight, fullHeight, animateSheetTo, sheetHeight]);
+  }, [areaHeight, level, midHeight, fullHeight, topHeight, animateSheetTo, sheetHeight]);
 
   const onSheetDragStart = useCallback(() => {
     sheetAnim.current?.stop();
@@ -202,22 +215,21 @@ export default function MeetingScreen() {
   const onSheetDragMove = useCallback(
     (dy: number) => {
       // 엄지를 따라 위아래로 움직이되, 접힌 높이와 펼친 높이를 벗어나지 않는다.
-      sheetHeight.setValue(clampSheetHeight(dragBase.current - dy, SHEET_COLLAPSED, fullHeight));
+      sheetHeight.setValue(clampSheetHeight(dragBase.current - dy, SHEET_COLLAPSED, topHeight));
     },
-    [fullHeight, sheetHeight],
+    [topHeight, sheetHeight],
   );
   const onSheetDragEnd = useCallback(
     (_dy: number, vy: number) => {
-      const heights = [SHEET_COLLAPSED, midHeight, fullHeight];
       const next = settleLevel({ height: sheetNow.current, levels: heights, vy });
       // 위로 올리면 높이가 커지므로 손가락 속도(아래가 +)의 부호를 뒤집어 넘긴다. px/ms → px/ms 그대로.
-      if (next === level) animateSheetTo(heights[next], -vy);
+      if (next === level) animateSheetTo(heights[next] ?? midHeight, -vy);
       else {
         releaseVelocity.current = -vy;
         setLevel(next);
       }
     },
-    [animateSheetTo, fullHeight, level, midHeight],
+    [animateSheetTo, heights, level, midHeight],
   );
 
   // 회의가 시작되면 대화 탭으로 옮겨 준다(그 뒤로는 사용자가 고른 탭을 그대로 둔다).
@@ -250,10 +262,17 @@ export default function MeetingScreen() {
     seenTalk.current = talkCount;
     if (added > 0 && tab === "talk" && !atBottom.current) setUnseen((n) => n + added);
   }, [talkCount, tab]);
-  const onSheetScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+  const isBottom = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
-    atBottom.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 24;
+    return contentOffset.y + layoutMeasurement.height >= contentSize.height - NEAR_BOTTOM;
+  };
+  const followIfBottom = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    atBottom.current = isBottom(e);
     if (atBottom.current) setUnseen(0);
+  };
+  const onSheetScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (dragging.current) followIfBottom(e);
+    else if (isBottom(e)) setUnseen(0);
   };
   const toNewest = () => {
     atBottom.current = true;
@@ -334,6 +353,18 @@ export default function MeetingScreen() {
           </AppText>
         </Pressable>
       )}
+      <Pressable
+        onPress={() => meetingSpeed.set(speed === 2 ? 1 : 2)}
+        accessibilityRole="button"
+        accessibilityLabel="2배속"
+        accessibilityState={{ selected: speed === 2 }}
+        hitSlop={8}
+        style={[styles.speed, speed === 2 && styles.speedOn]}
+      >
+        <AppText variant="smallStrong" tone={speed === 2 ? "default" : "muted"} style={speed === 2 ? styles.speedOnText : undefined}>
+          2배속
+        </AppText>
+      </Pressable>
       <PlayButton playing={playing} onPress={playing ? play.pause : play.resume} />
     </View>
   );
@@ -367,8 +398,11 @@ export default function MeetingScreen() {
               routes={route.map((day) => ({ color: colors.accent, points: day.stops }))}
               bubble={currentBubble(state)}
               height={areaHeight}
-              viewHeight={areaHeight - [SHEET_COLLAPSED, midHeight, fullHeight][level] + SHEET_OVERLAP}
+              viewHeight={areaHeight - (heights[level] ?? midHeight) + SHEET_OVERLAP}
               accessibilityLabel={phaseLabel(state)}
+              // 사람이 지도를 끌거나 확대하면 자동 카메라가 멈추고 이 버튼이 뜬다. 회의 단계가 바뀌면(사람 확인·A·B 고르기 등) 저절로 다시 따라간다.
+              followLabel="회의 따라보기"
+              followKey={state.phase}
             />
             <Animated.View style={[styles.sheetWrap, { height: sheetWrapHeight }]}>
             <BottomSheet
@@ -461,8 +495,25 @@ export default function MeetingScreen() {
                 contentContainerStyle={styles.sheetContent}
                 onScroll={onSheetScroll}
                 scrollEventThrottle={64}
+                onScrollBeginDrag={() => {
+                  dragging.current = true;
+                }}
+                onScrollEndDrag={(e) => {
+                  // 손을 뗀 자리로 정하고, 이어지는 관성 스크롤 끝에서 한 번 더 본다.
+                  followIfBottom(e);
+                  dragging.current = false;
+                  flinging.current = true;
+                }}
+                onMomentumScrollEnd={(e) => {
+                  if (flinging.current) followIfBottom(e);
+                  flinging.current = false;
+                }}
                 onContentSizeChange={() => {
                   if (tab === "talk" && atBottom.current) sheetScroll.current?.scrollToEnd({ animated: true });
+                }}
+                onLayout={() => {
+                  // 시트 높이가 바뀌어도 맨 아래를 보던 중이면 그대로 맨 아래
+                  if (tab === "talk" && atBottom.current) sheetScroll.current?.scrollToEnd({ animated: false });
                 }}
               >
                 <SegmentedTabs<Tab>
@@ -500,6 +551,7 @@ export default function MeetingScreen() {
                           key={c.placeId}
                           name={c.name}
                           proposerColor={c.proposerColor}
+                          kind={c.kind}
                           order={c.order}
                           reactions={c.reactions}
                           expanded={openCandidate === c.placeId}
@@ -586,6 +638,18 @@ const createStyles = (t: Theme) =>
     list: { gap: spacing.sm },
     actions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
     textAction: { minHeight: 48, paddingHorizontal: spacing.sm, alignItems: "center", justifyContent: "center" },
+    // 2배속 켜고 끄기: 꺼지면 테두리만, 켜지면 연한 메인 색(고르기 칩과 같은 모양)
+    speed: {
+      minHeight: 32,
+      paddingHorizontal: spacing.sm + spacing.xs,
+      borderRadius: radius.full,
+      borderWidth: 1,
+      borderColor: t.colors.border,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    speedOn: { backgroundColor: t.colors.accentSoft, borderColor: t.colors.accent },
+    speedOnText: { color: t.colors.accentSoftText },
     emptyAction: { alignSelf: "center" },
     empty: {
       flex: 1,

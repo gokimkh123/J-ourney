@@ -34,7 +34,8 @@ export type PartyHomeStageProps = {
   confetti: boolean;
   onExit: () => void;
   onSettings: () => void;
-  onMore: () => void;
+  /** ⋯ 파티 메뉴. 없으면 버튼을 그리지 않는다(방장: 파티 없애기는 홈 맨 아래 버튼) */
+  onMore?: () => void;
 };
 
 const HEIGHT = 340;
@@ -108,11 +109,13 @@ export default function PartyHomeStage(p: PartyHomeStageProps) {
           <Circle cx={16} cy={7} r={2} stroke={colors.text} strokeWidth={1.8} fill="none" />
           <Circle cx={10} cy={17} r={2} stroke={colors.text} strokeWidth={1.8} fill="none" />
         </FloatButton>
-        <FloatButton label="파티 메뉴" onPress={p.onMore} size={20}>
-          <Circle cx={5.5} cy={12} r={1.8} fill={colors.text} />
-          <Circle cx={12} cy={12} r={1.8} fill={colors.text} />
-          <Circle cx={18.5} cy={12} r={1.8} fill={colors.text} />
-        </FloatButton>
+        {p.onMore !== undefined && (
+          <FloatButton label="파티 메뉴" onPress={p.onMore} size={20}>
+            <Circle cx={5.5} cy={12} r={1.8} fill={colors.text} />
+            <Circle cx={12} cy={12} r={1.8} fill={colors.text} />
+            <Circle cx={18.5} cy={12} r={1.8} fill={colors.text} />
+          </FloatButton>
+        )}
       </View>
 
       {p.bubble !== null && speaker !== -1 && width > 0 && (

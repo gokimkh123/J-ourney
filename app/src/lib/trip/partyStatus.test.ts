@@ -22,6 +22,6 @@ test('준비 단계: 성향 검사를 안 한 사람이 있으면 몇 명 끝났
 
 test('회의·투표·확정 단계는 서버 상태를 그대로 말로 바꾼다', () => {
   assert.equal(partyStatus(info('meeting', [true]))!.label, 'AI 회의 중');
-  assert.equal(partyStatus(info('voting', [true]))!.label, '확정 투표 중');
+  assert.equal(partyStatus(info('voting', [true]))!.label, '회의 끝');
   assert.deepEqual(partyStatus(info('confirmed', [true])), { label: '일정 확정', tone: 'success' });
 });

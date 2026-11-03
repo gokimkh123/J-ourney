@@ -7,6 +7,7 @@ import { AppText, Banner, Button, Card, SegmentedTabs } from "../components/inde
 import { api } from "../lib/api/index.ts";
 import { ApiError } from "../lib/api/errors.ts";
 import { checkHealth } from "../lib/api/health.ts";
+import { loginGate, signOut, useLogin } from "../lib/auth/kakaoLogin.ts";
 import { config } from "../lib/config/index.ts";
 import { leaveDeps } from "../lib/session/leaveDeps.ts";
 import { deleteParty, leaveParty } from "../lib/session/leaveParty.ts";
@@ -17,6 +18,31 @@ import { useThemeMode } from "../lib/settings/useThemeMode.ts";
 import type { ThemeMode } from "../lib/settings/themeMode.ts";
 import { describeError } from "../lib/ui/format.ts";
 import { spacing, useStyles, type Theme } from "../theme/index.ts";
+
+/** 카카오 계정: 로그인 전이면 로그인 화면을 다시 띄우고, 로그인했으면 로그아웃(들어가 있는 파티는 그대로) */
+function KakaoAccount() {
+  const me = useLogin();
+  const [busy, setBusy] = useState(false);
+  const onSignOut = async () => {
+    setBusy(true);
+    await signOut();
+    setBusy(false);
+  };
+  return (
+    <Card title="카카오 계정">
+      <AppText variant="small" tone="muted">
+        {me === null
+          ? "로그인하면 앱을 지우거나 폰을 바꿔도 같은 카카오 계정으로 내 여행을 되찾을 수 있어요."
+          : "카카오로 로그인했어요. 로그아웃해도 지금 폰에 있는 파티는 그대로예요."}
+      </AppText>
+      {me === null ? (
+        <Button label="카카오로 로그인" variant="secondary" onPress={loginGate.reopen} block />
+      ) : (
+        <Button label="로그아웃" variant="secondary" onPress={() => void onSignOut()} loading={busy} block />
+      )}
+    </Card>
+  );
+}
 
 const MODE_OPTIONS: { key: ThemeMode; label: string }[] = [
   { key: "system", label: "시스템" },
@@ -108,6 +134,8 @@ export default function SettingsScreen() {
           시스템을 고르면 휴대폰의 다크 모드 설정을 따라가요.
         </AppText>
       </Card>
+
+      <KakaoAccount />
 
       <Card title="내 정보">
         {me === null ? (

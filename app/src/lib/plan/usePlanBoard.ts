@@ -4,6 +4,7 @@ import { endpoints } from '../api/index.ts';
 import { parseEditOptions, parseEditResults } from './board.ts';
 import type { EditOptions, EditResult } from './board.ts';
 import { createPlanBoardSync } from './boardSync.ts';
+import { noteBoardStatus } from './decidedStore.ts';
 import type { BoardSync, BoardSyncState, RunResult } from './boardSync.ts';
 import type { PlanEdit, PlanVoteDecision } from './planEdit.ts';
 
@@ -85,5 +86,10 @@ export function usePlanBoard(enabled: boolean, tripId: string | null, eventSeq: 
   const clearNotice = useCallback(() => ref.current?.clearNotice(), []);
 
   const state = ref.current?.getState() ?? IDLE;
+  // A·B가 정해졌으면 회의 탭을 빼도록 적어 둔다(decidedStore).
+  const boardStatus = state.board?.status ?? null;
+  useEffect(() => {
+    if (tripId !== null && boardStatus !== null) noteBoardStatus(tripId, boardStatus);
+  }, [tripId, boardStatus]);
   return { ...state, choose, closeChoice, edit, requestConfirm, vote, loadOptions, clearNotice };
 }

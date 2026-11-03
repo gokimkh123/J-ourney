@@ -28,6 +28,11 @@ export function projectGeo(p: GeoPoint): ArtPoint {
   return { x, y };
 }
 
+/** 그림 좌표 → 위도·경도(projectGeo의 반대). 지도 타일을 고를 때 쓴다. */
+export function unprojectGeo(p: ArtPoint): GeoPoint {
+  return { lat: NORTH - p.y / PX_PER_LAT, lng: WEST + p.x / PX_PER_LNG };
+}
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
 const finitePoints = (points: ArtPoint[]) => points.filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
 
@@ -168,24 +173,63 @@ function keepInView(cam: ArtPoint, p: ArtPoint, view: ArtViewport): ArtPoint {
   };
 }
 
-/** 점들을 Catmull-Rom 곡선으로 잇는 SVG path. 점이 2개 미만이면 빈 문자열. */
-export function smoothPath(points: ArtPoint[]): string {
+type Cubic = { p1: ArtPoint; c1: ArtPoint; c2: ArtPoint; p2: ArtPoint };
+
+/** Catmull-Rom 곡선 구간들(점 n개 → 구간 n-1개) */
+function smoothCubics(points: ArtPoint[]): Cubic[] {
   const pts = finitePoints(points);
-  if (pts.length < 2) return '';
-  const f = (n: number) => Math.round(n * 100) / 100;
-  let d = `M${f(pts[0].x)} ${f(pts[0].y)}`;
+  const cubics: Cubic[] = [];
   for (let i = 0; i < pts.length - 1; i++) {
     const p0 = pts[i - 1] ?? pts[i];
     const p1 = pts[i];
     const p2 = pts[i + 1];
     const p3 = pts[i + 2] ?? p2;
-    const c1x = p1.x + (p2.x - p0.x) / 6;
-    const c1y = p1.y + (p2.y - p0.y) / 6;
-    const c2x = p2.x - (p3.x - p1.x) / 6;
-    const c2y = p2.y - (p3.y - p1.y) / 6;
-    d += `C${f(c1x)} ${f(c1y)} ${f(c2x)} ${f(c2y)} ${f(p2.x)} ${f(p2.y)}`;
+    cubics.push({
+      p1,
+      c1: { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 },
+      c2: { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 },
+      p2,
+    });
   }
+  return cubics;
+}
+
+/** 점들을 Catmull-Rom 곡선으로 잇는 SVG path. 점이 2개 미만이면 빈 문자열. */
+export function smoothPath(points: ArtPoint[]): string {
+  const cubics = smoothCubics(points);
+  if (cubics.length === 0) return '';
+  const f = (n: number) => Math.round(n * 100) / 100;
+  let d = `M${f(cubics[0]!.p1.x)} ${f(cubics[0]!.p1.y)}`;
+  for (const { c1, c2, p2 } of cubics) d += `C${f(c1.x)} ${f(c1.y)} ${f(c2.x)} ${f(c2.y)} ${f(p2.x)} ${f(p2.y)}`;
   return d;
+}
+
+/** 꺾쇠를 놓아 볼 자리(구간 안 비율). 가운데가 가려지면 양옆으로 조금씩 옮긴다. */
+const ARROW_TS = [0.5, 0.38, 0.62, 0.28, 0.72];
+
+/**
+ * smoothPath 각 구간에 놓을 방향 꺾쇠의 자리와 가는 방향(도, 0°=오른쪽, 시계 방향).
+ * 가운데부터 놓아 보고 isClear가 false면(장소 스티커에 가려지면) 옆자리로, 다 가려지면 그 구간은 뺀다.
+ * length는 구간 양 끝의 직선 거리(짧은 구간은 꺾쇠를 빼려고).
+ */
+export function pathMidArrows(
+  points: ArtPoint[],
+  isClear: (p: ArtPoint) => boolean = () => true,
+): { x: number; y: number; deg: number; length: number }[] {
+  const arrows: { x: number; y: number; deg: number; length: number }[] = [];
+  for (const { p1, c1, c2, p2 } of smoothCubics(points)) {
+    for (const t of ARROW_TS) {
+      const u = 1 - t;
+      const at = (a: number, b: number, c: number, d: number) => u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d;
+      const tan = (a: number, b: number, c: number, d: number) => u * u * (b - a) + 2 * u * t * (c - b) + t * t * (d - c);
+      const p = { x: at(p1.x, c1.x, c2.x, p2.x), y: at(p1.y, c1.y, c2.y, p2.y) };
+      if (!isClear(p)) continue;
+      const deg = (Math.atan2(tan(p1.y, c1.y, c2.y, p2.y), tan(p1.x, c1.x, c2.x, p2.x)) * 180) / Math.PI;
+      arrows.push({ ...p, deg, length: Math.hypot(p2.x - p1.x, p2.y - p1.y) });
+      break;
+    }
+  }
+  return arrows;
 }
 
 /** #RRGGBB의 밝기를 k배로. 집·깃발 테두리 색에 쓴다. 잘못된 값은 그대로. */

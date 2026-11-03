@@ -436,10 +436,10 @@ function TripHome() {
     );
   };
 
-  // ⋯ 메뉴: 파티원은 파티 나가기, 방장은 파티 없애기(방장은 나갈 수 없음, v2.4)
+  // ⋯ 메뉴: 파티원은 파티 나가기. 방장은 나갈 수 없고(v2.4) 파티 없애기는 홈 맨 아래 버튼이라 메뉴가 없다.
   const onMore = () => {
     Alert.alert(info?.trip.title ?? "이 파티", undefined, [
-      isHost ? { text: "파티 없애기", style: "destructive", onPress: onDelete } : { text: "파티 나가기", style: "destructive", onPress: onLeave },
+      { text: "파티 나가기", style: "destructive", onPress: onLeave },
       { text: "취소", style: "cancel" },
     ]);
   };
@@ -460,7 +460,7 @@ function TripHome() {
         confetti={view.step === "result"}
         onExit={() => void partyActions.exit()}
         onSettings={() => router.push("/settings")}
-        onMore={onMore}
+        {...(!isHost && { onMore })}
       />
       <View style={styles.homeBody}>
         <NextAction
@@ -480,6 +480,10 @@ function TripHome() {
         {pollError !== null && <Banner tone="warning" text={`구성원 정보를 새로 받지 못했어요. ${pollError}`} actionLabel="다시 시도" onAction={() => void refresh()} />}
 
         {preparing && <InviteRow code={code} copied={copied} onCopy={() => void onCopy()} onShare={() => void onShare()} />}
+
+        {isHost && (
+          <Button label="파티 없애기" variant="ghost" size="sm" onPress={onDelete} accessibilityHint="모든 구성원의 휴대폰에서 이 파티가 사라져요" style={styles.deleteParty} />
+        )}
       </View>
     </ScrollView>
   );
@@ -561,9 +565,6 @@ function NextAction(p: NextActionProps) {
         <AppText variant="title" accessibilityRole="header">
           AI가 일정을 제안했어요
         </AppText>
-        <AppText variant="small" tone="muted">
-          확정은 함께 가는 사람들이 해요.
-        </AppText>
         <View style={[styles.actionRow, styles.resultActions]}>
           <Button label="합의안 보기" onPress={p.onAgreement} style={styles.half} />
           <Button label="일정 보기" variant="secondary" onPress={p.onPlan} style={styles.half} />
@@ -622,6 +623,8 @@ function NextAction(p: NextActionProps) {
 
 const createStyles = (t: Theme) =>
   StyleSheet.create({
+    // 방장 파티 없애기: 홈 맨 아래 작은 글자 버튼(되돌릴 수 없어 눈에 덜 띄게)
+    deleteParty: { alignSelf: "center", marginTop: spacing.md },
     screen: { flex: 1, backgroundColor: t.colors.background },
     scroll: { paddingBottom: spacing.xl },
     body: { padding: spacing.md, gap: spacing.lg },

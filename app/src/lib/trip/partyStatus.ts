@@ -11,8 +11,9 @@ export function partyStatus(info: InviteInfo | undefined): PartyStatus | null {
   switch (info.trip.status) {
     case 'meeting':
       return { label: 'AI 회의 중', tone: 'accent' };
+    // 서버는 회의가 끝나면(A·B 고르기부터) voting으로 두고, 확정 투표를 쓰지 않아(11/1 결정) 그대로 남는다.
     case 'voting':
-      return { label: '확정 투표 중', tone: 'warning' };
+      return { label: '회의 끝', tone: 'success' };
     case 'confirmed':
       return { label: '일정 확정', tone: 'success' };
     case 'preparing': {

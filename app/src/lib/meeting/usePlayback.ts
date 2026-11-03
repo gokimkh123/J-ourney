@@ -1,10 +1,11 @@
 import { useEffect, useReducer, useRef } from 'react';
 
 import { busanEvents } from './fixtures/busan.ts';
-import { eventsUntilFirstAgreed } from './player.ts';
+import { eventDelayMs, eventsUntilFirstAgreed } from './player.ts';
 import { createPlayback } from './playback.ts';
 import type { Playback, PlaybackStatus } from './playback.ts';
 import { initialMeetingState } from './reducer.ts';
+import { atSpeed } from './speedStore.ts';
 import type { MeetingState } from './types.ts';
 
 const EVENTS = eventsUntilFirstAgreed(busanEvents);
@@ -41,7 +42,13 @@ export function useMeetingPlayback(enabled: boolean, restartKey: unknown): Meeti
 
   useEffect(() => {
     if (!enabled) return;
-    const playback = createPlayback({ events: EVENTS, clock, serverAgreementDelayMs: MOCK_SERVER_AGREEMENT_MS });
+    const playback = createPlayback({
+      events: EVENTS,
+      clock,
+      // 2배속이면 쉬는 시간을 반으로(바꾼 뒤 다음 이벤트부터)
+      delayFor: (event, state) => atSpeed(eventDelayMs(event, state)),
+      serverAgreementDelayMs: MOCK_SERVER_AGREEMENT_MS,
+    });
     ref.current = playback;
     const off = playback.subscribe(rerender);
     playback.start();

@@ -166,6 +166,7 @@ export function useServerChoice(
         sub: row.forMembers.length > 0 ? `${row.category} · ${row.forMembers.map((m) => m.name).join(', ')}` : row.category,
         ...(row.moveLabel !== undefined && { moveLabel: row.moveLabel }),
         color: row.color,
+        kind: row.kind,
       })),
       confirm: () => {
         if (plan !== undefined) choose(plan.planId);

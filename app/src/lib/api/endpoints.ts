@@ -6,6 +6,9 @@ import { parseSavedConditions, toServerConditions } from '../trip/serverConditio
 import type { SavedConditions } from '../trip/serverConditions.ts';
 import type { ConditionsBody } from '../trip/conditions.ts';
 import type { PlanEdit, PlanVoteDecision } from '../plan/planEdit.ts';
+import { parseMyTripIds, toLogin, type Login } from '../auth/login.ts';
+import { parseCommunityList, parseCommunityPlace, parseReview } from '../community/community.ts';
+import type { CommunityList, CommunityPlaceDetail, CommunityReview } from '../community/community.ts';
 import {
   parseInviteInfo,
   parsePersona,
@@ -29,6 +32,22 @@ export type Endpoints = {
   leaveTrip(tripId: string): Promise<void>;
   /** 파티 없애기(v2.4, 방장·되돌릴 수 없음). 회의 도는 중 409 */
   deleteTrip(tripId: string): Promise<void>;
+  /** 카카오 로그인(v2.5): 카카오 액세스 토큰 → 우리 로그인 토큰. 앱은 브라우저 로그인을 쓰므로 가짜 데이터 모드에서만 부른다 */
+  loginKakao(accessToken: string): Promise<Login>;
+  /** 로그아웃: 이 기기의 로그인 토큰만 지운다 */
+  logout(): Promise<void>;
+  /** 이 계정으로 만들거나 참여한 여행 id(최근 것부터) */
+  getMyTripIds(): Promise<string[]>;
+  /** 내 여행의 구성원 토큰 다시 받기. 예전 토큰과 그 기기의 연결은 끊긴다 */
+  reissueTripToken(tripId: string): Promise<SessionResponse>;
+  /** 커뮤니티 장소 목록(v2.4, 인증 불필요). regionCode 없으면 전국 */
+  getCommunityPlaces(regionCode?: string): Promise<CommunityList>;
+  /** 장소 하나 + 후기. 구성원 토큰을 주면 내 후기에 mine */
+  getCommunityPlace(placeId: string, memberToken?: string): Promise<CommunityPlaceDetail>;
+  /** 후기 쓰기·고치기(장소마다 1개, 구성원 토큰 필요) */
+  putCommunityReview(placeId: string, rating: number, text: string, memberToken: string): Promise<CommunityReview>;
+  /** 내 후기 지우기(없어도 204) */
+  deleteCommunityReview(placeId: string, memberToken: string): Promise<void>;
   getQuestions(): Promise<Question[]>;
   submitPersona(answers: SubmitAnswer[]): Promise<Persona>;
   getPersona(): Promise<Persona>;
@@ -65,7 +84,8 @@ export type Endpoints = {
 export function createEndpoints(client: ApiClient): Endpoints {
   return {
     async createTrip(title, nickname, demoMode) {
-      const json = await client.post('/trips', { title, nickname, demoMode }, { auth: false });
+      // 로그인했으면 로그인 토큰을 같이 보내 그 자리를 계정에 묶는다(v2.5).
+      const json = await client.post('/trips', { title, nickname, demoMode }, { auth: false, login: true });
       return parseSessionResponse(json);
     },
     async getInvite(code) {
@@ -76,7 +96,7 @@ export function createEndpoints(client: ApiClient): Endpoints {
       const json = await client.post(
         `/invites/${encodeURIComponent(code)}/join`,
         { nickname },
-        { auth: false },
+        { auth: false, login: true },
       );
       return parseSessionResponse(json);
     },
@@ -88,6 +108,37 @@ export function createEndpoints(client: ApiClient): Endpoints {
     },
     async deleteTrip(tripId) {
       await client.request('DELETE', `/trips/${encodeURIComponent(tripId)}`);
+    },
+    async loginKakao(accessToken) {
+      const json = (await client.post('/auth/kakao', { accessToken }, { auth: false })) as { token?: unknown; expiresAt?: unknown } | null;
+      const login = toLogin(json);
+      if (login === null) throw new Error('로그인 응답 모양이 올바르지 않습니다.');
+      return login;
+    },
+    async logout() {
+      await client.request('DELETE', '/auth/session', { login: true });
+    },
+    async getMyTripIds() {
+      return parseMyTripIds(await client.get('/users/me/trips', { login: true }));
+    },
+    async reissueTripToken(tripId) {
+      return parseSessionResponse(await client.post(`/users/me/trips/${encodeURIComponent(tripId)}/token`, undefined, { login: true }));
+    },
+    async getCommunityPlaces(regionCode) {
+      return parseCommunityList(await client.get('/community/places', { auth: false, query: { regionCode } }));
+    },
+    async getCommunityPlace(placeId, memberToken) {
+      const path = `/community/places/${encodeURIComponent(placeId)}`;
+      return parseCommunityPlace(await client.get(path, memberToken === undefined ? { auth: false } : { token: memberToken }));
+    },
+    async putCommunityReview(placeId, rating, text, memberToken) {
+      const json = (await client.put(`/community/places/${encodeURIComponent(placeId)}/review`, { rating, text }, { token: memberToken })) as { review?: unknown } | null;
+      const review = parseReview(json?.review);
+      if (review === null) throw new Error('후기 응답 모양이 올바르지 않습니다.');
+      return review;
+    },
+    async deleteCommunityReview(placeId, memberToken) {
+      await client.request('DELETE', `/community/places/${encodeURIComponent(placeId)}/review`, { token: memberToken });
     },
     async getQuestions() {
       return parseQuestions(await client.get('/persona/questions', { auth: false }));

@@ -6,7 +6,7 @@ import { pressedOpacity, useStyles, useTheme, type Theme } from "../theme/index.
 import AppText from "./AppText.tsx";
 import Avatar, { type AvatarChip } from "./Avatar.tsx";
 
-export type TabBarIcon = "home" | "chat" | "plan" | "me" | "settings";
+export type TabBarIcon = "home" | "chat" | "plan" | "me" | "settings" | "community";
 
 export type TabBarItem = {
   key: string;
@@ -49,6 +49,14 @@ function IconShape({ icon, color, width }: { icon: Exclude<TabBarIcon, "me">; co
         <>
           <Rect {...common} x={4} y={5.5} width={16} height={14.5} rx={2.5} />
           <Path {...common} d="M8 3.5v4M16 3.5v4M4 10h16" />
+        </>
+      );
+    case "community":
+      // 위치 핀 안에 별: AI가 많이 고른 곳과 후기
+      return (
+        <>
+          <Path {...common} d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z" />
+          <Path {...common} d="M12 7.2l.9 1.9 2 .3-1.5 1.4.4 2-1.8-1-1.8 1 .4-2-1.5-1.4 2-.3z" />
         </>
       );
     case "settings":

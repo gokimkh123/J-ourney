@@ -5,10 +5,12 @@ import AppText from "./AppText.tsx";
 import Avatar from "./Avatar.tsx";
 import Banner from "./Banner.tsx";
 import Button from "./Button.tsx";
+import PlaceSticker, { type PlaceKind } from "./PlaceSticker.tsx";
 import PlanCards, { type PlanCard } from "./PlanCards.tsx";
 import SegmentedTabs from "./SegmentedTabs.tsx";
 
-export type PlanChoiceStop = { itemId: string; number: number; title: string; sub: string; moveLabel?: string; color: string };
+/** kind가 있으면 왼쪽에 번호 대신 장소 스티커(11/3), 구성원 색은 스티커 모서리 점으로 */
+export type PlanChoiceStop = { itemId: string; number: number; title: string; sub: string; moveLabel?: string; color: string; kind?: PlaceKind };
 export type PlanChoicePerson = { memberId: string; name: string; color: string; done: boolean };
 
 export type PlanChoiceProps = {
@@ -67,11 +69,18 @@ export default function PlanChoice({ cards, selected, onSelect, people, dayTabs,
           {stops.map((stop, i) => (
             <View key={stop.itemId} style={styles.stop} accessible accessibilityLabel={`${stop.number}번 ${stop.title}, ${stop.sub}${stop.moveLabel ? `, 다음까지 ${stop.moveLabel}` : ""}`}>
               <View style={styles.rail}>
-                <View style={[styles.num, { borderColor: stop.color }]}>
-                  <AppText variant="label" tone="onAccent">
-                    {stop.number}
-                  </AppText>
-                </View>
+                {stop.kind === undefined ? (
+                  <View style={[styles.num, { borderColor: stop.color }]}>
+                    <AppText variant="label" tone="onAccent">
+                      {stop.number}
+                    </AppText>
+                  </View>
+                ) : (
+                  <View>
+                    <PlaceSticker kind={stop.kind} size={STICKER} />
+                    <View style={[styles.dot, { backgroundColor: stop.color }]} />
+                  </View>
+                )}
                 {i < stops.length - 1 && <View style={styles.line} />}
               </View>
               <View style={styles.stopBody}>
@@ -102,6 +111,8 @@ export default function PlanChoice({ cards, selected, onSelect, people, dayTabs,
   );
 }
 
+const STICKER = 32;
+
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     // 시트 본문은 높이가 정해져 있지 않아서 flex: 1이면 폰(Yoga)에서 높이 0으로 접힌다. 남는 만큼만 차지하며 줄어들게 한다.
@@ -124,7 +135,7 @@ const createStyles = (t: Theme) =>
     faceWaiting: { opacity: 0.35 },
     whoText: { flex: 1, color: t.colors.textBody },
     stop: { flexDirection: "row", gap: spacing.sm + spacing.xs },
-    rail: { width: 28, alignItems: "center" },
+    rail: { width: STICKER, alignItems: "center" },
     // 숫자는 흰 글자가 구성원 색 위에서 4.5:1이 안 나와서 어두운 원에 담고, 구성원 색은 테두리로 둔다.
     num: {
       width: 28,
@@ -135,6 +146,7 @@ const createStyles = (t: Theme) =>
       alignItems: "center",
       justifyContent: "center",
     },
+    dot: { position: "absolute", right: -3, bottom: -3, width: 14, height: 14, borderRadius: radius.full, borderWidth: 2, borderColor: t.colors.surface },
     line: { width: 2, flex: 1, backgroundColor: t.colors.border, marginVertical: 2 },
     stopBody: { flex: 1, paddingBottom: spacing.sm + spacing.xs, minHeight: 52 },
     footer: { gap: spacing.xs, paddingTop: spacing.sm },

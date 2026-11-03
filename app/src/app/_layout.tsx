@@ -3,18 +3,27 @@ import { Tabs, usePathname, useRouter } from "expo-router";
 import type { BottomTabBarProps } from "expo-router/js-tabs";
 import { StatusBar } from "expo-status-bar";
 import * as SystemUI from "expo-system-ui";
+import * as WebBrowser from "expo-web-browser";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Appearance, BackHandler, Pressable, View } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { useReducedMotion } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
 
+import LoginScreen from "../components/LoginScreen.tsx";
 import TabBar, { type TabBarIcon, type TabBarItem } from "../components/TabBar.tsx";
 import { CharacterSvg } from "../components/character/Bean.tsx";
 import type { CharacterProps } from "../components/character/props.ts";
 import TopBar from "../components/TopBar.tsx";
 import Wordmark from "../components/Wordmark.tsx";
+import { login } from "../lib/auth/index.ts";
+import { loginGate, restoreAfterLogin, signInWithKakao, useLoginGateOpen } from "../lib/auth/kakaoLogin.ts";
+import { loginErrorText } from "../lib/auth/login.ts";
 import { config } from "../lib/config/index.ts";
 import { meetingResultStore } from "../lib/meeting/resultStore.ts";
 import { meetingImmersive } from "../lib/meeting/stageStore.ts";
+import { chosenPlanStore } from "../lib/plan/chosenPlan.ts";
+import { decidedTrips } from "../lib/plan/decidedStore.ts";
 import { profile } from "../lib/persona/profileStore.ts";
 import { parties, partyActions, session } from "../lib/session/index.ts";
 import { usePartyInfos, useRefreshParty } from "../lib/session/usePartyInfo.ts";
@@ -22,11 +31,18 @@ import { useSession } from "../lib/session/useSession.ts";
 import { themeMode } from "../lib/settings/index.ts";
 import { useThemeMode } from "../lib/settings/useThemeMode.ts";
 import { conditionsStore } from "../lib/trip/conditionsStore.ts";
+import { tripTabs } from "../lib/trip/tabVisibility.ts";
+import { startedMeetingStore } from "../lib/meeting/startedMeeting.ts";
 import { keepPerTrip } from "../lib/trip/tripState.ts";
 import { ThemeProvider, memberColors, outline, pastel, useTheme } from "../theme/index.ts";
+import { describeError } from "../lib/ui/format.ts";
+
+// 웹에서 카카오 로그인 창(팝업)이 앱 주소로 돌아오면 결과를 연 창에 넘기고 닫는다. 앱에서는 아무 일도 안 한다.
+WebBrowser.maybeCompleteAuthSession();
 
 /** 탭바에 나오는 화면과 아이콘. 순서가 탭 순서다. 설정은 탭이 아니라 위쪽 줄의 버튼으로 연다. */
 const TAB_ICONS: Record<string, TabBarIcon> = {
+  community: "community",
   index: "home",
   persona: "me",
   meeting: "chat",
@@ -35,6 +51,8 @@ const TAB_ICONS: Record<string, TabBarIcon> = {
 
 /** 파티(여행) 안에서만 보이는 탭. 초기 화면에는 홈·내 캐릭터만 있다. */
 const TRIP_ONLY = new Set(["meeting", "plan"]);
+/** 파티 밖(메인)에서만 보이는 탭. 파티 밖 탭은 커뮤니티 · 홈 · 내 캐릭터(홈이 가운데) */
+const OUTSIDE_ONLY = new Set(["community"]);
 
 /** 홈에서 이어지는 숨은 화면(설문·초대 링크)이 열려 있을 때는 홈 탭이 켜진 것으로 본다. */
 const HOME_FLOW = new Set(["invite/[code]", "conditions"]);
@@ -44,9 +62,31 @@ const PERSONA_FLOW = new Set(["questionnaire"]);
 const MEETING_FLOW = new Set(["agreement"]);
 /** 일정 탭에서 이어지는 숨은 화면(장소 근거 보기)은 일정 탭이 켜진 것으로 본다. */
 const PLAN_FLOW = new Set(["place/[id]"]);
+/** 커뮤니티에서 이어지는 숨은 화면(장소 하나)은 커뮤니티 탭이 켜진 것으로 본다. */
+const COMMUNITY_FLOW = new Set(["community/[id]"]);
 
 function AppTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
-  const hasTrip = useSession() !== null;
+  const me = useSession();
+  const hasTrip = me !== null;
+  // A·B가 정해지면 회의 탭을 뺀다(실서버: 일정 표 상태, 가짜 서버: 이 폰에서 고른 안). 지금 보고 있는 동안은 남긴다.
+  const decided = useSyncExternalStore(decidedTrips.subscribe, decidedTrips.get, decidedTrips.get);
+  const chosen = useSyncExternalStore(chosenPlanStore.subscribe, chosenPlanStore.get, chosenPlanStore.get);
+  const meetingDone = me !== null && (config.useMock ? chosen !== null : decided[me.tripId] === true);
+  // 회의 탭은 회의가 시작된 뒤부터, 일정 탭은 회의가 끝난 뒤부터 보인다(11/3 결정).
+  const conditions = useSyncExternalStore(conditionsStore.subscribe, conditionsStore.get, conditionsStore.get);
+  const result = useSyncExternalStore(meetingResultStore.subscribe, meetingResultStore.get, meetingResultStore.get);
+  const started = useSyncExternalStore(startedMeetingStore.subscribe, startedMeetingStore.get, startedMeetingStore.get);
+  const infos = usePartyInfos();
+  const tabs =
+    me === null
+      ? { meeting: false, plan: false }
+      : tripTabs({
+          tripStatus: infos[me.tripId]?.trip.status,
+          hasConditions: conditions !== null,
+          startedHere: started[me.tripId] !== undefined,
+          hasResult: result !== null,
+          decided: meetingDone,
+        });
   // 회의가 재생되는 동안은 탭바를 숨겨 지도를 넓게 쓴다. 일시정지하거나 끝나면 다시 나온다.
   const immersive = useSyncExternalStore(meetingImmersive.subscribe, meetingImmersive.get, meetingImmersive.get);
   const focusedName = state.routes[state.index]?.name;
@@ -58,13 +98,18 @@ function AppTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
     if (options === undefined || icon === undefined) continue;
     // expo-router는 href: null 옵션을 지우고 display:none으로 바꾸므로, 보일 탭은 여기서 직접 정한다.
     if (TRIP_ONLY.has(route.name) && !hasTrip) continue;
+    if (OUTSIDE_ONLY.has(route.name) && hasTrip) continue;
+    // 지금 보고 있는 탭(과 그 탭에서 이어진 화면)은 숨기지 않는다.
+    if (route.name === "meeting" && !tabs.meeting && focusedName !== "meeting" && !MEETING_FLOW.has(focusedName ?? "")) continue;
+    if (route.name === "plan" && !tabs.plan && focusedName !== "plan" && !PLAN_FLOW.has(focusedName ?? "")) continue;
 
     const focused =
       focusedName === route.name ||
       (route.name === "index" && focusedName !== undefined && HOME_FLOW.has(focusedName)) ||
       (route.name === "persona" && focusedName !== undefined && PERSONA_FLOW.has(focusedName)) ||
       (route.name === "meeting" && focusedName !== undefined && MEETING_FLOW.has(focusedName)) ||
-      (route.name === "plan" && focusedName !== undefined && PLAN_FLOW.has(focusedName));
+      (route.name === "plan" && focusedName !== undefined && PLAN_FLOW.has(focusedName)) ||
+      (route.name === "community" && focusedName !== undefined && COMMUNITY_FLOW.has(focusedName));
     items.push({
       key: route.key,
       label: typeof options.title === "string" ? options.title : route.name,
@@ -156,6 +201,7 @@ function usePartyBack() {
 
 function ThemedTabs() {
   const { scheme, colors } = useTheme();
+  const reduceMotion = useReducedMotion();
   const hasTrip = useSession() !== null;
   const tripTab = (title: string) => ({ title, href: hasTrip ? undefined : null, header: () => <AppTopBar /> });
   usePartyBack();
@@ -172,6 +218,8 @@ function ThemedTabs() {
       <NavigationBar style={scheme === "dark" ? "light" : "dark"} />
       <Tabs
         tabBar={(props) => <AppTabBar {...props} />}
+        // 커뮤니티를 탭 맨 앞에 두지만 처음 여는 화면은 홈이다(로그인 화면을 지나 탭이 새로 그려질 때도).
+        initialRouteName="index"
         // 폰의 뒤로 가기는 방금 있던 화면으로 돌아간다(기본값은 어디서든 첫 탭인 홈으로 간다).
         backBehavior="history"
         screenOptions={{
@@ -180,8 +228,11 @@ function ThemedTabs() {
           headerTitleStyle: { fontWeight: "700" },
           headerShadowVisible: false,
           sceneStyle: { backgroundColor: colors.background },
+          // 탭을 옮길 때 살짝 흐려졌다 나타난다(11/3 결정: 밀림 대신 페이드). 동작 줄이기를 켠 사람은 바로 바뀐다.
+          animation: reduceMotion ? "none" : "fade",
         }}
       >
+        <Tabs.Screen name="community" options={{ title: "커뮤니티", href: hasTrip ? null : undefined, header: () => <PageTopBar title="커뮤니티" /> }} />
         <Tabs.Screen name="index" options={{ title: "홈", header: () => <HomeTopBar /> }} />
         <Tabs.Screen name="meeting" options={tripTab("회의")} />
         <Tabs.Screen name="plan" options={tripTab("일정")} />
@@ -192,6 +243,8 @@ function ThemedTabs() {
         <Tabs.Screen name="place/[id]" options={{ href: null, title: "장소", headerLeft: () => <BackButton /> }} />
         <Tabs.Screen name="questionnaire" options={{ href: null, headerShown: false }} />
         <Tabs.Screen name="invite/[code]" options={{ href: null }} />
+        <Tabs.Screen name="auth" options={{ href: null, headerShown: false }} />
+        <Tabs.Screen name="community/[id]" options={{ href: null, headerShown: false }} />
       </Tabs>
     </>
   );
@@ -230,7 +283,7 @@ export default function RootLayout() {
     let alive = true;
     // 저장된 화면 모드와 세션을 먼저 읽어 둔다. 하나가 실패해도 앱은 뜬다. 준비 화면은 다 읽어도 SPLASH_MIN_MS까지는 보여 준다.
     const shown = new Promise((resolve) => setTimeout(resolve, SPLASH_MIN_MS));
-    void Promise.allSettled([themeMode.load(), loadSession(), shown]).then(() => {
+    void Promise.allSettled([themeMode.load(), loadSession(), login.load(), shown]).then(() => {
       if (alive) setReady(true);
     });
     return () => {
@@ -238,11 +291,33 @@ export default function RootLayout() {
     };
   }, []);
 
+  // 손가락 동작(지도 끌기·확대)을 앱 맨 바깥에서 받는다. 지도 안에만 두면 일정 화면의 스크롤이 손가락을 먼저 가져가 지도가 안 움직였다.
   return (
-    <ThemeProvider mode={mode}>
-      {ready ? <ThemedTabs /> : <Splash />}
-    </ThemeProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider mode={mode}>
+        {ready ? <AfterSplash /> : <Splash />}
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
+}
+
+/** 준비 화면 다음: 로그인하지 않았고 이번 실행에서 아직 넘기지 않았으면 로그인 화면, 아니면 탭 화면 */
+function AfterSplash() {
+  return useLoginGateOpen() ? <LoginScreen onKakao={kakaoThenRestore} onSkip={loginGate.pass} /> : <ThemedTabs />;
+}
+
+/** 카카오로 시작하기: 로그인하고 내 여행을 되찾은 뒤 홈으로. 실패하면 화면에 보일 문장, 성공·취소면 null */
+async function kakaoThenRestore(): Promise<string | null> {
+  try {
+    const result = await signInWithKakao();
+    if (result.kind === "cancelled") return null;
+    if (result.kind === "error") return loginErrorText(result.code);
+    await restoreAfterLogin();
+    loginGate.pass();
+    return null;
+  } catch (error) {
+    return describeError(error);
+  }
 }
 
 /** 저장된 설정을 읽는 동안 보이는 준비 화면: 메인 색 바탕에 앱 이름과 민수 한 명. */

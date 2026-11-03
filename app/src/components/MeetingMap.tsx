@@ -1,15 +1,20 @@
+import { Image } from "expo-image";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Animated as RNAnimated, Easing as RNEasing, StyleSheet, View, type LayoutChangeEvent } from "react-native";
+import { PixelRatio, Pressable, StyleSheet, View, type LayoutChangeEvent } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   Easing,
   FadeIn,
   FadeOut,
   ZoomIn,
+  cancelAnimation,
+  runOnJS,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
   withRepeat,
   withTiming,
+  type SharedValue,
 } from "react-native-reanimated";
 import Svg, { G, Line, Path, Polygon, Polyline, Rect } from "react-native-svg";
 
@@ -17,11 +22,24 @@ import { duration, easing, lightColors, mapArtPalettes, radius, spacing, useStyl
 import AppText from "./AppText.tsx";
 import Avatar, { fullAvatarSize, type AvatarChip } from "./Avatar.tsx";
 import PlaceSticker, { type PlaceKind } from "./PlaceSticker.tsx";
-import RegionArt from "./map/RegionArt.tsx";
 import Flag, { FLAG_FOOT, FLAG_H, FLAG_W } from "./map/Flag.tsx";
 import { spreadPoints } from "./map/spreadPoints.ts";
 import { walkMs } from "./map/walk.ts";
-import { ART_H, ART_W, VIEW_W, cameraXY, computeArtViewport, projectGeo, smoothPath, type ArtPoint, type ArtViewport } from "./map/regionArt.ts";
+import { ART_H, ART_W, VIEW_W, cameraXY, computeArtViewport, pathMidArrows, projectGeo, smoothPath, type ArtPoint } from "./map/regionArt.ts";
+import {
+  TILE_CREDIT,
+  TILE_HEADERS,
+  TILE_URL,
+  cameraOn,
+  clampCamera,
+  destinationRect,
+  scaleLimits,
+  tilesFor,
+  viewRect,
+  zoomAround,
+  zoomForScale,
+  type MapCamera,
+} from "./map/tiles.ts";
 
 export type LatLng = { lat: number; lng: number };
 export type MapBounds = { north: number; south: number; east: number; west: number };
@@ -60,15 +78,23 @@ export type MeetingMapProps = {
   bubble?: { agentId: string; text: string } | null;
   /** 목적지 해안선 등 간단한 땅 모양(선택). 없으면 격자만 그린다. */
   land?: LatLng[][];
-  /** 'busan'이면 격자 대신 부산과 둘레 지역을 그린 그림 지도(낮·밤)와 깃발 핀을 쓴다. 이때 bounds·land는 무시한다. */
+  /** 'busan'이면 격자 대신 오픈스트리트맵 지도(부산 둘레)와 깃발 핀을 쓰고, 끌기·확대가 된다. 이때 bounds·land는 무시한다. */
   art?: "busan";
   /** 그림 지도에서 'full'은 한 화면 폭으로 보여 주며 카메라가 핀을 따라 옮겨 다니고(회의 진행), 'fit'은 핀·경로가 들어오게 확대한다(일정 위쪽 작은 지도) */
   artView?: "full" | "fit";
   height?: number;
   /** 지도 그림을 어디에 맞출지 계산할 때 쓰는 높이. 생략하면 height. 아래를 시트가 가릴 때 보이는 부분 높이를 준다. */
   viewHeight?: number;
-  /** 일정 지도처럼 조용하게: 집·나무를 빼고, 핀은 장소 스티커로 서로 겹치지 않게 벌리고, 길은 그 스티커를 순서대로 잇는다. 그림 지도(art)에서만 쓴다. */
+  /** 일정 지도처럼 조용하게: 핀은 장소 스티커로 서로 겹치지 않게 벌리고, 길은 그 스티커를 순서대로 잇는다. 그림 지도(art)에서만 쓴다. */
   calm?: boolean;
+  /** 이 장소로 확대해 보여 준다(일정에서 장소를 눌렀을 때). 같은 위치의 스티커는 크게. */
+  focus?: LatLng | null;
+  /** 사람이 지도를 끌거나 확대했을 때(또는 focus가 있을 때) 지도 위에 띄우는 되돌리기 버튼 글자. 없으면 버튼이 없다. */
+  followLabel?: string;
+  /** 되돌리기 버튼을 눌렀을 때(자동 카메라는 지도가 다시 켠다. focus를 지우는 건 부르는 쪽) */
+  onFollow?: () => void;
+  /** 바뀌면 사람이 옮긴 것을 잊고 자동 카메라로 돌아간다(회의 단계가 바뀔 때) */
+  followKey?: unknown;
   accessibilityLabel?: string;
 };
 
@@ -126,14 +152,38 @@ const CAMERA_MS = 900;
 
 const travelEasing = Easing.bezier(easing.travel[0], easing.travel[1], easing.travel[2], easing.travel[3]);
 
+/**
+ * 지도 위 한 점(그림 좌표 x, y)에 붙는 표시. 지도를 확대·축소해도 표시는 같은 크기로 보이게 배율의 반대로 줄인다.
+ * 크기 0인 상자를 그 점에 두고 줄이므로, 안의 내용은 그 점을 기준으로 화면 px 그대로 놓으면 된다.
+ */
+function Anchor({ x, y, scale, children }: { x: number; y: number; scale: SharedValue<number>; children: React.ReactNode }) {
+  const style = useAnimatedStyle(() => ({ transform: [{ translateX: x }, { translateY: y }, { scale: 1 / scale.value }] }));
+  return (
+    <Animated.View style={[anchorStyles.anchor, style]} pointerEvents="box-none">
+      {children}
+    </Animated.View>
+  );
+}
+
+const anchorStyles = StyleSheet.create({
+  anchor: { position: "absolute", left: 0, top: 0, width: 0, height: 0, overflow: "visible" },
+});
+
 /** 말하는 캐릭터에게 붙는 말풍선 내용. 캐릭터 안에 들어가서 걷는 동안에도 머리 위에 붙어 다닌다. */
 type AgentBubble = { speaker: string; text: string; mapWidth: number; leftInset: number; topInset: number };
 
-/** x, y는 캐릭터 발 위치(바닥 가운데). */
+/**
+ * 지도 위 캐릭터. x, y는 발 위치(그림 좌표). 걸어서 옮겨 가고, 지도 배율과 상관없이 같은 크기로 보인다.
+ * dx는 같은 곳에 모인 캐릭터를 벌리는 화면 px, screen은 지금 화면에서의 발 위치(말풍선이 가장자리를 넘지 않게 쓴다).
+ */
 function AgentMarker({
   agent,
   x,
   y,
+  dx,
+  pxScale,
+  scale,
+  screen,
   active,
   dim = false,
   bubble,
@@ -141,6 +191,10 @@ function AgentMarker({
   agent: MapAgent;
   x: number;
   y: number;
+  dx: number;
+  pxScale: number;
+  scale: SharedValue<number>;
+  screen: { x: number; y: number };
   active: boolean;
   dim?: boolean;
   bubble?: AgentBubble;
@@ -164,13 +218,14 @@ function AgentMarker({
 
   const last = useRef({ x, y });
   useEffect(() => {
-    const dist = Math.hypot(x - last.current.x, y - last.current.y);
+    // 걷는 시간은 화면에서 걷는 거리로 정한다.
+    const dist = Math.hypot(x - last.current.x, y - last.current.y) * pxScale;
     last.current = { x, y };
     const walk = walkMs(dist, agent.speed);
     const cfg = { duration: reduce ? 0 : walk, easing: travelEasing };
     tx.value = withTiming(x, cfg);
     ty.value = withTiming(y, cfg);
-  }, [x, y, reduce, tx, ty, agent.speed]);
+  }, [x, y, reduce, tx, ty, agent.speed, pxScale]);
 
   useEffect(() => {
     if (agent.searching && !reduce) {
@@ -182,7 +237,7 @@ function AgentMarker({
   }, [agent.searching, reduce, pulse]);
 
   const moveStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: tx.value - AGENT.width / 2 }, { translateY: ty.value - AGENT.height }],
+    transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: 1 / scale.value }],
   }));
   const bobStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: -bob.value * (active ? 5 : 3) }],
@@ -193,14 +248,14 @@ function AgentMarker({
   }));
 
   return (
-    <Animated.View style={[styles.agent, moveStyle]} pointerEvents="none">
-      <Animated.View style={[styles.ring, { borderColor: agent.color }, ringStyle]} />
-      <Animated.View style={[bobStyle, dim && { opacity: DIM_OPACITY }]}>
-        <Avatar color={agent.color} name={agent.name} chips={agent.chips} size="sm" variant="full" active={active} />
-      </Animated.View>
-      {bubble !== undefined && (
-        <SpeechBubble key={bubble.text} {...bubble} x={x} y={y} />
-      )}
+    <Animated.View style={[anchorStyles.anchor, moveStyle]} pointerEvents="none">
+      <View style={[styles.agent, { left: dx - AGENT.width / 2, top: -AGENT.height }]}>
+        <Animated.View style={[styles.ring, { borderColor: agent.color }, ringStyle]} />
+        <Animated.View style={[bobStyle, dim && { opacity: DIM_OPACITY }]}>
+          <Avatar color={agent.color} name={agent.name} chips={agent.chips} size="sm" variant="full" active={active} />
+        </Animated.View>
+        {bubble !== undefined && <SpeechBubble key={bubble.text} {...bubble} x={screen.x + dx} y={screen.y} />}
+      </View>
     </Animated.View>
   );
 }
@@ -236,12 +291,13 @@ function Pin({ pin, x, y }: { pin: MapPin; x: number; y: number }) {
   );
 }
 
-function FlagPin({ pin, x, y, palette }: { pin: MapPin; x: number; y: number; palette: (typeof mapArtPalettes)["light"] }) {
+/** 회의 지도의 깃발 핀. (0, 0)이 깃대 발(Anchor 안에서 화면 px로 놓는다). */
+function FlagPin({ pin, palette }: { pin: MapPin; palette: (typeof mapArtPalettes)["light"] }) {
   return (
     <Animated.View
       entering={ZoomIn.duration(duration.slow)}
       exiting={FadeOut.duration(duration.normal)}
-      style={{ position: "absolute", width: FLAG_W, height: FLAG_H, left: x - FLAG_FOOT.x, top: y - FLAG_FOOT.y, transformOrigin: "9% 95%" }}
+      style={{ position: "absolute", width: FLAG_W, height: FLAG_H, left: -FLAG_FOOT.x, top: -FLAG_FOOT.y, transformOrigin: "9% 95%" }}
       accessible={pin.name !== undefined}
       accessibilityLabel={pin.name}
     >
@@ -258,12 +314,18 @@ const STICKER_BOX = STICKER + STICKER_RING * 2;
 const STICKER_GAP = STICKER_BOX + 6;
 const TAG = 18;
 
-function StickerPin({ pin, x, y, palette }: { pin: MapPin; x: number; y: number; palette: (typeof mapArtPalettes)["light"] }) {
+/** (0, 0)이 스티커 가운데(Anchor 안에서 화면 px로 놓는다). 고른 장소면 조금 크게. */
+function StickerPin({ pin, palette, selected = false }: { pin: MapPin; palette: (typeof mapArtPalettes)["light"]; selected?: boolean }) {
+  const { colors } = useTheme();
   return (
     <Animated.View
       entering={ZoomIn.duration(duration.slow)}
       exiting={FadeOut.duration(duration.normal)}
-      style={[pinStyles.sticker, { left: x - STICKER_BOX / 2, top: y - STICKER_BOX / 2, backgroundColor: palette.calmCasing }]}
+      style={[
+        pinStyles.sticker,
+        { left: -STICKER_BOX / 2, top: -STICKER_BOX / 2, backgroundColor: selected ? colors.accent : palette.calmCasing },
+        selected && { transform: [{ scale: 1.3 }] },
+      ]}
       accessible={pin.name !== undefined}
       accessibilityLabel={pin.name}
     >
@@ -302,78 +364,114 @@ const pinStyles = StyleSheet.create({
   tagText: { fontSize: 10, lineHeight: 12, fontWeight: "800" },
 });
 
+/** 지도 판(world)이 그림 둘레로 더 가진 폭(그림 px). 끌 수 있는 범위 끝까지 가도 타일이 이 안에 든다. */
+const WORLD_PAD = 4000;
+/** 확대한 장소로 갈 때의 배율(골목이 보이는 정도) */
+const FOCUS_SCALE = 10;
+// 오픈스트리트맵 타일 위에 앱 바탕색을 반투명하게 덮어 색·글자를 눌러 준다(11/2 시안: 밝게 45%, 어둡게 60%).
+const VEIL = { light: "rgba(251, 248, 243, 0.45)", dark: "rgba(21, 22, 29, 0.6)" } as const;
+/** 경로 방향 꺾쇠(›) 모양(화면 px)과, 꺾쇠를 넣을 가장 짧은 구간(화면 px) */
+const CHEVRON = "M-4 -4.5L2 0L-4 4.5";
+const ARROW_MIN_LEG = 48;
+/** 장소 표시와 이만큼(화면 px) 가까우면 꺾쇠가 가려진 것으로 본다 */
+const ARROW_PIN_CLEAR = 28;
+
 /**
- * B2 회의 진행 지도. 단순 SVG 바탕 위에 핀(후보)·아바타(AI)·말풍선을 겹친다.
- * 위치는 위도·경도로 받고 bounds 안에서 화면 좌표로 바꾼다.
+ * B2 회의 진행 지도·일정 지도. art가 있으면 오픈스트리트맵 타일 위에 핀(후보)·캐릭터(AI)·말풍선·길을 겹치고,
+ * 손가락으로 끌고 두 손가락으로 확대·축소할 수 있다(끌 수 있는 범위는 tiles.ts clampCamera).
+ * art가 없으면 bounds 안의 단순 격자 지도.
  */
-export default function MeetingMap({
-  bounds,
+export default function MeetingMap(props: MeetingMapProps) {
+  return props.art === undefined ? <GridMap {...props} /> : <TileMap {...props} />;
+}
+
+function TileMap({
   pins = [],
   agents = [],
   routes = [],
   bubble = null,
-  land = [],
-  art,
   artView = "full",
   height = 300,
   viewHeight,
   calm = false,
+  focus = null,
+  followLabel,
+  onFollow,
+  followKey,
   accessibilityLabel = "회의 지도",
 }: MeetingMapProps) {
   const { colors, scheme } = useTheme();
   const palette = mapArtPalettes[scheme];
   const styles = useStyles(createStyles);
+  const reduceMotion = useReducedMotion();
   const [width, setWidth] = useState(0);
   const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
+  const viewH = viewHeight ?? height;
 
-  // 그림 지도: 그림 좌표로 바꾼 뒤, 보여 줄 사각형(viewport)으로 화면 좌표를 만든다.
-  // 'full'(회의 진행)은 그림 전체를 한 판으로 깔고 "카메라"만 부드럽게 옮긴다(위아래·좌우). 그래서 핀·캐릭터가 바뀌어도 지도가 튀지 않는다.
-  // 'fit'(일정 위쪽 작은 지도)은 점들이 들어오게 확대해 그대로 보여 준다.
-  const camera = art === "busan" && artView === "full";
+  // 'full'(회의 진행)은 화면 폭에 맞춘 배율로 카메라가 말하는 캐릭터·핀을 따라 옮겨 다니고,
+  // 'fit'(일정 위쪽 작은 지도)은 점들이 들어오게 확대한다. 일정에서 장소를 고르면(focus) 그 장소로 확대한다.
+  const follow = artView === "full";
   const camTarget = useRef<ArtPoint | null>(null);
   const artScale = width > 0 ? width / VIEW_W : 1;
-  const artH = Math.max(ART_H, height / artScale);
-  const agentPoints = useMemo(() => (art !== "busan" ? [] : agents.map((a) => projectGeo(a))), [art, agents]);
+  const agentPoints = useMemo(() => agents.map((a) => projectGeo(a)), [agents]);
   const artPoints = useMemo(
-    () =>
-      art !== "busan"
-        ? []
-        : [
-            ...pins.map((p) => projectGeo(p)),
-            ...agents.map((a) => projectGeo(a)),
-            ...routes.flatMap((r) => r.points.map((p) => projectGeo(p))),
-          ],
-    [art, pins, agents, routes],
+    () => [...pins.map((p) => projectGeo(p)), ...agents.map((a) => projectGeo(a)), ...routes.flatMap((r) => r.points.map((p) => projectGeo(p)))],
+    [pins, agents, routes],
   );
   // 말하는 캐릭터는 말풍선까지 늘 화면 안에 둔다(다 못 담을 때 가운데만 잡으면 가장자리 캐릭터가 빠진다).
   const speaker = useMemo(() => {
-    const a = art === "busan" && bubble != null ? agents.find((x) => x.id === bubble.agentId) : undefined;
+    const a = bubble != null ? agents.find((x) => x.id === bubble.agentId) : undefined;
     return a === undefined ? null : projectGeo(a);
-  }, [art, agents, bubble]);
-  let cam: ArtPoint = { x: 0, y: 0 };
-  if (camera && width > 0) {
-    cam = cameraXY(camTarget.current, artPoints, width, viewHeight ?? height, agentPoints, speaker);
-    camTarget.current = cam;
-  }
-  const camX = cam.x;
-  const camY = cam.y;
-  const viewport = useMemo<ArtViewport | null>(() => {
-    if (art !== "busan" || width <= 0) return null;
-    if (camera) return { x: 0, y: 0, w: ART_W, h: artH, scale: artScale };
-    return computeArtViewport(artPoints, width, viewHeight ?? height, artView);
-  }, [art, camera, artView, width, height, viewHeight, artH, artScale, artPoints]);
+  }, [agents, bubble]);
 
-  const camValue = useRef(new RNAnimated.ValueXY({ x: 0, y: 0 })).current;
-  const camShown = useRef(false);
-  const camRun = useRef<RNAnimated.CompositeAnimation | null>(null);
+  let target: MapCamera | null = null;
+  if (width > 0) {
+    if (focus !== null) {
+      target = cameraOn(projectGeo(focus), FOCUS_SCALE, width, viewH);
+    } else if (follow) {
+      const cam = cameraXY(camTarget.current, artPoints, width, viewH, agentPoints, speaker);
+      camTarget.current = cam;
+      target = { x: cam.x, y: cam.y, scale: artScale };
+    } else {
+      const v = computeArtViewport(artPoints, width, viewH, "fit");
+      target = { x: v.x, y: v.y, scale: v.scale };
+    }
+  }
+
+  // 카메라: 화면 왼쪽 위의 그림 좌표와 배율. 움직이는 값(camX·camY·camS)과, 멈춘 뒤의 값(settled: 타일 고르기·말풍선 자리에 씀)을 둔다.
+  const camX = useSharedValue(0);
+  const camY = useSharedValue(0);
+  const camS = useSharedValue(1);
+  const [settled, setSettled] = useState<MapCamera>({ x: 0, y: 0, scale: 1 });
+  // 사람이 끌거나 확대했으면 자동 카메라를 멈춘다. "따라보기"(또는 followKey가 바뀜)로 다시 켠다.
+  const [userMoved, setUserMoved] = useState(false);
+  useEffect(() => setUserMoved(false), [followKey, focus?.lat, focus?.lng]);
+
+  const shown = useRef(false);
   const camStartedAt = useRef(0);
-  const reduceMotion = useReducedMotion();
+  const tx = target?.x ?? 0;
+  const ty = target?.y ?? 0;
+  const ts = target?.scale ?? 1;
   useEffect(() => {
-    if (!camera || width <= 0) return;
-    const to = { x: -camX * artScale, y: -camY * artScale };
-    if (!camShown.current || reduceMotion) {
-      camShown.current = true;
-      camValue.setValue(to);
+    if (target === null || userMoved) return;
+    const to = clampCamera({ x: tx, y: ty, scale: ts }, width, viewH);
+    const go = (ms: number) => {
+      const cfg = { duration: ms, easing: Easing.inOut(Easing.cubic) };
+      camX.value = withTiming(to.x, cfg);
+      camY.value = withTiming(to.y, cfg);
+      camS.value = withTiming(to.scale, cfg);
+      setSettled(to);
+    };
+    if (!shown.current || reduceMotion) {
+      shown.current = true;
+      camX.value = to.x;
+      camY.value = to.y;
+      camS.value = to.scale;
+      setSettled(to);
+      return;
+    }
+    if (!follow) {
+      go(CAMERA_MS);
       return;
     }
     // 앞 이동을 끝까지 마친 뒤 그때의 가장 새 목표로 간다. 회의 초반처럼 목표가 연달아 바뀔 때
@@ -381,92 +479,228 @@ export default function MeetingMap({
     const wait = Math.max(0, camStartedAt.current + CAMERA_MS - Date.now());
     const timer = setTimeout(() => {
       camStartedAt.current = Date.now();
-      camRun.current = RNAnimated.timing(camValue, {
-        toValue: to,
-        duration: CAMERA_MS,
-        easing: RNEasing.inOut(RNEasing.cubic),
-        useNativeDriver: true,
-      });
-      camRun.current.start();
+      go(CAMERA_MS);
     }, wait);
     return () => clearTimeout(timer);
-  }, [camera, camX, camY, artScale, width, camValue, reduceMotion]);
-  useEffect(() => () => camRun.current?.stop(), []);
+  }, [tx, ty, ts, width, viewH, userMoved, follow, reduceMotion, camX, camY, camS, target === null]);
 
-  const at = (p: LatLng) => {
-    if (viewport) {
-      const q = projectGeo(p);
-      return { x: (q.x - viewport.x) * viewport.scale, y: (q.y - viewport.y) * viewport.scale };
-    }
-    return project(p, bounds, width, height);
-  };
-  // 같은 곳에 모인 캐릭터는 겹치지 않게 좌우로 벌려 세운다.
+  // 손가락: 끌기(한 손가락)·확대(두 손가락). 바뀐 만큼씩 더해 두 동작이 같이 돼도 엉키지 않는다.
+  const limits = useMemo(() => scaleLimits(width || VIEW_W, viewH), [width, viewH]);
+  const dest = useMemo(() => destinationRect(), []);
+  // 손가락 동작은 화면 쪽 스레드(worklet)에서 바로 카메라 값을 바꾼다(앱 본체가 바빠도 끊기지 않게).
+  // 끌기·확대는 바뀐 만큼씩 더해서 두 동작이 같이 돼도 엉키지 않는다. 손을 떼면 그 자리로 타일·말풍선 자리를 다시 정한다.
+  const markMoved = () => setUserMoved(true);
+  const settle = (x: number, y: number, scale: number) => setSettled({ x, y, scale });
+  const viewW = width;
+  const minS = limits.min;
+  const maxS = limits.max;
+  const pan = Gesture.Pan()
+    .minDistance(4)
+    .averageTouches(true)
+    .onStart(() => {
+      cancelAnimation(camX);
+      cancelAnimation(camY);
+      cancelAnimation(camS);
+      runOnJS(markMoved)();
+    })
+    .onChange((e) => {
+      const k = clampCamera({ x: camX.value - e.changeX / camS.value, y: camY.value - e.changeY / camS.value, scale: camS.value }, viewW, viewH, dest);
+      camX.value = k.x;
+      camY.value = k.y;
+    })
+    .onEnd(() => {
+      runOnJS(settle)(camX.value, camY.value, camS.value);
+    });
+  const pinch = Gesture.Pinch()
+    .onStart(() => {
+      cancelAnimation(camX);
+      cancelAnimation(camY);
+      cancelAnimation(camS);
+      runOnJS(markMoved)();
+    })
+    .onChange((e) => {
+      const next = Math.min(Math.max(camS.value * e.scaleChange, minS), maxS);
+      if (!Number.isFinite(next) || next <= 0) return;
+      const z = zoomAround({ x: camX.value, y: camY.value, scale: camS.value }, next, e.focalX, e.focalY);
+      const k = clampCamera(z, viewW, viewH, dest);
+      camX.value = k.x;
+      camY.value = k.y;
+      camS.value = k.scale;
+    })
+    .onEnd(() => {
+      runOnJS(settle)(camX.value, camY.value, camS.value);
+    });
+  const gesture = Gesture.Simultaneous(pinch, pan);
+
+  // 지도 판은 그림 좌표 둘레로 넉넉히(WORLD_PAD) 큰 상자다. 안의 것은 그림 좌표 + WORLD_PAD 자리에 놓고, 판 전체를 옮기고 키운다.
+  const worldStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: -(camX.value + WORLD_PAD) * camS.value }, { translateY: -(camY.value + WORLD_PAD) * camS.value }, { scale: camS.value }],
+  }));
+
+  // 타일: 지금 보이는 곳 둘레만 그린다. 굵은 타일(가장 작게 줄였을 때의 단계)을 보이는 곳보다 넓게 깔고, 그 위에 자세한 타일.
+  const pixelRatio = PixelRatio.get();
+  const baseZ = zoomForScale(limits.min, pixelRatio);
+  const detailZ = zoomForScale(settled.scale, pixelRatio);
+  const baseTiles = useMemo(() => {
+    if (width <= 0) return [];
+    const v = viewRect(settled, width, height);
+    const mx = (v.x1 - v.x0) / 4;
+    const my = (v.y1 - v.y0) / 4;
+    return tilesFor({ x0: v.x0 - mx, y0: v.y0 - my, x1: v.x1 + mx, y1: v.y1 + my }, baseZ, 0);
+  }, [settled, width, height, baseZ]);
+  const detailTiles = useMemo(
+    () => (width > 0 && detailZ > baseZ ? tilesFor(viewRect(settled, width, height), detailZ, 0) : []),
+    [settled, width, height, detailZ, baseZ],
+  );
+
+  // 화면 px 간격(캐릭터 벌리기·스티커 벌리기)을 그림 좌표로 바꿀 때 쓰는 배율
+  const px = settled.scale;
+  const toScreen = (p: ArtPoint) => ({ x: (p.x - settled.x) * px, y: (p.y - settled.y) * px });
+  // 같은 곳에 모인 캐릭터는 겹치지 않게 좌우로 벌려 세운다(화면 px).
   const fanOut = new Map<string, number>();
-  const placed: { x: number; y: number }[] = [];
+  const placed: ArtPoint[] = [];
   for (const a of agents) {
-    const p = at(a);
-    const k = placed.filter((q) => Math.hypot(q.x - p.x, q.y - p.y) < FAN_RADIUS).length;
+    const p = projectGeo(a);
+    const k = placed.filter((q) => Math.hypot(q.x - p.x, q.y - p.y) * px < FAN_RADIUS).length;
     placed.push(p);
     fanOut.set(a.id, k === 0 ? 0 : (k % 2 === 1 ? 1 : -1) * Math.ceil(k / 2) * FAN_STEP);
   }
-  const agentAt = (a: MapAgent) => {
-    const p = at(a);
-    const dx = fanOut.get(a.id) ?? 0;
-    return viewport
-      ? { x: p.x + ART_AGENT_DX + dx, y: p.y }
-      : { x: p.x + AGENT_OFFSET.x + dx, y: p.y + AGENT_OFFSET.y };
-  };
 
-  // 조용한 지도: 가까운 장소 스티커는 서로 닿지 않게 벌리고, 길은 벌린 자리를 순서대로 잇는다.
-  const calmPins = calm && viewport ? spreadPoints(pins.map((pin) => at(pin)), STICKER_GAP) : [];
-  // 길의 한 점: 같은 순서·같은 곳의 스티커가 있으면(일정 지도) 벌린 자리, 아니면 같은 곳의 스티커, 그것도 없으면 원래 자리.
+  // 조용한 지도: 가까운 장소 스티커는 화면에서 서로 닿지 않게 벌리고(그림 좌표로 되돌림), 길은 벌린 자리를 순서대로 잇는다.
+  const calmPins = calm
+    ? spreadPoints(pins.map((pin) => toScreen(projectGeo(pin))), STICKER_GAP).map((q) => ({ x: settled.x + q.x / px, y: settled.y + q.y / px }))
+    : [];
+  const pinAt = (i: number) => calmPins[i] ?? projectGeo(pins[i]!);
   const calmAt = (p: LatLng, i: number) => {
     const same = (q: LatLng | undefined) => q !== undefined && q.lat === p.lat && q.lng === p.lng;
     const k = same(pins[i]) ? i : pins.findIndex(same);
-    return calmPins[k] ?? at(p);
+    return calmPins[k] ?? projectGeo(p);
   };
+  const focusIndex = focus === null ? -1 : pins.findIndex((p) => p.lat === focus.lat && p.lng === focus.lng);
+  const showFollow = followLabel !== undefined && (userMoved || focus !== null);
 
-  // viewHeight가 따로 있으면 그림 위치·배율은 그 기준으로 두고, 아래쪽은 같은 배율로 이어서 더 보여 준다(시트가 접히면 드러나는 부분).
-  const viewBoxHeight = viewport ? (camera ? artH : viewHeight !== undefined ? height / viewport.scale : viewport.h) : 0;
-  // 카메라 모드의 그림은 그림 전체 크기로 깔고 컨테이너를 옮긴다. 그 밖에는 보이는 영역만큼만 그린다.
-  const svgH = camera ? artH * artScale : height;
-  const svgW = camera ? ART_W * artScale : width;
+  return (
+    // 바깥 상자에서 지도를 잘라 낸다(타일이 아래 내용 뒤로 새지 않게). 손가락 동작은 앱 맨 바깥 GestureHandlerRootView가 받는다(_layout).
+    <View
+      style={[styles.map, { height, backgroundColor: palette.night ? "#20222B" : "#EFEAE0" }]}
+      onLayout={onLayout}
+    >
+    <View style={styles.gestureRoot}>
+      <GestureDetector gesture={gesture}>
+        <View style={StyleSheet.absoluteFill} collapsable={false} accessible accessibilityLabel={accessibilityLabel} accessibilityRole="image">
+          {width > 0 && (
+            <>
+              <Animated.View style={[styles.world, worldStyle]} pointerEvents="none">
+                {[...baseTiles, ...detailTiles].map((t) => (
+                  <Image
+                    key={t.key}
+                    source={{ uri: TILE_URL(t.z, t.x, t.y), headers: TILE_HEADERS }}
+                    cachePolicy="memory-disk"
+                    style={{ position: "absolute", left: t.left + WORLD_PAD, top: t.top + WORLD_PAD, width: t.width + 0.6 / px, height: t.height + 0.6 / px }}
+                  />
+                ))}
+              </Animated.View>
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: palette.night ? VEIL.dark : VEIL.light }]} pointerEvents="none" />
+              <Animated.View style={[styles.world, worldStyle]} pointerEvents="none">
+                {routes.length > 0 && (
+                  <Svg width={ART_W} height={ART_H} style={styles.routes}>
+                    {routes.map((r, i) => {
+                      const points = r.points.map(calm ? calmAt : (p: LatLng) => projectGeo(p));
+                      const d = smoothPath(points);
+                      if (d === "") return null;
+                      // 차분한 얇은 선 + 테두리, 구간 가운데에 가는 방향 꺾쇠(화면에서 짧은 구간은 뺀다). 굵기는 화면 기준.
+                      const clear = (p: ArtPoint) => pins.every((_, k) => Math.hypot(p.x - pinAt(k).x, p.y - pinAt(k).y) * px >= ARROW_PIN_CLEAR);
+                      const arrows = pathMidArrows(points, clear).filter((a) => a.length * px >= ARROW_MIN_LEG);
+                      return (
+                        <G key={`route${i}`}>
+                          <Path d={d} stroke={palette.trailUnder} strokeWidth={7 / px} strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.9} />
+                          <Path d={d} stroke={palette.trail} strokeWidth={2.5 / px} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                          {arrows.map((a, k) => (
+                            <G key={k} transform={`translate(${a.x} ${a.y}) rotate(${a.deg}) scale(${1 / px})`}>
+                              <Path d={CHEVRON} stroke={palette.trailUnder} strokeWidth={6} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                              <Path d={CHEVRON} stroke={palette.trail} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                            </G>
+                          ))}
+                        </G>
+                      );
+                    })}
+                  </Svg>
+                )}
+                {pins.map((pin, i) => {
+                  const p = pinAt(i);
+                  return (
+                    <Anchor key={pin.id} x={p.x + WORLD_PAD} y={p.y + WORLD_PAD} scale={camS}>
+                      {calm ? <StickerPin pin={pin} palette={palette} selected={i === focusIndex} /> : <FlagPin pin={pin} palette={palette} />}
+                    </Anchor>
+                  );
+                })}
+                {/* 말하는 AI를 맨 위에 그리도록 마지막으로 보낸다. 캐릭터는 깃발 오른쪽 바닥에 선다. */}
+                {[...agents]
+                  .sort((a, b) => Number(a.id === bubble?.agentId) - Number(b.id === bubble?.agentId))
+                  .map((a) => {
+                    const p = projectGeo(a);
+                    const dx = ART_AGENT_DX + (fanOut.get(a.id) ?? 0);
+                    return (
+                      <AgentMarker
+                        key={a.id}
+                        agent={a}
+                        x={p.x + WORLD_PAD}
+                        y={p.y + WORLD_PAD}
+                        dx={dx}
+                        pxScale={px}
+                        scale={camS}
+                        screen={toScreen(p)}
+                        active={a.id === bubble?.agentId}
+                        dim={bubble != null && a.id !== bubble.agentId}
+                        bubble={
+                          bubble != null && a.id === bubble.agentId
+                            ? { speaker: `${a.name} AI`, text: bubble.text, mapWidth: width, leftInset: 0, topInset: 0 }
+                            : undefined
+                        }
+                      />
+                    );
+                  })}
+              </Animated.View>
+            </>
+          )}
+        </View>
+      </GestureDetector>
+      {showFollow && (
+        <Pressable
+          onPress={() => {
+            setUserMoved(false);
+            onFollow?.();
+          }}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.followChip, pressed && { opacity: 0.75 }]}
+        >
+          <AppText variant="smallStrong" color={colors.onAccent}>
+            {followLabel}
+          </AppText>
+        </Pressable>
+      )}
+      <View style={[styles.credit, { top: viewH - CREDIT_H - spacing.xs }]} pointerEvents="none">
+        <AppText variant="micro" color={colors.onBubble}>
+          {TILE_CREDIT}
+        </AppText>
+      </View>
+    </View>
+    </View>
+  );
+}
+
+/** art가 없을 때: bounds 안의 위도·경도를 화면에 펼친 단순 격자 지도(움직이지 않음). */
+function GridMap({ bounds, pins = [], agents = [], routes = [], bubble = null, land = [], height = 300, accessibilityLabel = "회의 지도" }: MeetingMapProps) {
+  const { colors } = useTheme();
+  const styles = useStyles(createStyles);
+  const [width, setWidth] = useState(0);
+  const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
+  const at = (p: LatLng) => project(p, bounds, width, height);
   const gridStep = 40;
-
   return (
     <View style={[styles.map, { height }]} onLayout={onLayout} accessibilityLabel={accessibilityLabel} accessibilityRole="image">
       {width > 0 && (
-        <Layers camera={camera} width={svgW} height={svgH} offset={camValue}>
-          {viewport && (
-            <Svg
-              width={svgW}
-              height={svgH}
-              viewBox={`${viewport.x} ${viewport.y} ${viewport.w} ${viewBoxHeight}`}
-              style={StyleSheet.absoluteFill}
-            >
-              <RegionArt palette={palette} calm={calm} />
-            </Svg>
-          )}
-          {viewport && routes.length > 0 && (
-            <Svg width={svgW} height={svgH} style={StyleSheet.absoluteFill} pointerEvents="none">
-              {routes.map((r, i) => {
-                const d = smoothPath(r.points.map(calm ? calmAt : at));
-                if (d === "") return null;
-                return (
-                  <G key={`route${i}`}>
-                    {palette.night && (
-                      <Path d={d} stroke={palette.trail} strokeWidth={14} strokeLinecap="round" fill="none" opacity={0.18} />
-                    )}
-                    <G transform="translate(0 2)">
-                      <Path d={d} stroke={palette.trailUnder} strokeWidth={7} strokeDasharray="0.1 12" strokeLinecap="round" fill="none" />
-                    </G>
-                    <Path d={d} stroke={palette.trail} strokeWidth={7} strokeDasharray="0.1 12" strokeLinecap="round" fill="none" />
-                  </G>
-                );
-              })}
-            </Svg>
-          )}
-          {!viewport && (
+        <>
           <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
             <Rect width={width} height={height} fill={colors.mapSea} />
             {Array.from({ length: Math.ceil(width / gridStep) }, (_, i) => (
@@ -504,88 +738,25 @@ export default function MeetingMap({
               />
             ))}
           </Svg>
-          )}
-
-          {pins.map((pin, i) => {
-            const p = calmPins[i] ?? at(pin);
-            if (calm && viewport) return <StickerPin key={pin.id} pin={pin} x={p.x} y={p.y} palette={palette} />;
-            return viewport ? (
-              <FlagPin key={pin.id} pin={pin} x={p.x} y={p.y} palette={palette} />
-            ) : (
-              <Pin key={pin.id} pin={pin} x={p.x} y={p.y} />
+          {pins.map((pin) => {
+            const p = at(pin);
+            return <Pin key={pin.id} pin={pin} x={p.x} y={p.y} />;
+          })}
+          {agents.map((a) => {
+            const p = at(a);
+            return (
+              <View key={a.id} style={{ position: "absolute", left: p.x + AGENT_OFFSET.x - AGENT.width / 2, top: p.y + AGENT_OFFSET.y - AGENT.height }} pointerEvents="none">
+                <Avatar color={a.color} name={a.name} chips={a.chips} size="sm" variant="full" active={a.id === bubble?.agentId} />
+              </View>
             );
           })}
-
-          {/* 말하는 AI를 맨 위에 그리도록 마지막으로 보낸다. */}
-          {[...agents]
-            .sort((a, b) => Number(a.id === bubble?.agentId) - Number(b.id === bubble?.agentId))
-            .map((a) => {
-              const p = agentAt(a);
-              return (
-                <AgentMarker
-                  key={a.id}
-                  agent={a}
-                  x={p.x}
-                  y={p.y}
-                  active={a.id === bubble?.agentId}
-                  dim={bubble != null && a.id !== bubble.agentId}
-                  bubble={
-                    bubble != null && a.id === bubble.agentId
-                      ? {
-                          speaker: `${a.name} AI`,
-                          text: bubble.text,
-                          mapWidth: width,
-                          leftInset: camera ? camX * artScale : 0,
-                          topInset: camera ? camY * artScale : 0,
-                        }
-                      : undefined
-                  }
-                />
-              );
-            })}
-
-        </Layers>
-      )}
-      {viewport && (
-        <View style={[styles.credit, { top: (viewHeight ?? height) - CREDIT_H - spacing.xs }]} pointerEvents="none">
-          <AppText variant="micro" color={colors.onBubble}>
-            {MAP_CREDIT}
-          </AppText>
-        </View>
+        </>
       )}
     </View>
   );
 }
 
-/** 카메라 모드면 그림·핀·캐릭터를 한 판으로 묶어 같이 움직이고, 아니면 그냥 펼쳐 놓는다. */
-function Layers({
-  camera,
-  width,
-  height,
-  offset,
-  children,
-}: {
-  camera: boolean;
-  width: number;
-  height: number;
-  offset: RNAnimated.ValueXY;
-  children: React.ReactNode;
-}) {
-  if (!camera) return <>{children}</>;
-  return (
-    <RNAnimated.View
-      pointerEvents="box-none"
-      style={{ position: "absolute", left: 0, top: 0, width, height, transform: [{ translateX: offset.x }, { translateY: offset.y }] }}
-    >
-      {children}
-    </RNAnimated.View>
-  );
-}
-
 const BUBBLE_MAX = 220;
-
-// 지도 그림의 땅 모양은 통계청 자료라 출처를 화면에 적는다(공공누리 제1유형).
-const MAP_CREDIT = "지도 출처: 통계청 SGIS";
 const CREDIT_H = 18;
 
 /**
@@ -642,6 +813,22 @@ const createStyles = (t: Theme) => StyleSheet.create({
     overflow: "hidden",
     backgroundColor: t.colors.mapSea,
   },
+  // 그림 좌표로 펼친 지도 판: 그림 둘레로 WORLD_PAD만큼 큰 상자를 왼쪽 위 기준으로 옮기고 키운다.
+  // 안드로이드에서 상자 밖으로 넘쳐 그리면 작은 움직임에도 지도 전체를 다시 그려 느려지므로, 넘치지 않게 크게 잡는다.
+  world: { position: "absolute", left: 0, top: 0, width: ART_W + WORLD_PAD * 2, height: ART_H + WORLD_PAD * 2, transformOrigin: "0 0", overflow: "hidden" },
+  routes: { position: "absolute", left: WORLD_PAD, top: WORLD_PAD },
+  gestureRoot: { flex: 1, overflow: "hidden" },
+  followChip: {
+    position: "absolute",
+    alignSelf: "center",
+    top: spacing.sm,
+    paddingHorizontal: spacing.md,
+    minHeight: 36,
+    justifyContent: "center",
+    borderRadius: radius.full,
+    backgroundColor: t.colors.accent,
+    boxShadow: t.elevation.float,
+  },
   pin: {
     position: "absolute",
     width: PIN_W,
@@ -667,8 +854,6 @@ const createStyles = (t: Theme) => StyleSheet.create({
   },
   agent: {
     position: "absolute",
-    left: 0,
-    top: 0,
     width: AGENT.width,
     height: AGENT.height,
     alignItems: "center",

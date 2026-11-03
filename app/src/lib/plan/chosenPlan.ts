@@ -69,7 +69,9 @@ function moveLabelOf(stop: RouteStop): string | undefined {
   if (leg === null || leg === undefined) return undefined;
   const mode = leg.mode === null ? '이동' : moveModeLabel(leg.mode);
   const base = leg.minutes === null ? `직선 ${(leg.distanceM / 1000).toFixed(1)}km` : `${mode} ${leg.minutes}분`;
-  return leg.fareWon !== null && leg.fareWon > 0 ? `${base} · ${formatWon(leg.fareWon)}` : base;
+  if (leg.fareWon === null || leg.fareWon <= 0) return base;
+  // 택시는 서버가 요금을 구성원 수로 나눈 1인 몫으로 준다(server schedule.ts taxiPerPersonWon). 대중교통 요금은 원래 1인 요금.
+  return leg.mode === 'taxi' ? `${base} · 1인 ${formatWon(leg.fareWon)}` : `${base} · ${formatWon(leg.fareWon)}`;
 }
 
 /** 이 사람 몫으로 들어간 곳(꼭 지킬 곳 → 좋아요 순). */

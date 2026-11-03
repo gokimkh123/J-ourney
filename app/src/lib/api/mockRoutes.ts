@@ -3,6 +3,7 @@ import type { AnswerState, Chip, Member, Persona, Trip } from '../persona/types.
 import { memberColors } from '../theme.ts';
 import type { MockRoute } from './mock.ts';
 import { MOCK_QUESTIONS } from './mockQuestions.ts';
+import { MOCK_COMMUNITY_PLACES, MOCK_COMMUNITY_REGION, MOCK_COMMUNITY_REVIEWS } from '../community/mockCommunity.ts';
 
 type MockResult = ReturnType<MockRoute['handler']>;
 
@@ -77,8 +78,11 @@ function randomCode(): string {
 }
 
 // 현재 시각을 한국 시간(+09:00) ISO 8601 문자열로 만든다. 예: 2026-10-14T21:30:00+09:00
-function nowKst(): string {
-  const d = new Date(Date.now() + KST_OFFSET_MS);
+/** 가짜 로그인 토큰을 쓰는 기간(실서버와 같은 30일) */
+const LOGIN_DAYS = 30;
+
+function nowKst(offsetMs = 0): string {
+  const d = new Date(Date.now() + offsetMs + KST_OFFSET_MS);
   const two = (n: number): string => String(n).padStart(2, '0');
   const date = `${d.getUTCFullYear()}-${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())}`;
   const time = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}:${two(d.getUTCSeconds())}`;
@@ -173,6 +177,30 @@ export function createMockRoutes(meetings?: MockMeetingBackend): MockRoute[] {
   const submitCounts = new Map<string, number>();
   let tripCount = 0;
   let memberCount = 0;
+  // 카카오 로그인(v2.5): 로그인 토큰 → 계정, 카카오 토큰 → 계정, 구성원 → 계정
+  const userByLogin = new Map<string, string>();
+  const userByKakao = new Map<string, string>();
+  const userOfMember = new Map<string, string>();
+  let userCount = 0;
+  // 커뮤니티 후기: 장소 → 후기들(구성원마다 1개)
+  type MockReview = { reviewId: string; memberId: string | null; nickname: string; rating: number; text: string; createdAt: string; updatedAt: string };
+  const reviews = new Map<string, MockReview[]>();
+  let reviewCount = 0;
+  for (const [placeId, nickname, rating, text, at] of MOCK_COMMUNITY_REVIEWS) {
+    reviewCount += 1;
+    reviews.set(placeId, [...(reviews.get(placeId) ?? []), { reviewId: `rvw_${reviewCount}`, memberId: null, nickname, rating, text, createdAt: at, updatedAt: at }]);
+  }
+  function communityCard(p: (typeof MOCK_COMMUNITY_PLACES)[number]) {
+    const list = reviews.get(p.id) ?? [];
+    const average = list.length === 0 ? null : Math.round((list.reduce((a, r) => a + r.rating, 0) / list.length) * 10) / 10;
+    return {
+      placeId: p.id, name: p.name, group: p.group, category: p.category, imageUrl: null, imageCredit: null, imageCopyright: null,
+      address: p.address, lat: p.lat, lng: p.lng, aiPicks: p.aiPicks, rating: { average, count: list.length }, openNow: p.openNow, hours: p.hours,
+    };
+  }
+  function reviewView(r: MockReview, viewer: string | null) {
+    return { reviewId: r.reviewId, nickname: r.nickname, rating: r.rating, text: r.text, mine: viewer !== null && r.memberId === viewer, createdAt: r.createdAt, updatedAt: r.updatedAt };
+  }
 
   function nextInviteCode(): string {
     if (tripIdByCode.size === 0) return FIRST_INVITE_CODE;
@@ -326,11 +354,23 @@ export function createMockRoutes(meetings?: MockMeetingBackend): MockRoute[] {
     return match ? (sessions.get(match[1]) ?? null) : null;
   }
 
+  /** Authorization이 로그인 토큰(usr_)이면 그 계정 id */
+  function userOf(headers: Record<string, string>): string | null {
+    const match = /^Bearer (usr_\S+)$/.exec(headers.authorization ?? '');
+    return match ? (userByLogin.get(match[1]) ?? null) : null;
+  }
+
+  /** 구성원 토큰을 새로 준다. 그 구성원의 예전 토큰은 더 쓰지 못한다(토큰 다시 받기). */
+  function reissue(record: TripRecord, member: Member): MockResult {
+    for (const [token, s] of sessions) if (s.member.id === member.id) sessions.delete(token);
+    return issue(record, member);
+  }
+
   return [
     {
       method: 'POST',
       path: `${API_PREFIX}/trips`,
-      handler: ({ body }) => {
+      handler: ({ body, headers }) => {
         const o = asObject(body);
         const title = cleanText(o.title, 40);
         if (title === null) {
@@ -350,6 +390,8 @@ export function createMockRoutes(meetings?: MockMeetingBackend): MockRoute[] {
         trips.set(record.trip.id, record);
         tripIdByCode.set(inviteCode, record.trip.id);
         const host = addMember(record, nickname);
+        const user = userOf(headers);
+        if (user !== null) userOfMember.set(host.id, user);
         if (o.demoMode === true) {
           for (const seed of SEEDS) addMember(record, seed.nickname, seed.title, seed.chips);
         }
@@ -359,9 +401,13 @@ export function createMockRoutes(meetings?: MockMeetingBackend): MockRoute[] {
     {
       method: 'POST',
       path: `${API_PREFIX}/invites/:inviteCode/join`,
-      handler: ({ params, body }) => {
+      handler: ({ params, body, headers }) => {
         const record = findByCode(params.inviteCode);
         if (!record) return error(404, 'NOT_FOUND', '초대 코드를 찾을 수 없습니다.');
+        // 같은 계정이 다시 참여하면 새 자리 대신 그 자리를 돌려준다.
+        const user = userOf(headers);
+        const mine = user === null ? undefined : record.members.find((m) => userOfMember.get(m.id) === user);
+        if (mine !== undefined) return reissue(record, mine);
         const nickname = cleanText(asObject(body).nickname, 20);
         if (nickname === null) {
           return error(400, 'VALIDATION_ERROR', '닉네임은 1~20자로 입력해 주세요.');
@@ -369,7 +415,126 @@ export function createMockRoutes(meetings?: MockMeetingBackend): MockRoute[] {
         if (record.members.length >= MAX_MEMBERS) {
           return error(409, 'TRIP_FULL', `여행 인원이 가득 찼습니다. (최대 ${MAX_MEMBERS}명)`);
         }
-        return issue(record, addMember(record, nickname));
+        const member = addMember(record, nickname);
+        if (user !== null) userOfMember.set(member.id, user);
+        return issue(record, member);
+      },
+    },
+    {
+      method: 'GET',
+      path: `${API_PREFIX}/community/places`,
+      handler: ({ query }) => {
+        const regionCode = query.regionCode;
+        if (regionCode !== undefined && !/^\d{2}$/.test(regionCode)) return error(400, 'VALIDATION_ERROR', 'regionCode: 시·도 코드 2자리');
+        const shown = regionCode === undefined || regionCode === MOCK_COMMUNITY_REGION.code ? MOCK_COMMUNITY_PLACES : [];
+        const groups = new Map<string, ReturnType<typeof communityCard>[]>();
+        for (const p of [...shown].sort((a, b) => b.aiPicks - a.aiPicks)) groups.set(p.group, [...(groups.get(p.group) ?? []), communityCard(p)]);
+        const sections = [...groups.entries()]
+          .map(([group, places]) => ({ group, aiPicks: places.reduce((a, p) => a + p.aiPicks, 0), places }))
+          .sort((a, b) => b.aiPicks - a.aiPicks);
+        const regionName = regionCode === MOCK_COMMUNITY_REGION.code ? MOCK_COMMUNITY_REGION.name : null;
+        return { status: 200, body: { regionCode: regionCode ?? null, regionName, districtCode: null, sections, baseDate: nowKst().slice(0, 10) } };
+      },
+    },
+    {
+      method: 'GET',
+      path: `${API_PREFIX}/community/places/:placeId`,
+      handler: ({ params, headers }) => {
+        const p = MOCK_COMMUNITY_PLACES.find((x) => x.id === params.placeId);
+        if (!p) return error(404, 'NOT_FOUND', '장소를 찾을 수 없음');
+        const viewer = authenticate(headers)?.member.id ?? null;
+        const list = [...(reviews.get(p.id) ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        return { status: 200, body: { place: { ...communityCard(p), overview: p.overview }, reviews: list.map((r) => reviewView(r, viewer)) } };
+      },
+    },
+    {
+      method: 'PUT',
+      path: `${API_PREFIX}/community/places/:placeId/review`,
+      handler: ({ params, headers, body }) =>
+        withMember(headers, (session) => {
+          const p = MOCK_COMMUNITY_PLACES.find((x) => x.id === params.placeId);
+          if (!p) return error(404, 'NOT_FOUND', '장소를 찾을 수 없음');
+          const o = asObject(body);
+          const rating = o.rating;
+          if (typeof rating !== 'number' || !Number.isInteger(rating) || rating < 1 || rating > 5) return error(400, 'VALIDATION_ERROR', 'rating: 1~5');
+          const text = typeof o.text === 'string' ? o.text.trim() : '';
+          if (Array.from(text).length > 300) return error(400, 'VALIDATION_ERROR', 'text: 300자 이하');
+          const list = reviews.get(p.id) ?? [];
+          const now = nowKst();
+          const at = list.findIndex((r) => r.memberId === session.member.id);
+          let review: MockReview;
+          if (at === -1) {
+            reviewCount += 1;
+            review = { reviewId: `rvw_${reviewCount}`, memberId: session.member.id, nickname: session.member.nickname, rating, text, createdAt: now, updatedAt: now };
+            reviews.set(p.id, [...list, review]);
+          } else {
+            review = { ...list[at]!, rating, text, nickname: session.member.nickname, updatedAt: now };
+            reviews.set(p.id, list.map((r, i) => (i === at ? review : r)));
+          }
+          return { status: 200, body: { review: reviewView(review, session.member.id) } };
+        }),
+    },
+    {
+      method: 'DELETE',
+      path: `${API_PREFIX}/community/places/:placeId/review`,
+      handler: ({ params, headers }) =>
+        withMember(headers, (session) => {
+          const list = reviews.get(params.placeId);
+          if (list) reviews.set(params.placeId, list.filter((r) => r.memberId !== session.member.id));
+          return { status: 204, body: null };
+        }),
+    },
+    {
+      method: 'POST',
+      path: `${API_PREFIX}/auth/kakao`,
+      handler: ({ body }) => {
+        const accessToken = cleanText(asObject(body).accessToken, 4096);
+        if (accessToken === null) return error(400, 'VALIDATION_ERROR', 'accessToken이 필요합니다.');
+        let user = userByKakao.get(accessToken);
+        if (user === undefined) {
+          userCount += 1;
+          user = `usr_${String(userCount).padStart(2, '0')}`;
+          userByKakao.set(accessToken, user);
+        }
+        const token = `usr_${randomCode()}${randomCode()}`;
+        userByLogin.set(token, user);
+        return { status: 200, body: { user: { id: user }, token, expiresAt: nowKst(LOGIN_DAYS * 24 * 60 * 60 * 1000) } };
+      },
+    },
+    {
+      method: 'DELETE',
+      path: `${API_PREFIX}/auth/session`,
+      handler: ({ headers }) => {
+        const match = /^Bearer (usr_\S+)$/.exec(headers.authorization ?? '');
+        if (match) userByLogin.delete(match[1]);
+        return { status: 204, body: null };
+      },
+    },
+    {
+      method: 'GET',
+      path: `${API_PREFIX}/users/me/trips`,
+      handler: ({ headers }) => {
+        const user = userOf(headers);
+        if (user === null) return error(401, 'UNAUTHORIZED', '로그인 토큰이 필요합니다.');
+        const list: { trip: Trip; member: Member }[] = [];
+        for (const record of trips.values()) {
+          const member = record.members.find((m) => userOfMember.get(m.id) === user);
+          if (member !== undefined) list.unshift({ trip: tripOf(record), member });
+        }
+        return { status: 200, body: { trips: list } };
+      },
+    },
+    {
+      method: 'POST',
+      path: `${API_PREFIX}/users/me/trips/:tripId/token`,
+      handler: ({ params, headers }) => {
+        const user = userOf(headers);
+        if (user === null) return error(401, 'UNAUTHORIZED', '로그인 토큰이 필요합니다.');
+        const record = trips.get(params.tripId);
+        const member = record?.members.find((m) => userOfMember.get(m.id) === user);
+        if (record === undefined || member === undefined) return error(404, 'NOT_FOUND', '내 여행에서 찾을 수 없습니다.');
+        const result = reissue(record, member);
+        return { status: 200, body: { ...(result.body as object), trip: tripOf(record) } };
       },
     },
     {

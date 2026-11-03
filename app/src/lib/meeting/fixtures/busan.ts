@@ -67,20 +67,21 @@ function ev<T extends MeetingEvent['type']>(type: T, data: Data<T>): void {
 }
 
 // 부산 전역 1박 2일 예시. 좌표는 대략적인 값이다(통계청 구역 경계로 구·군 안에 드는지만 확인함).
+// kind·category는 서버 v2.4 후보처럼(관광공사 한글 분류) 넣었다. 후보 줄 장소 스티커가 쓴다.
 const places = [
-  { placeId: 'plc_01', name: '국제시장·깡통시장', lat: 35.1007, lng: 129.0285, proposedBy: ['agt_01', 'agt_03'] },
-  { placeId: 'plc_02', name: '자갈치시장', lat: 35.0967, lng: 129.0305, proposedBy: ['agt_01'] },
-  { placeId: 'plc_03', name: '광안리 해변과 야경', lat: 35.1532, lng: 129.1186, proposedBy: ['agt_02', 'agt_03'] },
-  { placeId: 'plc_04', name: '흰여울문화마을', lat: 35.0786, lng: 129.0446, proposedBy: ['agt_04'] },
-  { placeId: 'plc_05', name: '청사포 다릿돌전망대', lat: 35.1595, lng: 129.192, proposedBy: ['agt_04', 'agt_02'] },
-  { placeId: 'plc_06', name: '해운대 해수욕장', lat: 35.1587, lng: 129.1604, proposedBy: ['agt_02'] },
-  { placeId: 'plc_07', name: '다대포 꿈의낙조분수', lat: 35.0472, lng: 128.9658, proposedBy: ['agt_02'] },
-  { placeId: 'plc_08', name: '감천문화마을', lat: 35.0975, lng: 129.0106, proposedBy: ['agt_02'] },
-  { placeId: 'plc_09', name: '대변항', lat: 35.2263, lng: 129.2272, proposedBy: ['agt_03'] },
-  { placeId: 'plc_10', name: '해동용궁사', lat: 35.1883, lng: 129.2233, proposedBy: ['agt_04', 'agt_01'] },
+  { placeId: 'plc_01', kind: 'sight' as const, category: '재래시장', name: '국제시장·깡통시장', lat: 35.1007, lng: 129.0285, proposedBy: ['agt_01', 'agt_03'] },
+  { placeId: 'plc_02', kind: 'sight' as const, category: '재래시장', name: '자갈치시장', lat: 35.0967, lng: 129.0305, proposedBy: ['agt_01'] },
+  { placeId: 'plc_03', kind: 'sight' as const, category: '해수욕장', name: '광안리 해변과 야경', lat: 35.1532, lng: 129.1186, proposedBy: ['agt_02', 'agt_03'] },
+  { placeId: 'plc_04', kind: 'sight' as const, category: '문화마을', name: '흰여울문화마을', lat: 35.0786, lng: 129.0446, proposedBy: ['agt_04'] },
+  { placeId: 'plc_05', kind: 'sight' as const, category: '전망대', name: '청사포 다릿돌전망대', lat: 35.1595, lng: 129.192, proposedBy: ['agt_04', 'agt_02'] },
+  { placeId: 'plc_06', kind: 'sight' as const, category: '해수욕장', name: '해운대 해수욕장', lat: 35.1587, lng: 129.1604, proposedBy: ['agt_02'] },
+  { placeId: 'plc_07', kind: 'sight' as const, category: '분수', name: '다대포 꿈의낙조분수', lat: 35.0472, lng: 128.9658, proposedBy: ['agt_02'] },
+  { placeId: 'plc_08', kind: 'sight' as const, category: '문화마을', name: '감천문화마을', lat: 35.0975, lng: 129.0106, proposedBy: ['agt_02'] },
+  { placeId: 'plc_09', kind: 'sight' as const, category: '항구·포구', name: '대변항', lat: 35.2263, lng: 129.2272, proposedBy: ['agt_03'] },
+  { placeId: 'plc_10', kind: 'sight' as const, category: '사찰', name: '해동용궁사', lat: 35.1883, lng: 129.2233, proposedBy: ['agt_04', 'agt_01'] },
   // 일정에는 못 들어가는 후보 둘: 감천과 시간이 겹치고(케이블카), 북쪽으로 너무 멀다(범어사)
-  { placeId: 'plc_11', name: '송도해상케이블카', lat: 35.0763, lng: 129.0176, proposedBy: ['agt_02'] },
-  { placeId: 'plc_12', name: '범어사', lat: 35.2823, lng: 129.0679, proposedBy: ['agt_04'] },
+  { placeId: 'plc_11', kind: 'sight' as const, category: '케이블카', name: '송도해상케이블카', lat: 35.0763, lng: 129.0176, proposedBy: ['agt_02'] },
+  { placeId: 'plc_12', kind: 'sight' as const, category: '사찰', name: '범어사', lat: 35.2823, lng: 129.0679, proposedBy: ['agt_04'] },
 ];
 
 // 조사 중에 후보가 하나씩 보드에 올라오는 순서(지도에 핀이 하나씩 꽂힌다). 동서남북이 번갈아 나오게 섞었다.
