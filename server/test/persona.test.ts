@@ -92,7 +92,8 @@ describe('성향 점수와 칩 (규칙)', () => {
   it('응답 검사: 미응답·보기 개수·없는 문항은 VALIDATION_ERROR', () => {
     const missing = seoyeon().filter((a) => a.questionId !== 'q3');
     expect(() => readAnswers(missing)).toThrowError(/q3/);
-    expect(() => readAnswers(answersOf(SEOYEON, [], []))).toThrowError(/q13/);
+    expect(readAnswers(answersOf(SEOYEON, [], []))).toMatchObject({ likes: [], dislikes: [], likesText: null }); // 11/3: 좋아요도 넘어갈 수 있음
+    expect(() => readAnswers(answersOf(SEOYEON, ['like_nature', 'like_sea', 'like_spa', 'like_history', 'like_culture', 'like_festival'], []))).toThrowError(/q13/);
     expect(() => readAnswers(answersOf(SEOYEON, ['like_sea'], ['dislike_walk', 'dislike_early', 'dislike_crowd', 'dislike_pricey']))).toThrowError(/q14/);
     expect(() => readAnswers([...seoyeon(), { questionId: 'q99', value: 1 }])).toThrowError(ApiError);
   });
@@ -111,7 +112,8 @@ describe('성향 점수와 칩 (규칙)', () => {
     expect(() => readAnswers([...seoyeon(), { questionId: 'q17', optionIds: ['pace_slow', 'pace_packed'] }])).toThrowError(/q17/);
     expect(() => readAnswers([...seoyeon(), { questionId: 'q17', optionIds: ['pace_fast'] }])).toThrowError(/q17/);
     expect(() => readAnswers([...base, { questionId: 'q13', optionIds: ['like_sea'], text: '가'.repeat(51) }])).toThrowError(/q13.*50자/);
-    expect(() => readAnswers([...base, { questionId: 'q13', optionIds: [] }])).toThrowError(/q13/); // 보기도 기타 글도 없음
+    expect(readAnswers([...base, { questionId: 'q13', optionIds: [] }])).toMatchObject({ likes: [], likesText: null }); // 11/3: 보기도 기타 글도 없어도 됨
+    expect(readAnswers(base)).toMatchObject({ likes: [], likesText: null }); // 문항을 아예 안 보내도 됨
   });
 
   it('11/2 새 설문: 이번 여행 속도가 하루 장소 수를 정하고(없으면 2·8번 성향), 예전 응답(새 칸 없음)은 같은 응답으로 봄 · 사람이 쓴 칸은 문항 이름을 붙여 AI에 넘김', () => {
