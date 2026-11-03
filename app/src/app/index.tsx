@@ -9,6 +9,7 @@ import {
   Banner,
   Button,
   CodeInput,
+  ConfirmSheet,
   FormSheet,
   PartyCard,
   PartyHomeStage,
@@ -397,63 +398,31 @@ function TripHome() {
   const members = info?.members ?? [];
 
   const isHost = info?.members.find((m) => m.id === me.memberId)?.isHost === true;
-  const onLeave = () => {
-    Alert.alert(
-      `${info?.trip.title ?? "이 파티"}에서 나갈까요?`,
-      "이 휴대폰의 이 파티 정보(회의 조건·합의안 포함)가 지워져요. 같은 초대 코드로 다시 들어오면 새 구성원으로 참여해요.",
-      [
-        { text: "취소", style: "cancel" },
-        {
-          text: "나가기",
-          style: "destructive",
-          onPress: () => {
-            const title = info?.trip.title ?? "파티";
-            // 나가면 이 화면이 파티 목록으로 바뀐다. 끝났다는 것은 짧은 알림으로 알린다.
-            void leaveParty(leaveDeps, me.tripId, isHost).then(() => showToast(`'${title}'에서 나왔어요`));
-          },
-        },
-      ],
-    );
+  const partyName = info?.trip.title ?? "이 파티";
+  // 파티 나가기(파티원, ⋯ 메뉴)와 없애기(방장, 맨 아래 글자 버튼)는 시스템 창 대신 앱 모양 확인 시트로 묻는다(11/3).
+  // 서버가 답할 때까지 시트를 열어 두고, 성공하면 이 화면은 파티 목록으로 바뀌며 짧은 알림을 띄운다.
+  const [confirm, setConfirm] = useState<"leave" | "delete" | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const ask = (which: "leave" | "delete") => {
+    setConfirmError(null);
+    setConfirm(which);
+  };
+  const onConfirm = () => {
+    if (confirm === null || confirmBusy) return;
+    setConfirmBusy(true);
+    setConfirmError(null);
+    const failed = (e: unknown) => {
+      setConfirmBusy(false);
+      setConfirmError(e instanceof ApiError && e.status === 409 ? "AI 회의가 진행 중이에요. 회의가 끝난 뒤 다시 해 주세요." : describeError(e));
+    };
+    // 나가기는 서버가 막아도 이 폰에서는 뺀다(leaveParty). 방장 없애기(v2.4)는 회의가 도는 중이면 서버가 막는다(409).
+    if (confirm === "leave") void leaveParty(leaveDeps, me.tripId, isHost).then(() => showToast(`'${partyName}'에서 나왔어요`), failed);
+    else deleteParty(leaveDeps, me.tripId).then(() => showToast(`'${partyName}' 파티를 없앴어요`), failed);
   };
 
-  // 방장 파티 없애기(v2.4): 모두의 파티가 사라지고 되돌릴 수 없다. 회의가 도는 중이면 서버가 막는다(409).
-  // 서버가 답할 때까지 버튼에 도는 표시를 둔다. 없애면 이 화면은 파티 목록으로 바뀐다.
-  const [deleting, setDeleting] = useState(false);
-  const onDelete = () => {
-    Alert.alert(
-      `${info?.trip.title ?? "이 파티"}를 없앨까요?`,
-      "모든 구성원의 휴대폰에서 이 파티가 사라져요. 되돌릴 수 없어요.",
-      [
-        { text: "취소", style: "cancel" },
-        {
-          text: "없애기",
-          style: "destructive",
-          onPress: () => {
-            const title = info?.trip.title ?? "파티";
-            setDeleting(true);
-            deleteParty(leaveDeps, me.tripId).then(
-              () => showToast(`'${title}' 파티를 없앴어요`),
-              (e: unknown) => {
-                setDeleting(false);
-                Alert.alert(
-                  "파티를 없애지 못했어요",
-                  e instanceof ApiError && e.status === 409 ? "AI 회의가 진행 중이에요. 회의가 끝난 뒤 다시 해 주세요." : describeError(e),
-                );
-              },
-            );
-          },
-        },
-      ],
-    );
-  };
-
-  // ⋯ 메뉴: 파티원은 파티 나가기. 방장은 나갈 수 없고(v2.4) 파티 없애기는 홈 맨 아래 버튼이라 메뉴가 없다.
-  const onMore = () => {
-    Alert.alert(info?.trip.title ?? "이 파티", undefined, [
-      { text: "파티 나가기", style: "destructive", onPress: onLeave },
-      { text: "취소", style: "cancel" },
-    ]);
-  };
+  // ⋯ 메뉴: 파티원은 파티 나가기뿐이라 바로 확인 시트를 연다. 방장은 나갈 수 없고(v2.4) 없애기는 홈 맨 아래 버튼이라 메뉴가 없다.
+  const onMore = () => ask("leave");
 
   const stepIndex = Math.min(view.doneCount, STEP_LABELS.length - 1);
   const preparing = view.step === "persona" || view.step === "waiting" || view.step === "conditions";
@@ -495,15 +464,29 @@ function TripHome() {
         {isHost && (
           <Button
             label="파티 없애기"
-            variant="danger"
-            size="lg"
-            block
-            loading={deleting}
-            onPress={onDelete}
+            variant="dangerGhost"
+            size="sm"
+            onPress={() => ask("delete")}
             accessibilityHint="모든 구성원의 휴대폰에서 이 파티가 사라져요"
             style={styles.deleteParty}
           />
         )}
+
+        <ConfirmSheet
+          visible={confirm !== null}
+          title={confirm === "delete" ? `'${partyName}' 파티를 없앨까요?` : `'${partyName}'에서 나갈까요?`}
+          message={
+            confirm === "delete"
+              ? "모든 구성원의 휴대폰에서 이 파티가 사라져요. 되돌릴 수 없어요."
+              : "이 휴대폰의 이 파티 정보(회의 조건·합의안 포함)가 지워져요. 같은 초대 코드로 다시 들어오면 새 구성원으로 참여해요."
+          }
+          confirmLabel={confirm === "delete" ? "없애기" : "나가기"}
+          danger
+          busy={confirmBusy}
+          error={confirmError}
+          onConfirm={onConfirm}
+          onCancel={() => setConfirm(null)}
+        />
       </View>
     </ScrollView>
   );
@@ -643,8 +626,8 @@ function NextAction(p: NextActionProps) {
 
 const createStyles = (t: Theme) =>
   StyleSheet.create({
-    // 방장 파티 없애기: 홈 맨 아래 큰 빨간 버튼(되돌릴 수 없는 동작이라 위험이 한눈에 보이게)
-    deleteParty: { marginTop: spacing.md },
+    // 방장 파티 없애기: 홈 맨 아래 가운데 빨간 글자 버튼(11/3: 큰 빨간 버튼은 너무 튀어서). 설정 화면은 큰 빨간 버튼
+    deleteParty: { alignSelf: "center", marginTop: spacing.md },
     screen: { flex: 1, backgroundColor: t.colors.background },
     scroll: { paddingBottom: spacing.xl },
     body: { padding: spacing.md, gap: spacing.lg },

@@ -10,6 +10,7 @@ import {
   BottomSheet,
   Button,
   CandidateRow,
+  ConfirmSheet,
   ChatBubble,
   ChatDivider,
   ChoiceResult,
@@ -615,6 +616,16 @@ export default function MeetingScreen() {
           </>
         )}
       </View>
+      {/* 방장 "기다리지 않고 진행하기" 확인(11/3: 시스템 창 대신 앱 모양 시트) */}
+      <ConfirmSheet
+        visible={review.proceedAsk !== null}
+        title="지금 진행할까요?"
+        message={review.proceedAsk ?? ""}
+        confirmLabel="진행하기"
+        cancelLabel="더 기다리기"
+        onConfirm={review.confirmProceed}
+        onCancel={review.cancelProceed}
+      />
     </View>
   );
 }

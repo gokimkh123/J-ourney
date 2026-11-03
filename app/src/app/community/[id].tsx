@@ -1,10 +1,10 @@
 import { useFocusEffect, useLocalSearchParams, useRouter, type Href } from "expo-router";
 import { useCallback, useRef, useState } from "react";
-import { Alert, Linking, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Linking, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 
-import { AppText, Banner, Button, FormSheet, PlacePhoto, StateView, StatusPill, Star, TextField } from "../../components/index.ts";
+import { AppText, Banner, Button, ConfirmSheet, FormSheet, PlacePhoto, StateView, StatusPill, Star, TextField } from "../../components/index.ts";
 import { endpoints } from "../../lib/api/index.ts";
 import { ApiError } from "../../lib/api/errors.ts";
 import {
@@ -40,8 +40,10 @@ export default function CommunityPlaceScreen() {
   const [view, setView] = useState<View_>({ kind: "loading" });
   const [more, setMore] = useState(false);
   const [writing, setWriting] = useState(false);
-  // 내 후기 지우기를 서버가 답할 때까지 버튼에 도는 표시를 둔다.
+  // 내 후기 지우기: 시스템 창 대신 앱 모양 확인 시트로 묻고(11/3), 서버가 답할 때까지 시트를 열어 둔다.
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const requestId = useRef(0);
 
   const load = useCallback(
@@ -104,24 +106,25 @@ export default function CommunityPlaceScreen() {
 
   const onDelete = () => {
     if (author === null) return;
-    Alert.alert("내 후기를 지울까요?", "지운 후기는 되돌릴 수 없어요.", [
-      { text: "취소", style: "cancel" },
-      {
-        text: "지우기",
-        style: "destructive",
-        onPress: () => {
-          setRemoving(true);
-          void endpoints
-            .deleteCommunityReview(place.placeId, author.token)
-            .then(async () => {
-              await load(true);
-              showToast("후기를 지웠어요");
-            })
-            .catch((error: unknown) => Alert.alert("지우지 못했어요", describeError(error)))
-            .finally(() => setRemoving(false));
-        },
+    setRemoveError(null);
+    setConfirmOpen(true);
+  };
+  const confirmDelete = () => {
+    if (author === null || removing) return;
+    setRemoving(true);
+    setRemoveError(null);
+    endpoints.deleteCommunityReview(place.placeId, author.token).then(
+      async () => {
+        await load(true);
+        setRemoving(false);
+        setConfirmOpen(false);
+        showToast("후기를 지웠어요");
       },
-    ]);
+      (error: unknown) => {
+        setRemoving(false);
+        setRemoveError(describeError(error));
+      },
+    );
   };
 
   return (
@@ -229,6 +232,18 @@ export default function CommunityPlaceScreen() {
           }}
         />
       )}
+
+      <ConfirmSheet
+        visible={confirmOpen}
+        title="내 후기를 지울까요?"
+        message="지운 후기는 되돌릴 수 없어요."
+        confirmLabel="지우기"
+        danger
+        busy={removing}
+        error={removeError}
+        onConfirm={confirmDelete}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </View>
   );
 }

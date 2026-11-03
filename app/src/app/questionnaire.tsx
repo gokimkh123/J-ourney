@@ -488,7 +488,6 @@ function QuestionnaireBody({ onFinished }: { onFinished: () => void }) {
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: spacing.lg + insets.bottom }]}>
-        {submitting && inParty && <Banner tone="accent" text="AI가 캐릭터 카드를 쓰고 있어요. 몇 초 걸려요" />}
         {!submitting && submitError !== null && (
           <Banner tone="danger" text={submitError} actionLabel="다시 시도" onAction={() => void onSubmit()} />
         )}

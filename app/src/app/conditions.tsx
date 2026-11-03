@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 
@@ -14,8 +14,8 @@ import {
   FormSheet,
   InlineField,
   SegmentedTabs,
+  SheetOption,
   Stepper,
-  TextListInput,
   TimeWheel,
 } from "../components/index.ts";
 import { endpoints } from "../lib/api/index.ts";
@@ -25,6 +25,7 @@ import { session } from "../lib/session/index.ts";
 import { putPartyInfo } from "../lib/session/partyInfo.ts";
 import { useSession } from "../lib/session/useSession.ts";
 import { DEFAULT_BUDGET } from "../lib/trip/budget.ts";
+import { checkBookedPlaces, draftsOf, keepInRange, shortDateLabel, tripDays, type BookedPlaceDraft } from "../lib/trip/bookedPlaces.ts";
 import {
   BOOKED_LIMITS,
   DEFAULT_MAX_ROUNDS,
@@ -60,9 +61,27 @@ type TimeKey = "arrival" | "departure";
 const TIME_TITLE: Record<TimeKey, string> = { arrival: "첫날 도착 시각", departure: "마지막 날 출발 시각" };
 // 시각 고르기 창을 처음 열 때 가운데에 둘 값
 const TIME_START: Record<TimeKey, string> = { arrival: "10:00", departure: "18:00" };
+const BOOKED_TIME_START = "12:00";
+// 언제 가나요: 날짜 사이 화살표 칸 너비
+const ARROW_W = 16;
 
-/** 비행기·기차 시각 칸. 비어 있으면 "없음", 누르면 시각 고르기 창. 값이 있으면 ✕로 지운다. */
-function TimeBox({ label, value, onPress, onClear }: { label: string; value: string | null; onPress: () => void; onClear: () => void }) {
+/**
+ * 시각·날짜 칸. 비어 있으면 placeholder("없음"), 누르면 고르기 창. onClear가 있고 값이 있으면 ✕로 지운다
+ * (비행기·기차 시각은 지울 수 있고, 예약한 장소의 날짜·시각은 꼭 정해야 해서 ✕가 없다).
+ */
+function TimeBox({
+  label,
+  value,
+  placeholder = "없음",
+  onPress,
+  onClear,
+}: {
+  label: string;
+  value: string | null;
+  placeholder?: string;
+  onPress: () => void;
+  onClear?: () => void;
+}) {
   const styles = useStyles(createStyles);
   const { colors } = useTheme();
   // 칸 전체(시각 고르기)와 ✕(지우기)는 나란히 둔다. 버튼 안에 버튼을 넣지 않는다.
@@ -71,17 +90,17 @@ function TimeBox({ label, value, onPress, onClear }: { label: string; value: str
       <Pressable
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={`${label} ${value ?? "없음"}, 바꾸려면 누르세요`}
+        accessibilityLabel={`${label} ${value ?? placeholder}, 바꾸려면 누르세요`}
         style={({ pressed }) => [styles.timeText, pressed && { opacity: pressedOpacity }]}
       >
         <AppText variant="caption" tone="muted">
           {label}
         </AppText>
         <AppText variant={value === null ? "body" : "heading"} tone={value === null ? "muted" : "default"}>
-          {value ?? "없음"}
+          {value ?? placeholder}
         </AppText>
       </Pressable>
-      {value !== null && (
+      {value !== null && onClear !== undefined && (
         <Pressable
           onPress={onClear}
           accessibilityRole="button"
@@ -122,7 +141,11 @@ export default function ConditionsScreen() {
   });
   const [lodgingOn, setLodgingOn] = useState(saved?.bookedLodging !== undefined);
   const [lodging, setLodging] = useState(saved?.bookedLodging ?? "");
-  const [bookedPlaces, setBookedPlaces] = useState<string[]>(saved?.bookedPlaces ?? []);
+  // 예약한 장소: 이름과 날짜·시각(11/3, 꼭 정함). 날짜·시각은 서버가 아직 받지 않아 이 폰에만 둔다(bookedPlaceTimes).
+  const [bookedPlaces, setBookedPlaces] = useState<BookedPlaceDraft[]>(() => draftsOf(saved?.bookedPlaces, saved?.bookedPlaceTimes));
+  const [placeSheet, setPlaceSheet] = useState<{ index: number; kind: "date" } | { index: number; kind: "time"; value: string } | null>(null);
+  const setPlace = (index: number, patch: Partial<BookedPlaceDraft>) =>
+    setBookedPlaces((current) => current.map((place, i) => (i === index ? { ...place, ...patch } : place)));
   const [timeSheet, setTimeSheet] = useState<{ key: TimeKey; value: string } | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -161,6 +184,12 @@ export default function ConditionsScreen() {
 
   async function onStart() {
     if (inFlight.current) return;
+    // 예약한 장소는 이름을 적었으면 날짜(여행 기간 안)·시각을 꼭 정해야 한다. 서버에는 이름만 보낸다.
+    const booked = checkBookedPlaces(bookedPlaces, range.start, range.end);
+    if (!booked.ok) {
+      setErrorText(booked.error);
+      return;
+    }
     const result = validateConditions(
       {
         destination: "부산",
@@ -173,7 +202,7 @@ export default function ConditionsScreen() {
         arrivalTime: times.arrival,
         departureTime: times.departure,
         bookedLodging: lodgingOn ? lodging : null,
-        bookedPlaces,
+        bookedPlaces: booked.names,
       },
       today,
     );
@@ -182,13 +211,15 @@ export default function ConditionsScreen() {
       return;
     }
     setErrorText(null);
+    // 날짜·시각은 이 폰에만 둔다(서버로 보낼 때 toServerConditions가 뺀다).
+    const body = booked.times.length > 0 ? { ...result.body, bookedPlaceTimes: booked.times } : result.body;
     // 실서버에서는 조건을 저장하고 회의를 시작해야 이벤트가 흐른다. 가짜 서버는 회의 화면이 예시 회의를 재생한다.
     if (!config.useMock) {
       if (me === null) return;
       inFlight.current = true;
       setStarting(true);
       try {
-        await endpoints.saveConditions(me.tripId, result.body);
+        await endpoints.saveConditions(me.tripId, body);
         const started = await endpoints.startMeeting(me.tripId);
         rememberStartedMeeting(me.tripId, started.id);
       } catch (e) {
@@ -203,7 +234,7 @@ export default function ConditionsScreen() {
     // 새 조건으로 회의를 다시 하므로 이전 합의안은 지운다.
     meetingResultStore.set(null);
     chosenPlanStore.set(null);
-    conditionsStore.set(result.body);
+    conditionsStore.set(body);
     router.replace("/meeting");
   }
 
@@ -235,13 +266,27 @@ export default function ConditionsScreen() {
             <View style={styles.dateBox}>
               <AppText variant="bodyStrong">{dateLabel(range.start)}</AppText>
             </View>
-            <AppText variant="body" tone="muted">
+            <AppText variant="body" tone="muted" style={styles.arrow}>
               →
             </AppText>
             <View style={styles.dateBox}>
               <AppText variant="bodyStrong">{dateLabel(range.end)}</AppText>
             </View>
           </Pressable>
+          {/* 비행기·기차 시각은 그 날짜 바로 밑에: 첫날 도착은 가는 날, 마지막 날 출발은 오는 날(11/3) */}
+          <View style={styles.dates}>
+            {(["arrival", "departure"] as const).map((key, i) => (
+              <Fragment key={key}>
+                {i > 0 && <View style={styles.arrowSpace} />}
+                <TimeBox
+                  label={key === "arrival" ? "첫날 도착" : "마지막 날 출발"}
+                  value={times[key]}
+                  onPress={() => setTimeSheet({ key, value: times[key] ?? TIME_START[key] })}
+                  onClear={() => setTimes((current) => ({ ...current, [key]: null }))}
+                />
+              </Fragment>
+            ))}
+          </View>
           <AppText variant="caption" tone="muted">
             {nightsLabel(range.start, range.end)}
           </AppText>
@@ -276,26 +321,6 @@ export default function ConditionsScreen() {
           <AppText variant="heading" accessibilityRole="header">
             이미 정해진 것
           </AppText>
-          <AppText variant="small" tone="muted">
-            있으면 AI가 맞춰 짜요
-          </AppText>
-        </View>
-
-        <View style={styles.section}>
-          <AppText variant="small" tone="muted">
-            비행기·기차 시간
-          </AppText>
-          <View style={styles.times}>
-            {(["arrival", "departure"] as const).map((key) => (
-              <TimeBox
-                key={key}
-                label={key === "arrival" ? "첫날 도착" : "마지막 날 출발"}
-                value={times[key]}
-                onPress={() => setTimeSheet({ key, value: times[key] ?? TIME_START[key] })}
-                onClear={() => setTimes((current) => ({ ...current, [key]: null }))}
-              />
-            ))}
-          </View>
         </View>
 
         <View style={styles.section}>
@@ -324,16 +349,46 @@ export default function ConditionsScreen() {
           <AppText variant="small" tone="muted">
             예약한 장소
           </AppText>
-          <TextListInput
-            values={bookedPlaces}
-            onChange={setBookedPlaces}
-            max={BOOKED_LIMITS.places}
-            maxLength={BOOKED_LIMITS.nameMax}
-            placeholder="예: 부산 아쿠아리움"
-            addLabel="예약한 장소 추가"
-            itemLabel="예약한 장소"
-            startWithField={false}
-          />
+          {/* 장소마다 이름 + 날짜(여행 기간 중)·시각. 이름을 적으면 날짜·시각을 꼭 정해야 회의를 시작한다(11/3). */}
+          {bookedPlaces.map((place, i) => (
+            <View key={i} style={styles.booked}>
+              <InlineField
+                value={place.name}
+                onChangeText={(name) => setPlace(i, { name })}
+                placeholder="예: 부산 아쿠아리움"
+                maxLength={BOOKED_LIMITS.nameMax}
+                onClear={() => setBookedPlaces((current) => current.filter((_, j) => j !== i))}
+                accessibilityLabel={`예약한 장소 ${i + 1}`}
+                autoFocus={place.name === "" && i === bookedPlaces.length - 1}
+              />
+              <View style={styles.times}>
+                <TimeBox
+                  label="날짜"
+                  value={place.date === null ? null : shortDateLabel(place.date)}
+                  placeholder="골라 주세요"
+                  onPress={() => setPlaceSheet({ index: i, kind: "date" })}
+                />
+                <TimeBox
+                  label="시각"
+                  value={place.time}
+                  placeholder="골라 주세요"
+                  onPress={() => setPlaceSheet({ index: i, kind: "time", value: place.time ?? BOOKED_TIME_START })}
+                />
+              </View>
+            </View>
+          ))}
+          {bookedPlaces.length < BOOKED_LIMITS.places && (
+            <Pressable
+              onPress={() => setBookedPlaces((current) => [...current, { name: "", date: null, time: null }])}
+              accessibilityRole="button"
+              accessibilityLabel="예약한 장소 추가"
+              style={({ pressed }) => [styles.addPlace, pressed && { opacity: pressedOpacity }]}
+            >
+              <AppText variant="bodyStrong" tone="accent">
+                + 예약한 장소 추가
+              </AppText>
+            </Pressable>
+          )}
         </View>
 
         <View style={styles.rules}>
@@ -391,6 +446,44 @@ export default function ConditionsScreen() {
           </>
         )}
       </FormSheet>
+      {/* 예약한 장소의 날짜: 여행 기간의 날 중에서 */}
+      <FormSheet visible={placeSheet?.kind === "date"} title="예약한 날짜" onClose={() => setPlaceSheet(null)}>
+        {placeSheet?.kind === "date" &&
+          tripDays(range.start, range.end).map((day) => (
+            <SheetOption
+              key={day.iso}
+              label={day.label}
+              {...(bookedPlaces[placeSheet.index]?.date === day.iso && { right: "✓" })}
+              onPress={() => {
+                setPlace(placeSheet.index, { date: day.iso });
+                setPlaceSheet(null);
+              }}
+            />
+          ))}
+      </FormSheet>
+      {/* 예약한 장소의 시각: 비행기·기차 시각과 같은 돌림판 */}
+      <FormSheet
+        visible={placeSheet?.kind === "time"}
+        title={placeSheet?.kind === "time" ? `${bookedPlaces[placeSheet.index]?.name.trim() || "예약한 장소"} 시각` : ""}
+        onClose={() => setPlaceSheet(null)}
+      >
+        {placeSheet?.kind === "time" && (
+          <>
+            <TimeWheel value={placeSheet.value} onChange={(value) => setPlaceSheet((current) => (current?.kind === "time" ? { ...current, value } : current))} />
+            <View style={styles.sheetButtons}>
+              <Button label="취소" variant="secondary" onPress={() => setPlaceSheet(null)} style={styles.sheetCancel} />
+              <Button
+                label={`${placeSheet.value}으로 정하기`}
+                onPress={() => {
+                  setPlace(placeSheet.index, { time: placeSheet.value });
+                  setPlaceSheet(null);
+                }}
+                style={styles.sheetOk}
+              />
+            </View>
+          </>
+        )}
+      </FormSheet>
       <DateRangeCalendar
         visible={calendarOpen}
         initial={range}
@@ -398,6 +491,8 @@ export default function ConditionsScreen() {
         onClose={() => setCalendarOpen(false)}
         onConfirm={(next) => {
           setRange(next);
+          // 기간 밖이 된 예약 날짜는 비워서 다시 고르게 한다.
+          setBookedPlaces((current) => keepInRange(current, next.start, next.end));
           setCalendarOpen(false);
         }}
       />
@@ -418,6 +513,19 @@ const createStyles = (t: Theme) =>
     rules: { gap: spacing.sm },
     destination: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
     dates: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    // 날짜 사이 화살표. 아래 도착·출발 칸 사이에도 같은 너비(arrowSpace)를 비워 두 줄의 칸이 위아래로 맞는다.
+    arrow: { width: ARROW_W, textAlign: "center" },
+    arrowSpace: { width: ARROW_W },
+    booked: { gap: spacing.xs },
+    addPlace: {
+      minHeight: 48,
+      borderRadius: radius.md,
+      borderWidth: 1.5,
+      borderStyle: "dashed",
+      borderColor: t.colors.border,
+      alignItems: "center",
+      justifyContent: "center",
+    },
     dateBox: {
       flex: 1,
       minHeight: 48,
