@@ -1,32 +1,22 @@
 import { Image } from "expo-image";
-import { View } from "react-native";
-import Svg, { Circle, Path, Rect } from "react-native-svg";
+import Svg, { Path } from "react-native-svg";
 
 import type { CommunityPlace } from "../lib/community/community.ts";
-import { memberColors, pastel, radius, useTheme } from "../theme/index.ts";
+import { radius, useTheme } from "../theme/index.ts";
+import PlaceholderArt from "./PlaceholderArt.tsx";
 
-/** 묶음마다 사진 자리 색(사진이 없을 때) */
-function photoTint(group: string): string {
-  const i = group === "음식" ? 0 : group === "자연" ? 3 : group === "문화관광" ? 2 : 1;
-  return pastel(memberColors[i]!);
-}
-
-/** 관광공사 사진 또는 자리 표시. 사진이 있으면 출처를 붙이는 건 부모가 맡는다. */
+/**
+ * 관광공사 사진, 없으면 범용 자리 그림(PlaceholderArt: 한 색 바탕 + 첫 화면 캐릭터, 11/4). 사진이 있으면 출처를 붙이는 건 부모가 맡는다.
+ * 예전에는 묶음(음식·자연…)마다 다른 색에 사진 아이콘을 두었다.
+ */
 export function PlacePhoto({ place, width, height, rounded }: { place: CommunityPlace; width: number | "100%"; height: number; rounded: boolean }) {
   const { colors } = useTheme();
-  const box = { width, height, borderRadius: rounded ? radius.lg : 0, overflow: "hidden" as const, backgroundColor: photoTint(place.group) };
+  const box = { width, height, borderRadius: rounded ? radius.lg : 0, overflow: "hidden" as const };
   if (place.imageUrl !== null) {
-    return <Image source={{ uri: place.imageUrl }} style={box} contentFit="cover" accessible accessibilityLabel={`${place.name} 사진`} />;
+    // 사진을 받는 동안에도 자리 그림과 같은 한 색 바탕
+    return <Image source={{ uri: place.imageUrl }} style={{ ...box, backgroundColor: colors.mapLand }} contentFit="cover" accessible accessibilityLabel={`${place.name} 사진`} />;
   }
-  return (
-    <View style={[box, { alignItems: "center", justifyContent: "center" }]} accessible={false}>
-      <Svg width={28} height={28} viewBox="0 0 24 24" opacity={0.6}>
-        <Rect x={3} y={5} width={18} height={14} rx={3} stroke={colors.textMuted} strokeWidth={1.8} fill="none" />
-        <Circle cx={9} cy={10} r={1.6} stroke={colors.textMuted} strokeWidth={1.8} fill="none" />
-        <Path d="M21 16l-5-5-8 8" stroke={colors.textMuted} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-      </Svg>
-    </View>
-  );
+  return <PlaceholderArt height={height} style={box} />;
 }
 
 /** 별 하나(채움 비율 0~1은 쓰지 않고 채움/빈 별만) */
