@@ -3,11 +3,12 @@ import { ScrollView, StyleSheet, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import type { Href } from "expo-router";
 
-import { AppText, Avatar, Button, Card, Chip, PartyActions, PersonaCard, ProgressBar, StateView } from "../components/index.ts";
+import { AppText, Avatar, Button, Card, Chip, ConfirmSheet, PartyActions, PersonaCard, ProgressBar, StateView } from "../components/index.ts";
 import { endpoints } from "../lib/api/index.ts";
 import { ApiError } from "../lib/api/errors.ts";
 import { profileChips, profileTraits } from "../lib/persona/profile.ts";
-import { useProfile } from "../lib/persona/profileStore.ts";
+import { profile, useProfile } from "../lib/persona/profileStore.ts";
+import { showToast } from "../lib/ui/toast.ts";
 import type { Persona } from "../lib/persona/types.ts";
 import { session } from "../lib/session/index.ts";
 import { useSession } from "../lib/session/useSession.ts";
@@ -36,6 +37,7 @@ function MyProfile() {
   const router = useRouter();
   const { colors } = useTheme();
   const saved = useProfile();
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const traits = profileTraits(saved);
   if (traits === null) {
     return (
@@ -91,7 +93,22 @@ function MyProfile() {
       </Card>
       <View style={styles.links}>
         <Button label="12문항 다시 하기" variant="ghostMuted" onPress={() => router.navigate(QUESTIONNAIRE_ROUTE)} style={styles.link} />
+        {/* 파티 밖에서만(11/4): 이 폰에 저장한 1~12번 성향을 지운다. 지우면 이 탭은 "내 성향을 알려 주세요"로 돌아간다. */}
+        <Button label="캐릭터 삭제" variant="dangerGhost" onPress={() => setConfirmDelete(true)} accessibilityHint="이 휴대폰에 저장한 내 성향이 지워져요" style={styles.link} />
       </View>
+      <ConfirmSheet
+        visible={confirmDelete}
+        title="내 캐릭터를 삭제할까요?"
+        message="이 휴대폰에 저장한 내 성향(12문항 답)이 지워져요. 이미 들어간 파티의 캐릭터는 그대로예요."
+        confirmLabel="삭제하기"
+        danger
+        onConfirm={() => {
+          setConfirmDelete(false);
+          void profile.clear().catch(() => undefined);
+          showToast("내 캐릭터를 삭제했어요");
+        }}
+        onCancel={() => setConfirmDelete(false)}
+      />
     </ScrollView>
   );
 }
@@ -190,6 +207,6 @@ const createStyles = (t: Theme) =>
     traits: { gap: spacing.md },
     trait: { gap: spacing.xs },
     traitHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-    links: { alignItems: "center" },
+    links: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: spacing.xs },
     link: { alignSelf: "center" },
   });
